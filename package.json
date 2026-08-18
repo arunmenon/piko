@@ -1,6 +1,7 @@
 {
-  "name": "pi-harness",
+  "name": "piko",
   "private": true,
+  "repository": "github:arunmenon/piko",
   "type": "module",
   "workspaces": [
     "packages/*"

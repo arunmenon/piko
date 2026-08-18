@@ -1,4 +1,6 @@
-# pi — a lean, token-efficient agentic coding harness
+# piko — a lean, token-efficient agentic coding harness
+
+> The CLI command is `pi`; the project is **piko** ("tiny pi").
 
 A clean-room minimal coding agent in the spirit of [badlogic/pi-mono](https://github.com/badlogic/pi-mono):
 the entire fixed per-turn context (system prompt + tool schemas) stays **under 1,000 tokens**
