@@ -1,4 +1,6 @@
-import { dirname } from 'node:path';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import {
   addUsage,
   emptyUsage,
@@ -11,6 +13,7 @@ import {
   type ToolCallBlock,
   type ToolResultBlock,
   type Usage,
+  type UserBlock,
 } from '@pi/ai';
 import { Session, tryLockSession } from './session.js';
 import type { Tool, ToolContext, ToolOutput } from './tools/types.js';
@@ -70,6 +73,10 @@ export type AgentEvent =
   | { type: 'tool_end'; call: ToolCallBlock; result: ToolOutput }
   | { type: 'response_done'; message: AssistantMessage; stopReason: StopReason; usage: Usage }
   | { type: 'compacted'; dropped: number; sessionFile?: string }
+  | { type: 'flail_nudge'; consecutiveFailures: number }
+  | { type: 'flail_stop'; consecutiveFailures: number }
+  | { type: 'offloaded'; count: number; savedChars: number }
+  | { type: 'steered'; text: string }
   | { type: 'turn_done'; iterations: number; usage: Usage };
 
 export interface AgentOptions {
@@ -87,7 +94,17 @@ export interface AgentOptions {
   contextWindow?: number;
   /** set false to disable auto-compaction (default on when contextWindow is known) */
   autoCompact?: boolean;
+  /** doom-loop guard: nudge after N consecutive tool failures, stop the turn after M (default 5/10; false disables) */
+  flailGuard?: false | { nudgeAfter?: number; stopAfter?: number };
+  /** microcompaction: offload old bulky tool outputs to disk, leaving a re-readable path stub (false disables) */
+  offload?: false | { thresholdChars?: number; keepRecentMessages?: number };
 }
+
+const NUDGE_TEXT =
+  '[harness] Several tool calls in a row have failed. Step back: re-read the errors, question the current approach, and try a different strategy instead of repeating the same command.';
+const STOP_TEXT =
+  '[harness] Stopping this turn: repeated tool failures with no progress. Do not call more tools. Summarize what you tried, the current state of the work, and what is blocking you.';
+const OFFLOAD_BATCH_MIN_CHARS = 8_000; // offloading rewrites history (a cache break) — only do it in worthwhile batches
 
 export class Agent {
   readonly messages: Message[];
@@ -169,18 +186,42 @@ export class Agent {
 
   /**
    * Processes one user input to completion: stream -> execute tool calls -> repeat
-   * until the model stops calling tools (or maxIterations model calls).
+   * until the model stops calling tools (or maxIterations model calls, or the flail
+   * guard ends a turn that is failing without progress). `steering` is drained
+   * between model calls so the user can correct course mid-turn.
    */
-  async *run(input: string, signal?: AbortSignal): AsyncGenerator<AgentEvent, void, void> {
+  async *run(
+    input: string,
+    signal?: AbortSignal,
+    steering?: () => string[],
+  ): AsyncGenerator<AgentEvent, void, void> {
     const maxIterations = this.options.maxIterations ?? 40;
     const turnUsage = emptyUsage();
     const userMessage: Message = { role: 'user', content: [{ type: 'text', text: input }] };
     this.messages.push(userMessage);
     this.persist(userMessage);
 
+    const guardOption = this.options.flailGuard;
+    const guard =
+      guardOption === false
+        ? undefined
+        : { nudgeAfter: 5, stopAfter: 10, ...(typeof guardOption === 'object' ? guardOption : {}) };
+    let consecutiveFailures = 0;
+    const failCounts = new Map<string, number>();
+    let nudged = false;
+    let stopping = false;
+
     let iterations = 0;
     while (iterations < maxIterations) {
       if (signal?.aborted) break;
+      for (const note of steering?.() ?? []) {
+        const steerMessage: Message = { role: 'user', content: [{ type: 'text', text: `[steering] ${note}` }] };
+        this.messages.push(steerMessage);
+        this.persist(steerMessage);
+        yield { type: 'steered', text: note };
+      }
+      const offloaded = this.offloadOldToolResults();
+      if (offloaded) yield { type: 'offloaded', ...offloaded };
       const threshold = this.compactThreshold();
       if (threshold !== undefined && this.lastContextTokens > threshold && this.messages.length > 1) {
         const dropped = await this.compact(signal);
@@ -222,15 +263,35 @@ export class Agent {
       yield { type: 'response_done', message: done.message, stopReason: done.stopReason, usage: done.usage };
 
       const calls = done.message.content.filter((block): block is ToolCallBlock => block.type === 'toolCall');
+      if (stopping) {
+        // final-report round after a flail stop: never execute more tools; if the
+        // model tried anyway, synthesize results so the transcript stays API-valid
+        const repair = synthesizeInterruptedResults(this.messages);
+        if (repair) {
+          this.messages.push(repair);
+          this.persist(repair);
+        }
+        break;
+      }
       if (calls.length === 0) break;
 
       const results: ToolResultBlock[] = [];
+      let repeatMax = 0;
       for (const call of calls) {
         yield { type: 'tool_start', call };
         const result = signal?.aborted
           ? { content: [{ type: 'text' as const, text: 'interrupted by user' }], isError: true }
           : await this.executeCall(call, signal);
         yield { type: 'tool_end', call, result };
+        if (result.isError) {
+          consecutiveFailures++;
+          const key = `${call.name}:${JSON.stringify(call.arguments)}`;
+          const repeats = (failCounts.get(key) ?? 0) + 1;
+          failCounts.set(key, repeats);
+          if (repeats > repeatMax) repeatMax = repeats;
+        } else {
+          consecutiveFailures = 0;
+        }
         results.push({
           type: 'toolResult',
           toolCallId: call.id,
@@ -239,13 +300,95 @@ export class Agent {
           ...(result.isError ? { isError: true } : {}),
         });
       }
-      const resultMessage: Message = { role: 'user', content: results };
+      const content: UserBlock[] = [...results];
+      if (guard) {
+        // an identical call failing repeatedly is a stronger stall signal than mixed failures
+        const shouldStop = consecutiveFailures >= guard.stopAfter || repeatMax >= 4;
+        if (shouldStop) {
+          stopping = true;
+          content.push({ type: 'text', text: STOP_TEXT });
+          yield { type: 'flail_stop', consecutiveFailures };
+        } else if (!nudged && (consecutiveFailures >= guard.nudgeAfter || repeatMax >= 2)) {
+          nudged = true;
+          content.push({ type: 'text', text: NUDGE_TEXT });
+          yield { type: 'flail_nudge', consecutiveFailures };
+        }
+      }
+      const resultMessage: Message = { role: 'user', content };
       this.messages.push(resultMessage);
       this.persist(resultMessage);
     }
 
     this.lastTurnUsage = turnUsage;
     yield { type: 'turn_done', iterations, usage: turnUsage };
+  }
+
+  private offloadCounter = 0;
+  private offloadDirPath?: string;
+
+  private offloadDir(): string {
+    if (!this.offloadDirPath) {
+      const base = this._session
+        ? this._session.file.replace(/\.jsonl$/, '.artifacts')
+        : join(tmpdir(), `pi-offload-${process.pid}`);
+      mkdirSync(base, { recursive: true });
+      this.offloadDirPath = base;
+    }
+    return this.offloadDirPath;
+  }
+
+  /**
+   * Microcompaction: old bulky tool outputs are moved to disk and replaced with a
+   * path stub the model can re-read. Nothing is summarized away, no model call is
+   * paid, and the session JSONL keeps the original content. Rewriting history is a
+   * prompt-cache break, so this runs in batches (>= OFFLOAD_BATCH_MIN_CHARS).
+   */
+  private offloadOldToolResults(): { count: number; savedChars: number } | undefined {
+    const option = this.options.offload;
+    if (option === false) return undefined;
+    const cfg = { thresholdChars: 4_000, keepRecentMessages: 6, ...(typeof option === 'object' ? option : {}) };
+    const cutoff = this.messages.length - cfg.keepRecentMessages;
+    const eligible: { block: ToolResultBlock; chars: number }[] = [];
+    for (let index = 0; index < cutoff; index++) {
+      const message = this.messages[index]!;
+      if (message.role !== 'user') continue;
+      for (const block of message.content) {
+        if (block.type !== 'toolResult') continue;
+        if (block.content.some((inner) => inner.type === 'image')) continue; // keep images intact (v1)
+        const first = block.content[0];
+        if (first?.type === 'text' && first.text.startsWith('[offloaded:')) continue;
+        const chars = block.content.reduce(
+          (sum, inner) => sum + (inner.type === 'text' ? inner.text.length : 0),
+          0,
+        );
+        if (chars >= cfg.thresholdChars) eligible.push({ block, chars });
+      }
+    }
+    const total = eligible.reduce((sum, entry) => sum + entry.chars, 0);
+    if (eligible.length === 0 || total < OFFLOAD_BATCH_MIN_CHARS) return undefined;
+    let count = 0;
+    let savedChars = 0;
+    for (const { block, chars } of eligible) {
+      const path = join(this.offloadDir(), `offload-${++this.offloadCounter}.txt`);
+      const text = block.content
+        .filter((inner): inner is Extract<typeof inner, { type: 'text' }> => inner.type === 'text')
+        .map((inner) => inner.text)
+        .join('\n');
+      try {
+        writeFileSync(path, text, 'utf8');
+      } catch {
+        continue; // disk trouble: leave the block inline rather than lose it
+      }
+      block.content = [
+        {
+          type: 'text',
+          text: `[offloaded: ${chars}-char ${block.toolName} output saved to ${path} — read that file again if needed]`,
+        },
+      ];
+      count++;
+      savedChars += chars;
+    }
+    return count > 0 ? { count, savedChars } : undefined;
   }
 
   /** Compaction fires when the last request's real context use crosses window - reserve. */

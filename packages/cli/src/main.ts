@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { LLMClient, contextWindowFor, loadConfig, resolveProfile, type Profile } from '@pi/ai';
@@ -19,7 +19,7 @@ import {
 import { HELP, parseArgs, type CliArgs } from './args.js';
 import { loadExtensions } from './extensions.js';
 import { interpolate, loadTemplates, type PromptTemplate } from './templates.js';
-import { bold, cyan, dim, formatUsage, oneLine, red, summarizeArgs } from './render.js';
+import { bold, cacheHitRate, cyan, dim, formatUsage, oneLine, red, summarizeArgs } from './render.js';
 
 interface Setup {
   agent: Agent;
@@ -30,6 +30,8 @@ interface Setup {
   thinkingBudget?: number;
   contextWindow: number;
   autoCompact: boolean;
+  flailGuard: boolean;
+  offload: boolean;
 }
 
 function openSession(args: CliArgs, cwd: string, model: string): Session {
@@ -61,6 +63,8 @@ function buildAgent(setup: Omit<Setup, 'agent'>, cwd: string, model: string): Ag
     session: setup.session,
     contextWindow: setup.contextWindow,
     autoCompact: setup.autoCompact,
+    ...(setup.flailGuard === false ? { flailGuard: false as const } : {}),
+    ...(setup.offload === false ? { offload: false as const } : {}),
     ...(setup.maxIterations !== undefined ? { maxIterations: setup.maxIterations } : {}),
     ...(setup.thinkingBudget !== undefined ? { thinkingBudget: setup.thinkingBudget } : {}),
   });
@@ -88,6 +92,8 @@ async function setup(args: CliArgs): Promise<Setup> {
         ? envWindow
         : (profile.contextWindow ?? contextWindowFor(profile.model)),
     autoCompact: args.autoCompact,
+    flailGuard: args.flailGuard,
+    offload: args.offload,
     ...(args.maxTurns !== undefined ? { maxIterations: args.maxTurns } : {}),
     ...(args.thinking !== undefined && args.thinking > 0 ? { thinkingBudget: args.thinking } : {}),
   };
@@ -138,6 +144,12 @@ async function headless(args: CliArgs): Promise<number> {
       process.stderr.write(dim(`⚙ ${event.call.name} ${summarizeArgs(event.call.arguments)}\n`));
     } else if (event.type === 'compacted') {
       process.stderr.write(dim(`auto-compacted ${event.dropped} messages\n`));
+    } else if (event.type === 'flail_nudge') {
+      process.stderr.write(dim(`flail guard: nudged after ${event.consecutiveFailures} consecutive failures\n`));
+    } else if (event.type === 'flail_stop') {
+      process.stderr.write(`flail guard: stopped the turn after repeated failures\n`);
+    } else if (event.type === 'offloaded') {
+      process.stderr.write(dim(`offloaded ${event.count} old tool outputs\n`));
     } else if (event.type === 'response_done') {
       const text = event.message.content
         .filter((block) => block.type === 'text')
@@ -165,6 +177,7 @@ async function headless(args: CliArgs): Promise<number> {
 interface ReplState {
   running: AbortController | undefined;
   atNewline: boolean;
+  steering: string[];
 }
 
 function handleEvent(event: AgentEvent, state: ReplState): void {
@@ -197,6 +210,22 @@ function handleEvent(event: AgentEvent, state: ReplState): void {
         dim(`[auto-compacted: summarized ${event.dropped} earlier messages into a fresh session]\n`),
       );
       break;
+    case 'flail_nudge':
+      ensureNewline();
+      process.stdout.write(dim(`[⚠ ${event.consecutiveFailures} failed tool calls in a row — nudging a change of approach]\n`));
+      break;
+    case 'flail_stop':
+      ensureNewline();
+      process.stdout.write(red(`[✋ stopping turn: repeated tool failures without progress — asking for a final report]\n`));
+      break;
+    case 'offloaded':
+      ensureNewline();
+      process.stdout.write(dim(`[offloaded ${event.count} old tool output${event.count === 1 ? '' : 's'} to disk (~${event.savedChars.toLocaleString()} chars)]\n`));
+      break;
+    case 'steered':
+      ensureNewline();
+      process.stdout.write(dim(`[↪ steering applied: ${oneLine(event.text, 80)}]\n`));
+      break;
     case 'turn_done':
       ensureNewline();
       process.stdout.write(dim(`[${event.iterations} call${event.iterations === 1 ? '' : 's'} | ${formatUsage(event.usage)}]\n`));
@@ -210,7 +239,8 @@ function handleEvent(event: AgentEvent, state: ReplState): void {
 async function runInput(agent: Agent, input: string, state: ReplState): Promise<void> {
   state.running = new AbortController();
   try {
-    for await (const event of agent.run(input, state.running.signal)) handleEvent(event, state);
+    const drainSteering = () => state.steering.splice(0);
+    for await (const event of agent.run(input, state.running.signal, drainSteering)) handleEvent(event, state);
   } catch (error) {
     const text = String(error instanceof Error ? error.message : error);
     process.stdout.write(`\n${red(text)}\n`);
@@ -282,7 +312,7 @@ async function repl(args: CliArgs): Promise<number> {
   const initial = await setup(args);
   let { agent, session } = initial;
   const templates = loadTemplates(process.cwd());
-  const state: ReplState = { running: undefined, atNewline: true };
+  const state: ReplState = { running: undefined, atNewline: true, steering: [] };
 
   process.stdout.write(`${bold('pi')} ${dim(`| ${initial.profile.name}:${agent.model} | session ${session.id} | /help`)}\n`);
 
@@ -398,10 +428,13 @@ async function repl(args: CliArgs): Promise<number> {
 
     rl.on('line', (rawLine) => {
       if (processing) {
-        if (process.stdin.isTTY) {
-          // typed input mid-turn is dropped, not queued — a buffered line silently
-          // firing a full agent turn later is worse than asking the user to resend
-          process.stdout.write(dim('\n(input ignored while a turn is running — resend when idle)\n'));
+        if (process.stdin.isTTY && state.running) {
+          // typed input mid-turn becomes steering — injected before the next model call
+          const note = rawLine.trim();
+          if (note.length > 0) {
+            state.steering.push(note);
+            process.stdout.write(dim('\n(↪ queued as steering for the next step)\n'));
+          }
         } else {
           pending.push(rawLine); // piped stdin is a script: preserve order, run sequentially
         }
@@ -414,11 +447,75 @@ async function repl(args: CliArgs): Promise<number> {
   });
 }
 
+/**
+ * Reconstructs a session's per-request economics from its JSONL — the local answer
+ * to "what did this actually cost and why": every number here is what the provider
+ * reported, recorded at request time, auditable after the fact.
+ */
+function auditSession(target: string, cwd: string): number {
+  let file: string | undefined;
+  if (target === 'latest') file = latestSessionFile(sessionsDirFor(cwd));
+  else if (existsSync(target)) file = target;
+  else {
+    const inDir = join(sessionsDirFor(cwd), `${target}.jsonl`);
+    if (existsSync(inDir)) file = inDir;
+  }
+  if (!file) {
+    process.stderr.write(`no session found for "${target}"\n`);
+    return 1;
+  }
+  interface UsageRow {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+  }
+  const rows: UsageRow[] = [];
+  let model = '?';
+  let messages = 0;
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line) as { t: string; usage?: UsageRow; model?: string };
+      if (entry.t === 'meta' && entry.model) model = entry.model;
+      else if (entry.t === 'usage' && entry.usage) rows.push(entry.usage);
+      else if (entry.t === 'msg') messages++;
+    } catch {
+      /* corrupt line — already warned elsewhere */
+    }
+  }
+  process.stdout.write(`${file}\nmodel ${model} | ${messages} messages | ${rows.length} requests\n\n`);
+  process.stdout.write('req      input  cache-read  cache-write  output  hit%\n');
+  const total = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  rows.forEach((row, index) => {
+    const hit = cacheHitRate(row);
+    process.stdout.write(
+      `${String(index + 1).padStart(3)}  ${String(row.inputTokens).padStart(9)}  ${String(row.cacheReadTokens).padStart(10)}  ${String(row.cacheWriteTokens).padStart(11)}  ${String(row.outputTokens).padStart(6)}  ${hit !== undefined ? String(hit).padStart(3) + '%' : '   —'}\n`,
+    );
+    total.inputTokens += row.inputTokens;
+    total.outputTokens += row.outputTokens;
+    total.cacheReadTokens += row.cacheReadTokens;
+    total.cacheWriteTokens += row.cacheWriteTokens;
+  });
+  process.stdout.write(`\ntotal: ${formatUsage(total)}\n`);
+  const hit = cacheHitRate(total);
+  if (hit === undefined && rows.length > 1) {
+    process.stdout.write(
+      'note: zero cache reads across the session — the fixed prefix may sit below the provider\'s minimum cacheable size\n',
+    );
+  }
+  return 0;
+}
+
 async function main(): Promise<void> {
   try {
     const args = parseArgs(process.argv.slice(2));
     if (args.help) {
       process.stdout.write(`${HELP}\n`);
+      return;
+    }
+    if (args.audit !== undefined) {
+      process.exitCode = auditSession(args.audit, process.cwd());
       return;
     }
     process.exitCode = args.print ? await headless(args) : await repl(args);

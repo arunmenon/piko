@@ -20,11 +20,23 @@ export function oneLine(text: string, max: number): string {
   return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
+export function cacheHitRate(usage: {
+  inputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}): number | undefined {
+  const totalInputSide = usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
+  if (totalInputSide === 0 || usage.cacheReadTokens === 0) return undefined;
+  return Math.round((usage.cacheReadTokens / totalInputSide) * 100);
+}
+
 export function formatUsage(usage: {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
 }): string {
-  return `in ${usage.inputTokens} (cache read ${usage.cacheReadTokens}, write ${usage.cacheWriteTokens}) | out ${usage.outputTokens}`;
+  const hit = cacheHitRate(usage);
+  const hitText = hit !== undefined ? ` | cache hit ${hit}%` : '';
+  return `in ${usage.inputTokens} (cache read ${usage.cacheReadTokens}, write ${usage.cacheWriteTokens}) | out ${usage.outputTokens}${hitText}`;
 }

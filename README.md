@@ -26,9 +26,20 @@ hurt (-20%). This harness keeps every one of those levers deliberately small.
   pre-compaction transcript stays on disk untouched. `/compact` does the same on demand;
   `--no-auto-compact` turns the automatic path off. The window comes from a per-model-family
   table, overridable per profile (`contextWindow`) or with `PI_CONTEXT_WINDOW`.
-- **Everything inspectable**: append-only JSONL sessions under `~/.pi/sessions/`, per-turn token
-  ledger (`/tokens`, `--usage`). Crash-resilient: corrupt session lines are skipped, and a
-  transcript that died mid-tool-call is repaired on resume.
+- **Flail guard (doom-loop protection)**: after repeated tool failures without progress the
+  harness nudges the model to change approach (one ~30-token message), and if failures continue
+  it ends the turn with a demanded final report instead of burning the budget. `--no-flail-guard`
+  to disable.
+- **Microcompaction**: old bulky tool outputs are offloaded to disk and replaced with a path
+  stub the model can re-read — nothing summarized away, no model call paid, batched to respect
+  the prompt cache. `--no-offload` to disable.
+- **Mid-turn steering**: type while a turn is running and the note is injected before the next
+  model call (`[↪ steering applied]`), not queued until the end.
+- **Everything inspectable, now auditable**: append-only JSONL sessions under `~/.pi/sessions/`,
+  per-turn token ledger with cache hit-rate (`/tokens`, `--usage`), and `pi --audit [session]`
+  reconstructing per-request economics from the transcript — the local answer to invisible
+  billing. Crash-resilient: corrupt session lines are skipped, and a transcript that died
+  mid-tool-call is repaired on resume.
 - **Prompt-cache friendly**: stable prefix ordering with Anthropic cache breakpoints; earlier
   messages are never mutated.
 - **Output caps**: bash output truncated head+tail (30k chars) with an explicit marker; `read`

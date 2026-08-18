@@ -7,6 +7,9 @@ export interface CliArgs {
   maxTurns?: number;
   thinking?: number;
   autoCompact: boolean;
+  flailGuard: boolean;
+  offload: boolean;
+  audit?: string;
   extensions: string[];
   usage: boolean;
   help: boolean;
@@ -18,6 +21,8 @@ export function parseArgs(argv: string[]): CliArgs {
     print: false,
     continue: false,
     autoCompact: true,
+    flailGuard: true,
+    offload: true,
     extensions: [],
     usage: false,
     help: false,
@@ -67,6 +72,17 @@ export function parseArgs(argv: string[]): CliArgs {
       case '--no-auto-compact':
         args.autoCompact = false;
         break;
+      case '--no-flail-guard':
+        args.flailGuard = false;
+        break;
+      case '--no-offload':
+        args.offload = false;
+        break;
+      case '--audit': {
+        const peek = argv[i + 1];
+        args.audit = peek !== undefined && !peek.startsWith('-') ? argv[++i]! : 'latest';
+        break;
+      }
       case '--usage':
         args.usage = true;
         break;
@@ -97,6 +113,9 @@ options:
   --max-turns <n>      cap model calls per input (default 40)
   --thinking <tokens>  enable extended thinking with this token budget (Anthropic models)
   --no-auto-compact    never summarize automatically when the context window fills
+  --no-flail-guard     disable the doom-loop guard (nudge/stop on repeated tool failures)
+  --no-offload         keep old bulky tool outputs inline instead of offloading to disk
+  --audit [id|path]    print a per-request token/cost audit of a session (default: latest here)
   --ext <path>         load a TypeScript/JavaScript extension module (repeatable)
   --usage              print a JSON usage summary to stderr when done
   -h, --help           show this help
