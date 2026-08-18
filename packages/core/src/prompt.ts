@@ -56,6 +56,7 @@ export function buildSystemPrompt(options: {
 Work autonomously: use tools to inspect the project, make changes, and verify them, then reply with a brief summary. Don't narrate routine steps or ask permission to proceed.
 
 Tools:
+- map: your first call when a task involves finding code. One map of the relevant directory is cheaper than several searches.
 - read/write/edit for files. Read a file before editing it. edit requires old_text to match exactly (whitespace included) and be unique unless replace_all is set.
 - bash for everything else: search (rg/grep), git, tests, installs, any CLI. Non-interactive commands only.
 

@@ -4,7 +4,7 @@
 
 A clean-room minimal coding agent in the spirit of [badlogic/pi-mono](https://github.com/badlogic/pi-mono):
 the entire fixed per-turn context (system prompt + tool schemas) stays **under 1,000 tokens**
-(currently ~557, enforced by `npm run check-budget`). Zero runtime dependencies.
+(currently ~678, enforced by `npm run check-budget`). Zero runtime dependencies.
 
 ## Why lean
 
@@ -17,7 +17,10 @@ This harness keeps every one of those levers deliberately small.
 
 ## Design
 
-- **Four tools**: `read`, `write`, `edit`, `bash`. Everything else is a CLI the model runs via bash.
+- **Five tools**: `map`, `read`, `write`, `edit`, `bash`. Everything else is a CLI the model runs via bash.
+- **Repo map**: `map` renders source files with line counts and top-level symbols (zero-dep,
+  regex-based, vendor dirs skipped) so one ~200-token call replaces several exploratory
+  searches; the lean revival of Aider's abandoned repo-map idea.
 - **No sub-agents in core**: spawn `pi -p "task"` via bash: progress goes to stderr, only the
   final reply to stdout, so it composes as a context firewall.
 - **No MCP**: integrations are CLI tools with READMEs the model reads on demand.
