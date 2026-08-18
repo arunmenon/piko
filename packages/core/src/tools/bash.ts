@@ -1,0 +1,133 @@
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
+import { truncateMiddle } from '../truncate.js';
+import { requireString, textOutput, type Tool, type ToolContext, type ToolOutput } from './types.js';
+
+const DEFAULT_TIMEOUT_S = 120;
+const MAX_TIMEOUT_S = 600;
+const MAX_BUFFER = 10_000_000;
+const CWD_SENTINEL = '\x01PI_CWD\x01';
+
+interface BashResult {
+  stdout: string;
+  stderr: string;
+  /** always holds the last ~1KB of stderr even past MAX_BUFFER, so the cwd sentinel survives noisy commands */
+  stderrTail: string;
+  exitCode: number | null;
+  timedOut: boolean;
+  aborted: boolean;
+}
+
+function runBash(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<BashResult> {
+  // The sentinel (on stderr, control-char delimited) carries the final $PWD back so
+  // `cd` persists across tool calls without any shell state living in this process.
+  // Inherent limit: a command ending in `exit`/`exec` skips the sentinel — cwd just
+  // doesn't update for that call.
+  const script = `${command}\n__pi_exit=$?; printf '\\n${CWD_SENTINEL}%s' "$PWD" >&2; exit $__pi_exit`;
+  return new Promise((resolvePromise) => {
+    // detached => own process group, so timeout/abort can kill the whole tree
+    const child = spawn('bash', ['-c', script], { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+    let stdout = '';
+    let stderr = '';
+    let stderrTail = '';
+    let timedOut = false;
+    let settled = false;
+
+    const killGroup = (sig: NodeJS.Signals) => {
+      try {
+        if (child.pid) process.kill(-child.pid, sig);
+        else child.kill(sig);
+      } catch {
+        try {
+          child.kill(sig);
+        } catch {
+          /* already gone */
+        }
+      }
+    };
+    const terminate = () => {
+      killGroup('SIGTERM');
+      setTimeout(() => killGroup('SIGKILL'), 2000).unref();
+    };
+    const killTimer = setTimeout(() => {
+      timedOut = true;
+      terminate();
+    }, timeoutMs);
+    const onAbort = () => terminate();
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (stdout.length < MAX_BUFFER) stdout += stdoutDecoder.write(chunk);
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      const text = stderrDecoder.write(chunk);
+      if (stderr.length < MAX_BUFFER) stderr += text;
+      stderrTail = (stderrTail + text).slice(-1024);
+    });
+
+    const settle = (exitCode: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killTimer);
+      signal?.removeEventListener('abort', onAbort);
+      resolvePromise({ stdout, stderr, stderrTail, exitCode, timedOut, aborted: signal?.aborted ?? false });
+    };
+    child.on('error', (error) => {
+      stderr += `${stderr.length > 0 ? '\n' : ''}${String(error)}`;
+      settle(null);
+    });
+    // resolve on 'exit', not 'close': a surviving grandchild holding the pipes must not
+    // stall the agent forever. The short delay collects already-buffered output and must
+    // stay ref'd — it is the promise's resolution path.
+    child.on('exit', (code, sig) => {
+      setTimeout(() => settle(code ?? (sig ? null : 0)), 25);
+    });
+  });
+}
+
+export const bashTool: Tool = {
+  name: 'bash',
+  description:
+    'Run a bash command in the project (search, git, tests, any CLI). Working directory persists across calls. Non-interactive commands only.',
+  parameters: {
+    type: 'object',
+    properties: {
+      command: { type: 'string' },
+      timeout_seconds: { type: 'number', description: `default ${DEFAULT_TIMEOUT_S}, max ${MAX_TIMEOUT_S}` },
+    },
+    required: ['command'],
+  },
+
+  async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolOutput> {
+    const command = requireString(args, 'command');
+    const timeoutS = Math.min(
+      typeof args['timeout_seconds'] === 'number' && args['timeout_seconds'] > 0
+        ? args['timeout_seconds']
+        : DEFAULT_TIMEOUT_S,
+      MAX_TIMEOUT_S,
+    );
+    const result = await runBash(command, context.cwd, timeoutS * 1000, context.signal);
+
+    let stderr = result.stderr;
+    const tailIndex = result.stderrTail.lastIndexOf(CWD_SENTINEL);
+    if (tailIndex !== -1) {
+      const newCwd = result.stderrTail.slice(tailIndex + CWD_SENTINEL.length).trim();
+      const inStderr = stderr.lastIndexOf(CWD_SENTINEL);
+      if (inStderr !== -1) stderr = stderr.slice(0, inStderr).replace(/\n$/, '');
+      if (newCwd && newCwd !== context.cwd && existsSync(newCwd)) context.setCwd(newCwd);
+    }
+
+    let text = result.stdout;
+    if (stderr.trim().length > 0) text += `${text.length > 0 ? '\n' : ''}[stderr]\n${stderr}`;
+    text = truncateMiddle(text);
+    // exitCode null (spawn failure or signal kill) is a failure, not a success
+    const failed = result.timedOut || result.aborted || result.exitCode !== 0;
+    if (result.aborted) text += '\n[interrupted by user]';
+    else if (result.timedOut) text += `\n[timed out after ${timeoutS}s]`;
+    else if (result.exitCode !== 0) text += `\n[exit code ${result.exitCode ?? 'killed'}]`;
+    return textOutput(text.trim().length > 0 ? text : '(no output)', failed);
+  },
+};

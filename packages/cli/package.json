@@ -1,0 +1,23 @@
+{
+  "name": "@pi/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "pi": "./dist/main.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@pi/ai": "0.1.0",
+    "@pi/core": "0.1.0"
+  }
+}

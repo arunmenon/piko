@@ -1,0 +1,24 @@
+{
+  "name": "pi-harness",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b packages/ai packages/core packages/cli",
+    "test": "npm run build && node --import tsx --test packages/ai/tests/*.test.ts packages/core/tests/*.test.ts packages/cli/tests/*.test.ts",
+    "check-budget": "node --import tsx scripts/check-budget.ts",
+    "eval": "node --import tsx eval/run.ts",
+    "pi": "node packages/cli/dist/main.js"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
