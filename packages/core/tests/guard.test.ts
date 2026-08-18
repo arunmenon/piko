@@ -143,7 +143,7 @@ test('offload: old bulky tool results move to disk with a re-readable stub', asy
     .content[0] as { content: { type: string; text: string }[] };
   const stubText = stubBlock.content[0]!.text;
   assert.match(stubText, /^\[offloaded: 10,?000-char bash output saved to /);
-  const path = stubText.match(/saved to (\S+) —/)?.[1];
+  const path = stubText.match(/saved to (\S+);/)?.[1];
   assert.ok(path && existsSync(path), 'offload file should exist');
   assert.equal(readFileSync(path!, 'utf8'), bigText);
 });

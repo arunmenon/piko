@@ -94,8 +94,11 @@ export interface AgentOptions {
   contextWindow?: number;
   /** set false to disable auto-compaction (default on when contextWindow is known) */
   autoCompact?: boolean;
-  /** doom-loop guard: nudge after N consecutive tool failures, stop the turn after M (default 5/10; false disables) */
-  flailGuard?: false | { nudgeAfter?: number; stopAfter?: number };
+  /** doom-loop guard: nudge after N consecutive tool failures, stop the turn after M (default 5/10;
+   *  identical failing calls escalate faster via repeatNudgeAfter/repeatStopAfter, default 2/4; false disables) */
+  flailGuard?:
+    | false
+    | { nudgeAfter?: number; stopAfter?: number; repeatNudgeAfter?: number; repeatStopAfter?: number };
   /** microcompaction: offload old bulky tool outputs to disk, leaving a re-readable path stub (false disables) */
   offload?: false | { thresholdChars?: number; keepRecentMessages?: number };
 }
@@ -104,7 +107,7 @@ const NUDGE_TEXT =
   '[harness] Several tool calls in a row have failed. Step back: re-read the errors, question the current approach, and try a different strategy instead of repeating the same command.';
 const STOP_TEXT =
   '[harness] Stopping this turn: repeated tool failures with no progress. Do not call more tools. Summarize what you tried, the current state of the work, and what is blocking you.';
-const OFFLOAD_BATCH_MIN_CHARS = 8_000; // offloading rewrites history (a cache break) — only do it in worthwhile batches
+const OFFLOAD_BATCH_MIN_CHARS = 8_000; // offloading rewrites history (a cache break), so only do it in worthwhile batches
 
 export class Agent {
   readonly messages: Message[];
@@ -205,7 +208,13 @@ export class Agent {
     const guard =
       guardOption === false
         ? undefined
-        : { nudgeAfter: 5, stopAfter: 10, ...(typeof guardOption === 'object' ? guardOption : {}) };
+        : {
+            nudgeAfter: 5,
+            stopAfter: 10,
+            repeatNudgeAfter: 2,
+            repeatStopAfter: 4,
+            ...(typeof guardOption === 'object' ? guardOption : {}),
+          };
     let consecutiveFailures = 0;
     const failCounts = new Map<string, number>();
     let nudged = false;
@@ -220,13 +229,15 @@ export class Agent {
         this.persist(steerMessage);
         yield { type: 'steered', text: note };
       }
-      const offloaded = this.offloadOldToolResults();
-      if (offloaded) yield { type: 'offloaded', ...offloaded };
+      // compaction first: offloading messages compaction is about to drop wastes
+      // disk writes and hands summarize() stubs instead of real outputs
       const threshold = this.compactThreshold();
       if (threshold !== undefined && this.lastContextTokens > threshold && this.messages.length > 1) {
         const dropped = await this.compact(signal);
         yield { type: 'compacted', dropped, ...(this._session ? { sessionFile: this._session.file } : {}) };
       }
+      const offloaded = this.offloadOldToolResults();
+      if (offloaded) yield { type: 'offloaded', ...offloaded };
       iterations++;
       this.requestCount++;
 
@@ -283,13 +294,14 @@ export class Agent {
           ? { content: [{ type: 'text' as const, text: 'interrupted by user' }], isError: true }
           : await this.executeCall(call, signal);
         yield { type: 'tool_end', call, result };
-        if (result.isError) {
+        if (result.isError && !signal?.aborted) {
+          // aborted calls are the user's doing, not the model flailing
           consecutiveFailures++;
-          const key = `${call.name}:${JSON.stringify(call.arguments)}`;
+          const key = `${call.name}:${JSON.stringify(call.arguments).slice(0, 200)}`;
           const repeats = (failCounts.get(key) ?? 0) + 1;
           failCounts.set(key, repeats);
           if (repeats > repeatMax) repeatMax = repeats;
-        } else {
+        } else if (!result.isError) {
           consecutiveFailures = 0;
         }
         results.push({
@@ -303,12 +315,12 @@ export class Agent {
       const content: UserBlock[] = [...results];
       if (guard) {
         // an identical call failing repeatedly is a stronger stall signal than mixed failures
-        const shouldStop = consecutiveFailures >= guard.stopAfter || repeatMax >= 4;
+        const shouldStop = consecutiveFailures >= guard.stopAfter || repeatMax >= guard.repeatStopAfter;
         if (shouldStop) {
           stopping = true;
           content.push({ type: 'text', text: STOP_TEXT });
           yield { type: 'flail_stop', consecutiveFailures };
-        } else if (!nudged && (consecutiveFailures >= guard.nudgeAfter || repeatMax >= 2)) {
+        } else if (!nudged && (consecutiveFailures >= guard.nudgeAfter || repeatMax >= guard.repeatNudgeAfter)) {
           nudged = true;
           content.push({ type: 'text', text: NUDGE_TEXT });
           yield { type: 'flail_nudge', consecutiveFailures };
@@ -382,7 +394,7 @@ export class Agent {
       block.content = [
         {
           type: 'text',
-          text: `[offloaded: ${chars}-char ${block.toolName} output saved to ${path} — read that file again if needed]`,
+          text: `[offloaded: ${chars}-char ${block.toolName} output saved to ${path}; read that file again if needed]`,
         },
       ];
       count++;

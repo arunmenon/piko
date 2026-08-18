@@ -1,28 +1,30 @@
-# piko — a lean, token-efficient agentic coding harness
+# piko: a lean, token-efficient agentic coding harness
 
 > The CLI command is `pi`; the project is **piko** ("tiny pi").
 
 A clean-room minimal coding agent in the spirit of [badlogic/pi-mono](https://github.com/badlogic/pi-mono):
 the entire fixed per-turn context (system prompt + tool schemas) stays **under 1,000 tokens**
-(currently ~537, enforced by `npm run check-budget`). Zero runtime dependencies.
+(currently ~557, enforced by `npm run check-budget`). Zero runtime dependencies.
 
 ## Why lean
 
-Harness design swings the same model's benchmark score by 16-36 points. The 2026 evidence:
-scoped tool surfaces beat kitchen-sink MCP; sub-agents help only as context firewalls (which
-headless self-spawn provides); small hand-written guide files help (+4%) while bloated ones
-hurt (-20%). This harness keeps every one of those levers deliberately small.
+Harness choice moves the same model 9-15 points between competent scaffolds, and a controlled
+factorial (arXiv 2605.23950) measures harness-induced variance at ~7.8x model-induced variance.
+The 2026 evidence: scoped tool surfaces beat kitchen-sink MCP; sub-agents help only as context
+firewalls (which headless self-spawn provides); small hand-written guide files help (+4%) while
+bloated ones hurt (-20%); and the money is in per-turn working set, not prefix bragging rights.
+This harness keeps every one of those levers deliberately small.
 
 ## Design
 
 - **Four tools**: `read`, `write`, `edit`, `bash`. Everything else is a CLI the model runs via bash.
-- **No sub-agents in core**: spawn `pi -p "task"` via bash — progress goes to stderr, only the
+- **No sub-agents in core**: spawn `pi -p "task"` via bash: progress goes to stderr, only the
   final reply to stdout, so it composes as a context firewall.
 - **No MCP**: integrations are CLI tools with READMEs the model reads on demand.
 - **No planning mode / todo tool**: plans live in `PLAN.md` with markdown checkboxes.
 - **Compaction that stays observable**: when the last request's real token usage crosses
   `contextWindow - reserve`, the harness summarizes everything before the recent tail (never
-  splitting a tool call from its results) and continues in a **new** session file — the full
+  splitting a tool call from its results) and continues in a **new** session file; the full
   pre-compaction transcript stays on disk untouched. `/compact` does the same on demand;
   `--no-auto-compact` turns the automatic path off. The window comes from a per-model-family
   table, overridable per profile (`contextWindow`) or with `PI_CONTEXT_WINDOW`.
@@ -31,13 +33,13 @@ hurt (-20%). This harness keeps every one of those levers deliberately small.
   it ends the turn with a demanded final report instead of burning the budget. `--no-flail-guard`
   to disable.
 - **Microcompaction**: old bulky tool outputs are offloaded to disk and replaced with a path
-  stub the model can re-read — nothing summarized away, no model call paid, batched to respect
+  stub the model can re-read: nothing summarized away, no model call paid, batched to respect
   the prompt cache. `--no-offload` to disable.
 - **Mid-turn steering**: type while a turn is running and the note is injected before the next
   model call (`[↪ steering applied]`), not queued until the end.
 - **Everything inspectable, now auditable**: append-only JSONL sessions under `~/.pi/sessions/`,
   per-turn token ledger with cache hit-rate (`/tokens`, `--usage`), and `pi --audit [session]`
-  reconstructing per-request economics from the transcript — the local answer to invisible
+  reconstructing per-request economics from the transcript: the local answer to invisible
   billing. Crash-resilient: corrupt session lines are skipped, and a transcript that died
   mid-tool-call is repaired on resume.
 - **Prompt-cache friendly**: stable prefix ordering with Anthropic cache breakpoints; earlier
@@ -61,7 +63,7 @@ npm install && npm run build
 # interactive (uses ANTHROPIC_API_KEY, else OPENAI_API_KEY)
 node packages/cli/dist/main.js
 
-# headless: final reply on stdout, progress on stderr — the sub-agent building block
+# headless: final reply on stdout, progress on stderr: the sub-agent building block
 node packages/cli/dist/main.js -p "fix the failing test" --max-turns 20
 
 # extended thinking on Anthropic models
@@ -91,7 +93,7 @@ Config file (`~/.config/pi/config.json`, optional):
 
 pi runs with your user's permissions and no approval prompts (per-call permission theater does
 not stop exfiltration once a process can read files and reach the network). The 2026 consensus
-is OS-level isolation instead — run pi inside one of:
+is OS-level isolation instead: run pi inside one of:
 
 ```bash
 # Docker: mount only the project, no credentials
@@ -107,7 +109,7 @@ For untrusted or long-running autonomous work, the container path is the support
 
 - **Prompt templates**: `.agent/commands/<name>.md` (project) or `~/.agent/commands/<name>.md`
   (global) become `/<name>` slash commands; `$ARGUMENTS` is interpolated.
-- **Skills**: `.agent/skills/*.md` — only a one-line index enters fixed context; the model reads
+- **Skills**: `.agent/skills/*.md`: only a one-line index enters fixed context; the model reads
   the full file with `read` when relevant.
 - **Tool extensions**: `--ext path/to/module.ts` (or config `extensions`); the module
   default-exports `Tool[]`. Never auto-discovered.
@@ -116,7 +118,7 @@ For untrusted or long-running autonomous work, the container path is the support
 ## Development
 
 ```bash
-npm test              # build + 16 unit tests (tools, sessions, SSE, provider mapping)
+npm test              # build + unit tests (tools, sessions, SSE, providers, guard/offload/steering)
 npm run check-budget  # fails if fixed context exceeds 1000 tokens
 npm run eval -- --model gpt-4.1-mini   # 10 headless smoke tasks with pass/fail + token cost
 ```

@@ -2,7 +2,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { LLMClient, contextWindowFor, loadConfig, resolveProfile, type Profile } from '@pi/ai';
+import { LLMClient, addUsage, contextWindowFor, emptyUsage, loadConfig, resolveProfile, type Profile, type Usage } from '@pi/ai';
 import {
   Agent,
   Session,
@@ -212,11 +212,11 @@ function handleEvent(event: AgentEvent, state: ReplState): void {
       break;
     case 'flail_nudge':
       ensureNewline();
-      process.stdout.write(dim(`[⚠ ${event.consecutiveFailures} failed tool calls in a row — nudging a change of approach]\n`));
+      process.stdout.write(dim(`[⚠ ${event.consecutiveFailures} failed tool calls in a row: nudging a change of approach]\n`));
       break;
     case 'flail_stop':
       ensureNewline();
-      process.stdout.write(red(`[✋ stopping turn: repeated tool failures without progress — asking for a final report]\n`));
+      process.stdout.write(red(`[✋ stopping turn: repeated tool failures without progress; asking for a final report]\n`));
       break;
     case 'offloaded':
       ensureNewline();
@@ -245,10 +245,12 @@ async function runInput(agent: Agent, input: string, state: ReplState): Promise<
     const text = String(error instanceof Error ? error.message : error);
     process.stdout.write(`\n${red(text)}\n`);
     if (/context|too long|maximum.*length/i.test(text)) {
-      process.stdout.write(dim('the conversation may have outgrown the model context — try /compact\n'));
+      process.stdout.write(dim('the conversation may have outgrown the model context, try /compact\n'));
     }
   } finally {
     state.running = undefined;
+    // a note typed during the final response would otherwise leak into the next turn
+    state.steering.length = 0;
   }
 }
 
@@ -428,12 +430,18 @@ async function repl(args: CliArgs): Promise<number> {
 
     rl.on('line', (rawLine) => {
       if (processing) {
-        if (process.stdin.isTTY && state.running) {
-          // typed input mid-turn becomes steering — injected before the next model call
-          const note = rawLine.trim();
-          if (note.length > 0) {
-            state.steering.push(note);
-            process.stdout.write(dim('\n(↪ queued as steering for the next step)\n'));
+        if (process.stdin.isTTY) {
+          if (state.running) {
+            // typed input mid-turn becomes steering, injected before the next model call
+            const note = rawLine.trim();
+            if (note.length > 0) {
+              state.steering.push(note);
+              process.stdout.write(dim('\n(↪ queued as steering for the next step)\n'));
+            }
+          } else {
+            // busy but no turn running (e.g. /compact): dropping beats a buffered line
+            // silently firing a full agent turn later
+            process.stdout.write(dim('\n(busy: input ignored, resend when idle)\n'));
           }
         } else {
           pending.push(rawLine); // piped stdin is a script: preserve order, run sequentially
@@ -464,19 +472,13 @@ function auditSession(target: string, cwd: string): number {
     process.stderr.write(`no session found for "${target}"\n`);
     return 1;
   }
-  interface UsageRow {
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadTokens: number;
-    cacheWriteTokens: number;
-  }
-  const rows: UsageRow[] = [];
+  const rows: Usage[] = [];
   let model = '?';
   let messages = 0;
   for (const line of readFileSync(file, 'utf8').split('\n')) {
     if (!line.trim()) continue;
     try {
-      const entry = JSON.parse(line) as { t: string; usage?: UsageRow; model?: string };
+      const entry = JSON.parse(line) as { t: string; usage?: Usage; model?: string };
       if (entry.t === 'meta' && entry.model) model = entry.model;
       else if (entry.t === 'usage' && entry.usage) rows.push(entry.usage);
       else if (entry.t === 'msg') messages++;
@@ -486,22 +488,19 @@ function auditSession(target: string, cwd: string): number {
   }
   process.stdout.write(`${file}\nmodel ${model} | ${messages} messages | ${rows.length} requests\n\n`);
   process.stdout.write('req      input  cache-read  cache-write  output  hit%\n');
-  const total = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  const total = emptyUsage();
   rows.forEach((row, index) => {
     const hit = cacheHitRate(row);
     process.stdout.write(
-      `${String(index + 1).padStart(3)}  ${String(row.inputTokens).padStart(9)}  ${String(row.cacheReadTokens).padStart(10)}  ${String(row.cacheWriteTokens).padStart(11)}  ${String(row.outputTokens).padStart(6)}  ${hit !== undefined ? String(hit).padStart(3) + '%' : '   —'}\n`,
+      `${String(index + 1).padStart(3)}  ${String(row.inputTokens).padStart(9)}  ${String(row.cacheReadTokens).padStart(10)}  ${String(row.cacheWriteTokens).padStart(11)}  ${String(row.outputTokens).padStart(6)}  ${hit !== undefined ? String(hit).padStart(3) + '%' : '    '}\n`,
     );
-    total.inputTokens += row.inputTokens;
-    total.outputTokens += row.outputTokens;
-    total.cacheReadTokens += row.cacheReadTokens;
-    total.cacheWriteTokens += row.cacheWriteTokens;
+    addUsage(total, row);
   });
   process.stdout.write(`\ntotal: ${formatUsage(total)}\n`);
   const hit = cacheHitRate(total);
   if (hit === undefined && rows.length > 1) {
     process.stdout.write(
-      'note: zero cache reads across the session — the fixed prefix may sit below the provider\'s minimum cacheable size\n',
+      "note: zero cache reads across the session; the fixed prefix may sit below the provider's minimum cacheable size\n",
     );
   }
   return 0;
