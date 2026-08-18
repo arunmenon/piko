@@ -1,0 +1,205 @@
+<title>Agentic Harness Landscape — Competitive Study, Aug 2026</title>
+<style>
+  :root {
+    --bg: #F7F9F8;
+    --surface: #FFFFFF;
+    --code-bg: #EEF3F1;
+    --ink: #1A2321;
+    --muted: #5A6B66;
+    --line: #DCE4E1;
+    --accent: #0E7C66;
+    --accent-ink: #0A5C4C;
+    --warn: #B45309;
+    --good-bg: #E4F2EC;
+  }
+  :root:not([data-theme="light"]) {
+    @media (prefers-color-scheme: dark) {
+      --bg: #0F1513; --surface: #161E1B; --code-bg: #131B18; --ink: #E3EBE8;
+      --muted: #8CA09A; --line: #263230; --accent: #34D3A6; --accent-ink: #6FE0C0;
+      --warn: #E8A75D; --good-bg: #17251F;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0F1513; --surface: #161E1B; --code-bg: #131B18; --ink: #E3EBE8;
+    --muted: #8CA09A; --line: #263230; --accent: #34D3A6; --accent-ink: #6FE0C0;
+    --warn: #E8A75D; --good-bg: #17251F;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--ink); font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 0 20px 80px; }
+  main { max-width: 920px; margin: 0 auto; }
+  code, .mono { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font-size: 0.86em; }
+  header { padding: 56px 0 8px; }
+  .eyebrow { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); margin: 0 0 10px; }
+  h1 { font-size: 33px; line-height: 1.15; margin: 0 0 10px; text-wrap: balance; letter-spacing: -0.015em; }
+  .subtitle { color: var(--muted); font-size: 17px; max-width: 62ch; margin: 0; }
+  h2 { font-size: 21px; margin: 54px 0 6px; letter-spacing: -0.01em; text-wrap: balance; padding-top: 18px; border-top: 1px solid var(--line); }
+  h2 .sec { font-family: ui-monospace, "SF Mono", Menlo, monospace; color: var(--accent); font-size: 13px; margin-right: 10px; font-weight: 600; }
+  h3 { font-size: 16.5px; margin: 26px 0 4px; }
+  p { max-width: 70ch; margin: 10px 0; }
+  ul { max-width: 72ch; padding-left: 22px; }
+  li { margin: 5px 0; }
+  .tablewrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 12px; border-top: 1px solid var(--line); vertical-align: top; }
+  thead th { border-top: none; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; white-space: nowrap; }
+  td.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; white-space: nowrap; }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tag { display: inline-block; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .tag.good { color: var(--accent-ink); border-color: var(--accent); background: var(--good-bg); }
+  .tag.warn { color: var(--warn); border-color: var(--warn); }
+  .tag.dead { text-decoration: line-through; }
+  .callout { border: 1px solid var(--line); border-left: 3px solid var(--accent); background: var(--surface); border-radius: 0 8px 8px 0; padding: 12px 18px; margin: 18px 0; max-width: 76ch; font-size: 14.5px; }
+  .callout.warn { border-left-color: var(--warn); }
+  .callout p { margin: 6px 0; }
+  a { color: var(--accent-ink); }
+  .src { font-size: 12.5px; color: var(--muted); }
+  @media (max-width: 640px) { h1 { font-size: 27px; } }
+</style>
+<main>
+<header>
+  <p class="eyebrow">competitive study · august 2026</p>
+  <h1>The Agentic Harness Landscape</h1>
+  <p class="subtitle">Where terminal coding harnesses stand in August 2026 — the leaders, the field, the measured evidence on harness efficiency, and where a sub-600-token clean-room build (piko) fits. Compiled from primary sources; unverifiable claims flagged or excluded.</p>
+</header>
+
+<h2><span class="sec">01</span>TL;DR</h2>
+<ul>
+  <li><strong>The harness now matters more than the model.</strong> The only controlled factorial (arXiv 2605.23950) measures harness-induced variance at <strong>7.8× model-induced variance</strong>; under a fixed harness, frontier models sit within 2.5–5pp of each other. "Harness engineering" became a named discipline in 2026 (Fowler, Osmani, Weng all published on it).</li>
+  <li><strong>Two leaders, converged at the top:</strong> Claude Code (83.8%) and Codex (83.1%) on Terminal-Bench 2.1 — but at wildly different economics ($553 vs $2,059 for the run) and opposite architectures (44 tools / 20–30k tokens session-start vs ~4–7 tools / 2–5k).</li>
+  <li><strong>Token efficiency is now a measured battleground:</strong> equal-quality stacks differ by 1.65× tokens (Artificial Analysis); Claude Code carries ~33k tokens of pre-prompt overhead vs OpenCode's ~7k (Systima); a 66k-star product (Headroom) exists purely to compress harness waste.</li>
+  <li><strong>The 2026 shake-out was brutal, and the vendor-CLI segment is collapsing:</strong> Gemini CLI killed for consumers (successor closed-source), Kimi CLI superseded, Qwen's free tier axed, Aider unmaintained, Roo Code archived. Model vendors are retreating from open CLIs as loss-leader distribution — and 2026 produced two separate demonstrations (the Gemini shutoff; Anthropic's January block on OpenCode) that a single upstream vendor can revoke a harness's economics overnight. <strong>Provider neutrality graduated from feature to risk control.</strong> Meanwhile interop (MCP + AGENTS.md + ACP) moved to neutral governance, commoditizing integration.</li>
+  <li><strong>The lean thesis is validated but bounded:</strong> minimal harnesses win on cost at frontier-model tier (Harness-Bench's top scorer used the fewest tokens; Databricks measured 3× less context at &gt;2× cost advantage) — but heavy scaffolding wins on weak models, and the fuller harness still wins raw capability benchmarks. Lean is a cost/inspectability bet, not a capability bet.</li>
+</ul>
+
+<h2><span class="sec">02</span>Market structure: four layers, four segments</h2>
+<p>The 2026 stack has stratified. <strong>Models</strong> (increasingly interchangeable under a fixed harness) → <strong>harnesses</strong> (where the variance lives) → <strong>interop protocols</strong> (MCP, AGENTS.md — 60k+ repos, ACP — 25+ agents; all now neutrally governed under the Linux Foundation's AAIF or moving that way) → a genuinely new 2026 tier: <strong>fleet orchestrators</strong> (ruflo 68k★, Orca 48k★, Gastown 18k★…) that run many harnesses in parallel and are harness-agnostic.</p>
+<p>Harnesses themselves segment four ways:</p>
+<div class="tablewrap"><table>
+  <thead><tr><th>Segment</th><th>Thesis</th><th>Exemplars</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Maximalist</strong></td><td>Capability through surface area: sub-agent swarms, hooks, plugins, workflows</td><td>Claude Code (44 tools, 30 hooks, Dynamic Workflows), Qwen Code (Agent Teams, computer use, IM channels), deepagents</td></tr>
+    <tr><td><strong>Pragmatic middle</strong></td><td>Focused tool set, strong defaults, product polish</td><td>Codex CLI (~4–7 tools, kernel sandboxing), Cursor CLI, kimi-code, OpenCode, Goose</td></tr>
+    <tr><td><strong>Minimal / lean</strong></td><td>&lt;1k fixed tokens, few tools, total inspectability, cost per task</td><td>upstream pi (92.6k★), mini-SWE-agent (76.2% on TB2.1 with ~100 lines), HF tau, nanobot, Ante, <strong>piko</strong></td></tr>
+    <tr><td><strong>Swarm-native</strong></td><td>Value from parallelism; cost per agent-hour is the constraint</td><td>Hermes Agent (232k★ — the skills-accumulation counter-thesis), ruflo, AgentsMesh</td></tr>
+  </tbody>
+</table></div>
+<div class="callout">
+  <p><strong>The structural tailwind for lean:</strong> fleet orchestrators multiply harness cost by N agents, so the swarm layer economically rewards cheap-per-task harnesses — Orca explicitly lists pi alongside Codex/Claude Code/OpenCode as runnable engines. And with integration commoditized by neutral protocols, context discipline is one of the few durable differentiators left.</p>
+</div>
+
+<h2><span class="sec">03</span>The leaders: Claude Code vs Codex CLI</h2>
+<div class="tablewrap"><table>
+  <thead><tr><th></th><th>Claude Code (Anthropic)</th><th>Codex CLI (OpenAI)</th></tr></thead>
+  <tbody>
+    <tr><td>Scale</td><td>~$8B annualized revenue reported (unofficial); enterprise-led</td><td>600k → 5M+ weekly users in H1 2026; imports rivals' configs</td></tr>
+    <tr><td>Tools / prompt</td><td><strong>44 built-in tools</strong>; 20–30k tokens before first input; 515 conditional prompt fragments</td><td><strong>~4–7 core tools</strong> (apply_patch is an API primitive); 2–5k tokens</td></tr>
+    <tr><td>Context mgmt</td><td>5 compaction mechanisms incl. microcompaction to disk; auto-compact ≈89%</td><td>Server-side <code>/responses/compact</code> (encrypted); silent context cut 353k→258k (Jul 13)</td></tr>
+    <tr><td>Orchestration</td><td>Dynamic Workflows to hundreds of subagents; forks inherit prompt cache; Agent Teams (4–7× tokens)</td><td>Capped: max 6 threads, depth 1; runs <em>as</em> an MCP server (composable)</td></tr>
+    <tr><td>Sandbox / safety</td><td>bubblewrap/Seatbelt, but <code>/sandbox</code> wraps Bash only; checkpoints miss bash-driven changes</td><td>Kernel-level (Seatbelt/Landlock+seccomp), 3 crisp modes; <strong>no checkpoints at all</strong></td></tr>
+    <tr><td>TB 2.1 / AA Index</td><td><span class="tag good">83.8% #1</span> / 65.5 #1 — and 3.7× cheaper per benchmark point</td><td>83.1% #2 ($2,059 run) / 65.1 #2 — but 39% fewer tokens at equal quality head-to-head</td></tr>
+    <tr><td>Sore points</td><td>Token hunger (#46526), leaky ToolSearch (HTTP MCP loads 120k upfront, #40314), opaque internals, <em>Kahn v. Anthropic</em> over Max-plan value</td><td>Metering failures (cache bugs inflating tokens 10–20×, 9 tracked issues), silent context regression (#32806), xhigh costs 3–5× medium</td></tr>
+  </tbody>
+</table></div>
+<p>The paradox worth naming: <strong>each leader embodies the other's counter-thesis.</strong> Codex proves a near-minimal tool surface can top benchmarks; Claude Code proves a maximalist harness can be cheaper per benchmark point (its models bill less per token). Neither is both lean and cheap — which is precisely the gap the minimal segment targets.</p>
+<h3>What users actually complain about (HN, 2026 — mined from the top threads)</h3>
+<ul>
+  <li><strong>Harness overhead went mainstream:</strong> the "Claude Code sends 33k tokens before reading the prompt" thread drew 706 points; commenters note the overhead persists per request ("10 requests = 330k tokens") and that runaway sub-agent spawns (one report: 171 spawned to verify one thing) exhaust plan quotas in single prompts.</li>
+  <li><strong>Permission fatigue is universal:</strong> heavy users alias <code>--dangerously-skip-permissions</code> within a week ("I felt like Homer Simpson running the nuke plant"); approval prompts "won't scale" with parallel agents — evidence the per-call-prompt model is failing in practice, supporting the sandbox-instead position.</li>
+  <li><strong>Compaction is distrusted:</strong> Codex's non-disableable auto-compaction with no pre-compact rollback is a stated switching reason ("a no-go for me"); users report models "briefly lost on where they are in the plan post-compaction." Observable, reversible compaction is a real differentiator, not a nicety.</li>
+  <li><strong>Doom-loops burn budgets:</strong> "agents stuck in a loop, just burning tokens without any value" recurs across both tools' threads — including Uber reportedly torching its 2026 AI budget in four months. Flail-capping is an unserved need across the whole market.</li>
+  <li><strong>The deepest grievance is <em>invisible economics</em></strong> (GitHub-verified): Claude Code's cache TTL silently regressed 1h→5m (+20–32% cost, proven across 119,866 logged API calls, #46829); v2.1.100 billed ~20k more tokens per request than v2.1.98 on a <em>smaller</em> payload — spoofing the old user-agent restored baseline (#46917); Codex's per-token limit cost jumped 10–20× overnight (#28879, 559 reactions) and GPT-5.5's reasoning was silently truncated to exactly 516 tokens in 53% of responses by May (#30364). Users caught every one of these only by proxying their own traffic. The most-reacted issue in Claude Code's history (#42796, 3,286 reactions) is a quality-regression thread whose closure itself became a grievance. <strong>Auditable billing — a local ledger of every byte sent — is now a competitive feature, not a nicety.</strong></li>
+</ul>
+
+<h2><span class="sec">04</span>The field: status board</h2>
+<div class="tablewrap"><table>
+  <thead><tr><th>Harness</th><th>Stars</th><th>Status Aug 2026</th><th>Note</th></tr></thead>
+  <tbody>
+    <tr><td>Hermes Agent (Nous)</td><td class="num">232k</td><td><span class="tag good">growing</span></td><td>Self-improving skill accumulation — the anti-lean thesis at scale</td></tr>
+    <tr><td>OpenCode (anomalyco)</td><td class="num">199k</td><td><span class="tag good">active</span></td><td>~13M MAU, ~$50–58M ARR (BYO-key + Zen gateway); 11 model-specific system prompts; ~12.4k measured first-turn tokens; TB2.0: 51.7%. Jan 2026: Anthropic briefly blocked requests containing "open code" — provider risk made real</td></tr>
+    <tr><td>Claw Code</td><td class="num">195k</td><td><span class="tag warn">unclear</span></td><td>Clean-room rewrite from the Mar 2026 Claude Code source leak; repo since repurposed</td></tr>
+    <tr><td>Codex CLI</td><td class="num">107k</td><td><span class="tag good">active</span></td><td>Still fully Apache-2.0 OSS</td></tr>
+    <tr><td>Gemini CLI</td><td class="num">107k</td><td><span class="tag dead">deprecated</span></td><td>Consumer service killed 2026-06-18; successor Antigravity CLI is closed-source</td></tr>
+    <tr><td><strong>upstream pi (earendil-works/pi)</strong></td><td class="num">93k</td><td><span class="tag good">active</span></td><td>728 commits/30d; acquired into Earendil Apr 2026, MIT core pledged (RFC-0015); ~8.7M npm installs/mo; 3,682 extension packages; HF ported it (tau); <strong>no official Terminal-Bench entry</strong>; measured end-to-end first-turn input: 2,768 tokens</td></tr>
+    <tr><td>OpenHands</td><td class="num">84k</td><td><span class="tag good">active</span></td><td>TB2.0: 51.9%</td></tr>
+    <tr><td>deer-flow (ByteDance)</td><td class="num">80k</td><td><span class="tag good">active</span></td><td>Long-horizon "SuperAgent" harness; absorbed Trae's momentum</td></tr>
+    <tr><td>ruflo (ex claude-flow)</td><td class="num">68k</td><td><span class="tag good">active</span></td><td>Meta-harness / swarm layer</td></tr>
+    <tr><td>Headroom</td><td class="num">67k</td><td><span class="tag good">growing</span></td><td>Context-compression middleware — the token-waste problem productized</td></tr>
+    <tr><td>Cline</td><td class="num">66k</td><td><span class="tag good">active</span></td><td>Now SDK + IDE + CLI</td></tr>
+    <tr><td>Warp</td><td class="num">64k</td><td><span class="tag good">active</span></td><td>Open-sourced (AGPL); TB2.0: 61.2%</td></tr>
+    <tr><td>Goose (AAIF)</td><td class="num">53k</td><td><span class="tag good">active</span></td><td>Donated by Block to Linux Foundation; ACP adopter</td></tr>
+    <tr><td>Aider</td><td class="num">48k</td><td><span class="tag dead">unmaintained</span></td><td>3 commits in 90 days; maintainer went dark (issue #4613 "Where is Paul?"); 784k PyPI installs/mo on a frozen tool; never adopted tool-calling — its repo-map niche is up for grabs</td></tr>
+    <tr><td>Crush (Charmbracelet)</td><td class="num">27k</td><td><span class="tag good">active</span></td><td>Beautiful Go TUI — but <strong>FSL-1.1 license: source-available, not OSI open source</strong></td></tr>
+    <tr><td>Qwen Code</td><td class="num">27k</td><td><span class="tag good">momentum leader</span></td><td>1,115 commits/30d; fully diverged from Gemini CLI; free tier killed Apr 2026</td></tr>
+    <tr><td>grok-build (xAI)</td><td class="num">26k</td><td><span class="tag good">new</span></td><td>Official xAI harness, 5 weeks old</td></tr>
+    <tr><td>oh-my-pi</td><td class="num">26k</td><td><span class="tag good">active</span></td><td>pi derivative: hash-anchored edits + LSP</td></tr>
+    <tr><td>Roo Code</td><td class="num">24k</td><td><span class="tag dead">archived</span></td><td>Absorbed by fork Kilo Code (27k★)</td></tr>
+    <tr><td>mini-SWE-agent</td><td class="num">7k</td><td><span class="tag good">active</span></td><td>~100 lines; <strong>76.2% on TB2.1 (#8)</strong> — minimalism's proof point</td></tr>
+    <tr><td>kimi-code (Moonshot)</td><td class="num">7k</td><td><span class="tag good">new</span></td><td>TS/MIT rewrite superseding kimi-cli; 6 provider protocols; video input</td></tr>
+    <tr><td>HF tau</td><td class="num">2k</td><td><span class="tag good">new</span></td><td>Hugging Face's official Python port of pi — institutional validation of lean</td></tr>
+    <tr><td>Ante</td><td class="num">2k</td><td><span class="tag good">new</span></td><td>15MB Rust binary, zero deps, offline; TB2.0: 69.4%</td></tr>
+  </tbody>
+</table></div>
+<p class="src">Stars verified live against api.github.com on 2026-08-18. Proprietary players with no public repos: Cursor CLI (TB2.1 #4, 79.3% with Grok 4.5), Amp/Sourcegraph, Droid/Factory (TB2.0: 77.3%), Antigravity CLI.</p>
+
+<h2><span class="sec">05</span>What the evidence actually supports</h2>
+<h3>Verified (cite these)</h3>
+<ul>
+  <li><strong>Harness variance ≫ model variance:</strong> 7.8× (replications 8.7× / 6.8×), 6 of 9 model rankings reverse across harnesses; competent-scaffold swaps move the same model 9.5–15pp. <span class="src">arXiv 2605.23950</span></li>
+  <li><strong>Harness-Bench (controlled, 5,194 trajectories):</strong> 23.8pp gap between best (nanobot 76.2%) and worst (52.4%) harness on identical tasks/models — and the winner used the <em>fewest</em> tokens. Cross-harness variance shrinks as models get stronger. <span class="src">arXiv 2605.27922</span></li>
+  <li><strong>Equal quality, divergent economics:</strong> AA measures Claude Code and Codex at the same index (67) with 21.8M vs 13.2M tokens per task; production cache hit rates 97% vs 90%; one field case took a 7%→84% hit rate from prompt reordering alone for a 59% bill cut. <span class="src">artificialanalysis.ai</span></li>
+  <li><strong>Fixed overhead is real money:</strong> ~33k (Claude Code) vs ~7k (OpenCode) tokens before the user types; MCP servers add 10–20k each (GitHub MCP ~42–55k); a 72KB instruction file adds ~20k per request. <span class="src">Systima via two secondaries; Anthropic official tool-token tables</span></li>
+  <li><strong>Databricks (vendor-internal, directional):</strong> pi sent ~3× less context per turn; same model through different harnesses = &gt;2× cost per task at unchanged quality. Per-harness pass rates were never published (the "highest pass rate" line is Earendil's own claim).</li>
+  <li><strong>End-to-end fixed footprint, measured at the API boundary</strong> (Cdani, identical trivial prompt, Haiku 4.5): Claude Code 28,407 input tokens → OpenCode 12,374 → pi 2,768. Working-set discipline over a task is where the money is: openbench measured pi at 37.6k fresh tokens per solve vs Codex's 117k on the same model.</li>
+</ul>
+<div class="callout warn">
+  <p><strong>The caching inversion — the honest complication in the lean thesis.</strong> Anthropic's minimum cacheable prefix is model-dependent (512 tokens on Opus 5/Fable 5, <strong>1,024 on Sonnet 5</strong>, up to 4,096 on Haiku 4.5); OpenAI's automatic caching also needs 1,024+. A sub-1,000-token fixed prefix therefore often <em>cannot be cached at all</em>, while a large prefix bills at 0.1× from turn two — in the Cdani measurement, OpenCode becomes cheaper per turn than pi in long sessions for exactly this reason. The advantage bites hardest on first turns, short sessions, and fleet fan-outs (many cold starts — which is also the swarm-layer case where lean wins biggest). Net: <strong>fixed-prefix size is a signal of context discipline and a proof of philosophy; the actual mechanism that saves money is per-turn working set</strong>, which is what Databricks and openbench measured. Lean harnesses should compete on cost-per-completed-task, not prompt-size bragging rights.</p>
+</div>
+<h3>Debunked (retire these)</h3>
+<ul>
+  <li>"16-point Cursor-vs-Claude-Code swing" and "36-point CORE-Bench swing" — rest on a 93% score exceeding every entry on the official boards; inconsistent attribution across sources.</li>
+  <li>"pi tops the Terminal-Bench leaderboard" — <strong>pi has no official TB submission at all</strong> (verified against all three boards; its Harbor adapter is dormant since Dec 2025).</li>
+  <li>SEO-tier TB scores in the 85–92% range attributed to harnesses — those are Artificial Analysis <em>model</em> rankings under the fixed Terminus 2 reference harness, a different board.</li>
+  <li>Vendor-submitted SWE-bench Verified numbers as model comparisons — 99 of 100 entries ran the vendor's own scaffold; they are model+harness composites.</li>
+</ul>
+
+<h2><span class="sec">06</span>Where piko sits</h2>
+<p>piko (<a href="https://github.com/arunmenon/piko">github.com/arunmenon/piko</a>) is a clean-room ~3.1k-LOC implementation of the lean thesis: 4 tools, ~557 fixed tokens (CI-gated &lt;1,000), zero runtime deps, JSONL-observable sessions, headless self-spawn as the sub-agent primitive, auto-compaction into new session files.</p>
+<div class="tablewrap"><table>
+  <thead><tr><th></th><th>Claude Code</th><th>Codex CLI</th><th>upstream pi</th><th>OpenCode</th><th>piko</th></tr></thead>
+  <tbody>
+    <tr><td>Fixed context (design)</td><td class="num">20–30k</td><td class="num">2–5k</td><td class="num">&lt;1k</td><td class="num">~7k</td><td class="num"><span class="tag good">~557, CI-enforced</span></td></tr>
+    <tr><td>Measured first-turn input (API boundary)</td><td class="num">28,407</td><td class="num">—</td><td class="num">2,768</td><td class="num">12,374</td><td class="num"><span class="tag good">~520 (live usage log)</span></td></tr>
+    <tr><td>Tools</td><td class="num">44</td><td class="num">~4–7</td><td class="num">4</td><td class="num">~10</td><td class="num">4 (+explicit ext)</td></tr>
+    <tr><td>Compaction</td><td>5 mechanisms, opaque threshold</td><td>server-side, encrypted</td><td>auto</td><td>auto</td><td>auto + manual, <strong>new-file observable</strong></td></tr>
+    <tr><td>Session durability</td><td>checkpoints (miss bash changes)</td><td>none</td><td>resume/branch</td><td>resume</td><td>resume/branch + crash repair + locking</td></tr>
+    <tr><td>Providers</td><td>Anthropic(+clouds)</td><td>OpenAI</td><td>multi</td><td>multi</td><td>Anthropic + any OpenAI-compatible</td></tr>
+    <tr><td>Measured economics</td><td>~$13/dev/day (official)</td><td>$100–200/dev/mo (reported)</td><td>3× less context (Databricks); $0.028/success (Composio, confounded)</td><td>4.7× less overhead than CC</td><td><strong>6× cheaper vs reference harness on cleanly-solved tasks; hello-world in 980 tokens</strong> (own 4-arm TB-core experiment). With the flail guard (Aug 18): equal accuracy at 59% less total spend; ~2.2× cheaper per solve than terminus-2 counting failures; worst failed grind cut 79% (231k → 49k tokens)</td></tr>
+    <tr><td>Ecosystem</td><td>plugins/marketplace/enterprise</td><td>5M users, plugins</td><td>packages, ports (tau), derivatives</td><td>large community</td><td><span class="tag warn">none — personal/experimental</span></td></tr>
+  </tbody>
+</table></div>
+<div class="callout">
+  <p><strong>Honest position:</strong> piko is architecturally competitive with the lean segment's best on every measured axis, and is unusual in publishing its own adversarial benchmark including the result that its solve rate trails the benchmark-native reference (5/10 vs 7/10) even as its cost per clean solve is ~6× lower. What it is not: a product. No ecosystem, no distribution, one maintainer, 10-task evidence base. Its value is as a verified reference implementation of the lean thesis — and as leverage: 3.1k auditable lines that one person can fully understand and modify beats 512k leaked lines nobody can.</p>
+</div>
+
+<h2><span class="sec">07</span>Strategic read</h2>
+<ul>
+  <li><strong>The lean bet is the right bet for frontier models and fleets</strong> — every controlled measurement (Harness-Bench, AA, our own strong-model cell) shows minimal context winning on cost at equal-or-near quality as model capability rises, and the swarm layer multiplies that advantage by N.</li>
+  <li><strong>But capability benchmarks still reward scaffolding.</strong> Claude Code tops TB2.1 <em>with</em> its 44 tools; LangChain's deepagents gained 13.7pp from harness engineering that ablations attribute to tools/middleware/memory, <em>not</em> prompt slimming. The intellectually honest lean pitch is cost + inspectability + auditability, not "matches capability everywhere."</li>
+  <li><strong>Differentiation is migrating</strong> from integration surface (commoditized by MCP/ACP/AGENTS.md) to context discipline, cache engineering, and trust (Gemini CLI's closed-sourcing and the Kahn lawsuit made openness and predictable billing selling points).</li>
+  <li><strong>Minimalism alone is an occupied position.</strong> Upstream pi holds it with 93k stars, Earendil funding, ~8.7M installs/month and a 3,682-package extension ecosystem — and its fastest-growing fork (oh-my-pi, 3,758 commits/30d) got there by <em>rejecting</em> minimalism. Sub-1k fixed tokens is table stakes and proof-of-philosophy, not the value proposition. The unclaimed adjacent axes: a single-binary Go/Rust minimal harness with an OSI license (pi and piko are both Node), the ~200-token MCP-proxy pattern (pi-mcp-adapter) instead of schema loading, and being the best cheap swappable <em>backend</em> behind meta-harnesses (Databricks' Omnigent treats Claude Code/Codex/pi as one-line-swappable — enterprises are commoditizing the harness).</li>
+  <li><strong>For piko specifically:</strong> (1) keep the budget gate and observable-compaction as identity, but frame the headline metric as <strong>cost per completed task with published methodology</strong>, not prefix size (see the caching inversion); (2) <strong>flail-capping: shipped and measured</strong> — equal accuracy at 59% less spend on the benchmark re-run, the market's shared doom-loop complaint answered; (3) <strong>repo map: shipped</strong> — a zero-dep symbol map (5th tool, ~200 tokens to map a package) reviving Aider's abandoned context-supply idea; (4) an official Terminal-Bench 2.x submission via Harbor would make it one of very few lean harnesses with a verifiable public number — upstream pi never submitted; (5) adopt the MCP-proxy pattern if integrations are ever needed; (6) ACP support plugs into the editor layer cheaply; (7) provider neutrality and the local-model path are durability requirements now, not conveniences — piko already has both.</li>
+</ul>
+
+<h2><span class="sec">08</span>What the blogs get wrong (verified corrections)</h2>
+<ul>
+  <li>pi is by <strong>Mario Zechner</strong> (now at Earendil, with Ronacher and Steinberger) — not "by Armin Ronacher."</li>
+  <li>Qwen Code is <strong>not</strong> "just a Gemini CLI fork" — the maintainers formally stopped syncing at v0.1 and the feature surface has no Gemini CLI equivalent.</li>
+  <li>Terminal-Bench 1.0 scores ("Droid tops at 58.75%") are still quoted as current; the boards are not comparable across versions.</li>
+  <li>Gemini CLI's README still advertises a free tier that stopped serving on 2026-06-18.</li>
+  <li>"Codex is 4× more efficient" conflates tokens with dollars — on TB2.1 Claude Code was 3.7× <em>cheaper</em> at indistinguishable accuracy while plausibly using more tokens.</li>
+</ul>
+
+<h2><span class="sec">09</span>Primary sources</h2>
+<p class="src">tbench.ai leaderboards (2.0/2.1) · artificialanalysis.ai coding-agent index &amp; methodology · arXiv 2605.23950, 2605.27922, 2606.09498 · databricks.com/blog benchmarking post · earendil.com · mariozechner.at (pi launch &amp; sell-out posts) · code.claude.com docs (tools reference, costs, prompt-caching, changelog) · learn.chatgpt.com pricing/changelog · github.com/anthropics/claude-code &amp; openai/codex issue trackers · developers.googleblog.com (Antigravity transition) · QwenLM/qwen-code README &amp; docs · MoonshotAI/kimi-code · linuxfoundation.org (AAIF) · agentclientprotocol.com · agents.md · live api.github.com star/activity verification (2026-08-18) · piko's own 4-arm Terminal-Bench-core experiment (this repo, bench/)</p>
+</main>
