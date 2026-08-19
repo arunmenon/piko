@@ -18,3 +18,11 @@ new decisions get an ADR in the same change that implements them.
 | 0009 | Hard run budgets enforced in the loop | accepted |
 | 0010 | Fail-closed headless and JSON automation contract | accepted |
 | 0011 | Persistent approve/edit/reject workflow | **proposed** |
+| 0012 | Tool extensions are trusted controller code (amends 0002) | accepted |
+| 0013 | Three separate event surfaces; telemetry redacts by default | accepted |
+| 0014 | Prompt-cache discipline | accepted |
+| 0015 | Durable single-writer session store | accepted |
+| 0016 | Credential handling | accepted |
+
+Headers may carry `Amends` / `Amended-by` / `Depends on` lines; the records
+they link are never edited beyond those pointers and dated addenda.

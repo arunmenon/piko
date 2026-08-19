@@ -27,3 +27,13 @@ shell's job; personas are prompt templates.
 - Costs: no automatic result aggregation, no cross-child cancellation tree, no
   cache inheritance between parent and child (children re-pay the prefix). These
   are v0.3+ concerns (structured child-run identities) if real use demands them.
+
+## Addendum (2026-08-19)
+
+0006 later made host bash deny-by-default, which interacts with this decision:
+in the default contained configuration piko has no delegation path at all, and
+enabling sub-agents means granting `--allow-host-bash`. This coupling is
+accepted for now — spawning is process execution and honestly carries its trust
+level — but it makes a future "contained spawn" primitive (children launched
+inside the sandboxed executor, without general host bash) the natural follow-on
+decision when the container/microVM executor (roadmap v0.3) lands.

@@ -28,3 +28,5 @@ Two mechanisms, both visible and reversible:
   so audits can follow a task across files.
 - The preflight gap (deciding from the last request's size, not the next one)
   was identified in the Aug 2026 audit and is addressed by the v0.2 preflight work.
+  (2026-08-19: that work has landed — next-request preflight estimation shipped
+  in the v0.2 tranche; this consequence is closed.)

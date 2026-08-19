@@ -1,6 +1,7 @@
 # 0002 — Files and CLIs over MCP; five built-in tools
 
 Status: accepted (2026-08-12, extended 2026-08-18 with map; backfilled 2026-08-19)
+Amended-by: 0012 (explicitly listed extensions are the sanctioned exception to "never resident schemas")
 
 ## Context
 
