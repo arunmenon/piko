@@ -1,0 +1,24 @@
+✔ max_tokens is incomplete and truncated tool calls never execute (3.469417ms)
+✔ tool-call budget is enforced before each call in a single model response (1.632ms)
+✔ provider-reported token budget prevents following tool side effects (0.542333ms)
+✔ a final response that overshoots a provider token ceiling is not reported as completed (0.475917ms)
+✔ wall-time budget aborts a cooperative tool and reports budget exhaustion (22.365875ms)
+✔ wall-time budget returns even when an extension ignores cancellation (21.976791ms)
+✔ wall-time budget returns when a custom completion stream ignores cancellation (25.785458ms)
+warning: session logging disabled — Error: injected terminal fsync failure
+✔ a hostile observer cannot hold a run open past its wall deadline (25.400583ms)
+✔ tool output is bounded before it enters conversation context (1.06425ms)
+✔ run budgets reject fractional counts, timer overflow, and unusably small tool caps (0.870167ms)
+✔ undefined partial-budget fields cannot erase mandatory defaults (0.760458ms)
+✔ known context windows impose a per-request output cap and disable oversized thinking (0.330875ms)
+✔ the documented 8192 thinking budget is enabled when context headroom permits (0.166708ms)
+✔ thinking-only end_turn and tool_use-without-calls are not successful answers (0.888833ms)
+✔ a terminal journal failure downgrades an otherwise completed run (38.08125ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 330.968375

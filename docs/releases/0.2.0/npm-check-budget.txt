@@ -1,0 +1,9 @@
+
+> check-budget
+> node --import tsx scripts/check-budget.ts
+
+system prompt: ~299 tokens (1196 chars)
+tool schemas:  ~448 tokens (1790 chars)
+total fixed:   ~747 / 1000 tokens
+
+within budget

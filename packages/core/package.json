@@ -1,6 +1,6 @@
 {
   "name": "@pi/core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Agent loop, tools, policy, journaling, and sessions for the piko harness",
   "private": true,
   "type": "module",
@@ -38,6 +38,6 @@
     "linux"
   ],
   "dependencies": {
-    "@pi/ai": "0.1.0"
+    "@pi/ai": "0.2.0"
   }
 }

@@ -1,0 +1,25 @@
+
+> preeval
+> npm run build
+
+
+> build
+> tsc -b packages/ai packages/core packages/cli
+
+
+> eval
+> node --import tsx eval/run.ts --model gpt-4.1-mini
+
+PASS  create-file  (5.2s, 2 calls, completed)
+PASS  fix-syntax-error  (7.4s, 4 calls, completed)
+PASS  rename-function  (13.7s, 6 calls, completed)
+PASS  bump-version  (6.5s, 5 calls, completed)
+PASS  fix-off-by-one  (8.6s, 5 calls, completed)
+PASS  new-module  (6.6s, 3 calls, completed)
+PASS  count-todos  (4.9s, 4 calls, completed)
+PASS  modernize-var  (8.4s, 6 calls, completed)
+PASS  fibonacci  (7.8s, 3 calls, completed)
+PASS  multi-step-feature  (8.4s, 5 calls, completed)
+
+10/10 passed
+artifacts: /Users/arunmenon/projects/pi/artifacts/eval/2026-08-19T18-11-02-239Z-a4e4d59d

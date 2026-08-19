@@ -118,6 +118,8 @@ test('an explicitly requested locked session fails instead of silently starting 
     const result = spawnSync(process.execPath, [cli, '--json', '--model', 'test-model', '--session', session.file, 'hello'], {
       cwd: dir,
       encoding: 'utf8',
+      // hermetic: the lock check under test must not depend on ambient credentials
+      env: { ...process.env, OPENAI_API_KEY: 'test-key-hermetic' },
     });
     assert.equal(result.status, 1);
     const row = JSON.parse(result.stdout.trim()) as { event: { type: string; error: string } };

@@ -1,6 +1,6 @@
 {
   "name": "@pi/cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Interactive and headless CLI for the piko coding-agent harness",
   "private": true,
   "type": "module",
@@ -41,7 +41,7 @@
     "linux"
   ],
   "dependencies": {
-    "@pi/ai": "0.1.0",
-    "@pi/core": "0.1.0"
+    "@pi/ai": "0.2.0",
+    "@pi/core": "0.2.0"
   }
 }

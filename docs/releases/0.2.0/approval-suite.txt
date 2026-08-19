@@ -1,0 +1,27 @@
+warning: session logging disabled — Error: injected approval fsync failure
+✔ an unconfigured approval policy changes nothing: the gated-name tool just runs (75.611792ms)
+✔ a gated call suspends the turn before dispatch and makes no further model request (39.2495ms)
+✔ ungated calls before the gate run in order; later calls stay planned (56.165625ms)
+✔ journal rejects invalid approval transitions before appending anything (24.365125ms)
+✔ a rejection is terminal on its own and carries the human reason (27.733875ms)
+✔ sessions written before the schema marker still parse; a newer generation is refused (6.129417ms)
+✔ crash while awaiting approval: reopen keeps awaiting_approval and does not repair the batch (43.643959ms)
+✔ decided(approved) with no started row dispatches exactly once on resume (59.71575ms)
+✔ a started call with no terminal row is still outcome_unknown beside a pending approval (32.658709ms)
+✔ resume applies approve, edit, and reject and continues the turn (101.352125ms)
+✔ an edit with invalid arguments is refused before anything is journaled (37.228834ms)
+✔ a partially decided batch runs in order and suspends again at the next undecided call (109.986916ms)
+✔ tool-call budget accounting spans suspension and still wins on resume (76.880292ms)
+✔ token accounting carries across a suspension so a resumed run cannot exceed its ceiling (123.029875ms)
+✔ a resumed run inherits the suspended ceilings and journals an explicit raise (198.306208ms)
+✔ a cross-process resume reports honestly on results whose payload was never recorded (85.693166ms)
+✔ an approval request that cannot be journaled fails closed instead of suspending (31.23475ms)
+✔ a suspended session refuses a second concurrent turn and reports its pending work (59.154917ms)
+ℹ tests 18
+ℹ suites 0
+ℹ pass 18
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1201.082541

@@ -1,0 +1,30 @@
+✔ write then read roundtrip (21.364292ms)
+✔ read with offset and limit reports the window (3.267833ms)
+✔ edit requires unique match unless replace_all (19.90725ms)
+✔ edit rejects an oversized file from metadata before reading it (1.394833ms)
+✔ replace_all is literal and refuses replacement amplification beyond the file cap (17.8025ms)
+✔ bash runs commands and persists cwd across calls (134.995417ms)
+✔ bash reports nonzero exit as error output (58.241209ms)
+✔ bash timeout kills the whole process group (background children included) (1063.112375ms)
+✔ bash kills background descendants before reporting a successful shell exit (63.807875ms)
+✔ bash abort signal terminates a running command (332.331584ms)
+✔ write rejects non-string content instead of truncating the file (4.400791ms)
+✔ file tools reject parent traversal and absolute paths by default (2.171917ms)
+✔ absolute-path opt-in still confines canonical targets to the workspace (2.642042ms)
+✔ file tools reject symlink escapes for existing and new targets (4.578125ms)
+✔ read, write, and edit reject special files without opening them (47.597167ms)
+✔ write and edit atomically replace regular files and preserve their mode (28.522584ms)
+✔ bash inherits a minimal environment and omits credentials by default (50.34075ms)
+✔ bash policy can explicitly inject environment without inheriting other variables (49.034167ms)
+✔ bash refuses to persist a cwd outside the stable workspace (47.505375ms)
+✔ bash policy blocks host execution before spawning a process (1.652833ms)
+✔ bash is fail-closed when a core consumer omits tool policy (0.381709ms)
+✔ truncateMiddle keeps head and tail with a marker (0.168ms)
+ℹ tests 22
+ℹ suites 0
+ℹ pass 22
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1972.958458

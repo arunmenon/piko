@@ -1,6 +1,6 @@
 {
   "name": "@pi/ai",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Streaming provider adapters and token accounting for the piko agent harness",
   "private": true,
   "type": "module",

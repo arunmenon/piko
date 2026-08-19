@@ -1,0 +1,15 @@
+✔ map extracts top-level symbols across languages and skips vendor dirs (3.674542ms)
+✔ map scopes to a subtree via path (0.775833ms)
+✔ map reports an empty subtree gracefully (1.775541ms)
+✔ map neither scopes through nor walks a symlink escape (3.075167ms)
+✔ map bounds scheduled and visited directories without recursive stack growth (24.290084ms)
+✔ map bounds total directory entries even when ignored files dominate the tree (549.357667ms)
+✔ map bounds aggregate source bytes and observes preexisting cancellation (98.122375ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 691.708792

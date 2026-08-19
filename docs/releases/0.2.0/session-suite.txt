@@ -1,0 +1,31 @@
+warning: ignored a corrupt trailing line in /var/folders/y3/d66g_m9923v6c8pvnhzmbn3c0000gn/T/pi-sessions-fMzY4C/8a40817e-8af1-4a9b-82a2-e3667b5fd908.jsonl
+warning: ignored a corrupt trailing line in /var/folders/y3/d66g_m9923v6c8pvnhzmbn3c0000gn/T/pi-sessions-fMzY4C/ca9e1d5a-737f-41a9-8fb0-625f51693f63.jsonl
+✔ session create/append/open roundtrip with usage totals (36.152834ms)
+✔ an append failure poisons that Session object until the journal is reopened (15.281083ms)
+✔ lineage usage checkpoints bound deep accounting and legacy limits are nonfatal (38.67325ms)
+✔ open skips a corrupt partial trailing line instead of refusing the session (10.589083ms)
+✔ a resumed append repairs malformed and valid unterminated tails (32.211833ms)
+✔ open rejects corrupt or schema-invalid rows anywhere except a partial JSON tail (13.986958ms)
+✔ UUID creation is exclusive and session files are owner-only (372.986ms)
+✔ synthesizeInterruptedResults repairs a transcript ending in unmatched tool calls (0.447625ms)
+✔ branch copies messages up to the given index into a sibling file (31.575167ms)
+✔ branch snapshot durability is bounded by bytes rather than per-message fsyncs (87.242042ms)
+✔ locked branch is reserved before copying and a continued parent remains a latest-session candidate (43.858333ms)
+✔ latest session follows a committed compaction child instead of parent mtime (35.797625ms)
+✔ latest session ignores an uncommitted compaction child (15.295333ms)
+✔ latest session ignores a branch until its copy is marked ready (16.845042ms)
+✔ v2 lifecycle journal distinguishes planned, started, completed, and unknown tool outcomes (54.417125ms)
+✔ model, compaction, and terminal run lifecycle rows survive replay (24.000041ms)
+✔ v2 request completion usage is authoritative while legacy history remains compatible (25.760583ms)
+✔ invalid lifecycle transitions fail before they are appended (12.188917ms)
+✔ session locks are exclusive, owner-token protected, and owner-only (6.803708ms)
+✔ latest-session discovery treats a dead-PID lock as contention (12.709ms)
+✔ session locks share one process exit hook instead of leaking listeners (102.039125ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 21
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1011.539125
