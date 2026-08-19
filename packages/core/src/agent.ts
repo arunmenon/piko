@@ -1,6 +1,5 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { mkdirSync, statSync, unlinkSync } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
 import {
   addUsage,
   emptyUsage,
@@ -15,8 +14,33 @@ import {
   type Usage,
   type UserBlock,
 } from '@pi/ai';
-import { Session, tryLockSession } from './session.js';
-import type { Tool, ToolContext, ToolOutput } from './tools/types.js';
+import {
+  SESSION_ROTATE_BYTES,
+  Session,
+  releaseSessionLock,
+  usageAcrossSessionLineageDetailed,
+  type ToolExecutionState,
+} from './session.js';
+import {
+  defaultToolExecutionPolicy,
+  type Tool,
+  type ToolContext,
+  type ToolExecutionPolicy,
+  type ToolOutput,
+} from './tools/types.js';
+import { truncateMiddle } from './truncate.js';
+import { atomicWriteTextFile, resolveWorkspacePath, resolveWorkspaceRoot } from './tools/filesystem.js';
+import { validateToolArguments } from './tools/validation.js';
+import {
+  createRuntimeEvent,
+  createSpanEnded,
+  createSpanStarted,
+  createTelemetryContext,
+  createTelemetryId,
+  type Observer,
+  type RuntimeTelemetryEvent,
+  type TelemetryContext,
+} from './telemetry.js';
 
 /** structural interface satisfied by LLMClient — lets tests drive the loop without a network */
 export interface CompletionClient {
@@ -24,6 +48,66 @@ export interface CompletionClient {
 }
 
 const KEEP_RECENT_TOKENS = 20_000;
+const DEFAULT_MAX_TOOL_CALLS = 100;
+const DEFAULT_MAX_WALL_TIME_MS = 30 * 60 * 1000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
+const MAX_TIMER_MS = 2_147_483_647;
+export const MIN_TOOL_OUTPUT_BYTES = 256;
+export const MAX_USER_INPUT_BYTES = 1_048_576;
+const COMPACTION_SUMMARY_INPUT_RESERVE_TOKENS = 1_024;
+const COMPACTION_SUMMARY_MAX_TOKENS = 768;
+const COMPACTION_SYSTEM_PROMPT =
+  'You condense coding sessions into faithful handoff notes. Be terse, concrete, and never invent omitted details.';
+const DEFAULT_REQUEST_MAX_TOKENS = 8_192;
+const THINKING_RESPONSE_RESERVE_TOKENS = 1_024;
+const OBSERVER_OPERATION_TIMEOUT_MS = 1_000;
+
+export interface RunBudget {
+  /** Maximum provider requests, including compaction requests, in one user turn. */
+  maxModelRequests: number;
+  /** Maximum tool calls that may begin in one user turn. */
+  maxToolCalls: number;
+  /** End-to-end deadline for one user turn. */
+  maxWallTimeMs: number;
+  /** Maximum serialized output retained from one tool call. */
+  maxToolOutputBytes: number;
+  /** Optional cumulative provider-reported input-token ceiling for one turn. */
+  maxInputTokens?: number;
+  /** Optional cumulative provider-reported output-token ceiling for one turn. */
+  maxOutputTokens?: number;
+  /** Optional cumulative provider-reported input + output ceiling for one turn. */
+  maxTotalTokens?: number;
+}
+
+export type TurnStatus = 'completed' | 'incomplete' | 'budget_exceeded' | 'canceled';
+export type TurnStopReason =
+  | 'end_turn'
+  | 'max_tokens'
+  | 'provider_stop'
+  | 'empty_response'
+  | 'context_window'
+  | 'model_requests'
+  | 'tool_calls'
+  | 'wall_time'
+  | 'input_tokens'
+  | 'output_tokens'
+  | 'total_tokens'
+  | 'flail_stop'
+  | 'persistence'
+  | 'user_abort';
+
+interface ToolCallExecution {
+  result: ToolOutput;
+  /** Dispatch began, but cancellation won before the executor reported a terminal result. */
+  outcomeUnknown?: boolean;
+}
+
+class CompactionPersistenceError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'CompactionPersistenceError';
+  }
+}
 
 /**
  * Earliest message index whose tail fits the keep budget, constrained to clean
@@ -31,37 +115,54 @@ const KEEP_RECENT_TOKENS = 20_000;
  * its results). Falls back to the most recent boundary when one turn is oversized.
  */
 export function chooseKeepBoundary(messages: Message[], keepTokens = KEEP_RECENT_TOKENS): number {
-  const boundaries: number[] = [];
-  for (let index = 0; index < messages.length; index++) {
+  let suffixChars = 2; // JSON array brackets
+  let latestBoundary: number | undefined;
+  let earliestFittingBoundary: number | undefined;
+  for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index]!;
+    suffixChars += JSON.stringify(message).length + (index === messages.length - 1 ? 0 : 1);
     if (message.role === 'user' && !message.content.some((block) => block.type === 'toolResult')) {
-      boundaries.push(index);
+      latestBoundary ??= index;
+      if (Math.ceil(suffixChars / 4) <= keepTokens) earliestFittingBoundary = index;
     }
   }
-  if (boundaries.length === 0) return messages.length;
-  for (const index of boundaries) {
-    if (estimateTokens(JSON.stringify(messages.slice(index))) <= keepTokens) return index;
-  }
-  return boundaries[boundaries.length - 1]!;
+  if (latestBoundary === undefined) return messages.length;
+  return earliestFittingBoundary ?? latestBoundary;
 }
 
 /** If the transcript ends in an assistant message with tool calls but no results,
  *  produce a user message of synthesized error results (both APIs reject the gap). */
-export function synthesizeInterruptedResults(messages: Message[]): Message | undefined {
+export function synthesizeInterruptedResults(
+  messages: Message[],
+  executions: readonly ToolExecutionState[] = [],
+): Message | undefined {
   const last = messages[messages.length - 1];
   if (!last || last.role !== 'assistant') return undefined;
   const calls = last.content.filter((block): block is ToolCallBlock => block.type === 'toolCall');
   if (calls.length === 0) return undefined;
+  const stateByCallId = new Map(executions.map((state) => [state.call.id, state]));
   return {
     role: 'user',
     content: calls.map(
-      (call): ToolResultBlock => ({
-        type: 'toolResult',
-        toolCallId: call.id,
-        toolName: call.name,
-        content: [{ type: 'text', text: 'interrupted: this tool call never ran (session was resumed)' }],
-        isError: true,
-      }),
+      (call): ToolResultBlock => {
+        const state = stateByCallId.get(call.id);
+        let text =
+          'interrupted: the prior process ended before recording this tool result; the outcome is unknown and the call must not be repeated without reconciliation';
+        if (state?.status === 'planned' || state?.status === 'skipped') {
+          text = 'interrupted: this tool call was durably recorded as not started; it did not run';
+        } else if (state?.status === 'completed') {
+          text = 'interrupted: this tool call completed, but its result payload was not recorded; do not repeat it without reconciliation';
+        } else if (state?.status === 'failed') {
+          text = `interrupted: this tool call finished with an error before its result payload was recorded${state.error ? `: ${state.error}` : ''}`;
+        }
+        return {
+          type: 'toolResult',
+          toolCallId: call.id,
+          toolName: call.name,
+          content: [{ type: 'text', text }],
+          isError: true,
+        };
+      },
     ),
   };
 }
@@ -73,11 +174,16 @@ export type AgentEvent =
   | { type: 'tool_end'; call: ToolCallBlock; result: ToolOutput }
   | { type: 'response_done'; message: AssistantMessage; stopReason: StopReason; usage: Usage }
   | { type: 'compacted'; dropped: number; sessionFile?: string }
+  | { type: 'session_rotated'; sessionFile: string }
   | { type: 'flail_nudge'; consecutiveFailures: number }
   | { type: 'flail_stop'; consecutiveFailures: number }
   | { type: 'offloaded'; count: number; savedChars: number }
   | { type: 'steered'; text: string }
-  | { type: 'turn_done'; iterations: number; usage: Usage };
+  | {
+      type: 'budget_exceeded';
+      reason: 'model_requests' | 'tool_calls' | 'wall_time' | 'input_tokens' | 'output_tokens' | 'total_tokens';
+    }
+  | { type: 'turn_done'; iterations: number; toolCalls: number; usage: Usage; status: TurnStatus; reason: TurnStopReason };
 
 export interface AgentOptions {
   client: CompletionClient;
@@ -86,8 +192,18 @@ export interface AgentOptions {
   tools: Tool[];
   cwd: string;
   session?: Session;
+  /** stable workspace and shell-environment policy applied to every built-in tool call */
+  toolPolicy?: ToolExecutionPolicy;
+  /** best-effort structured telemetry observer; never receives prompt/tool content from core */
+  observer?: Observer;
+  /** optional parent run correlation for embedded/subagent use */
+  parentRunId?: string;
   /** cap on model calls per user input — the headless --max-turns guard */
   maxIterations?: number;
+  /** hard per-turn budgets; individual values override the safe defaults */
+  budget?: Partial<RunBudget>;
+  /** deadline for each provider request, including streaming and retries (default 5 minutes) */
+  requestTimeoutMs?: number;
   /** extended-thinking budget in tokens (Anthropic models) */
   thinkingBudget?: number;
   /** model context window in tokens — enables auto-compaction when set */
@@ -109,18 +225,123 @@ const STOP_TEXT =
   '[harness] Stopping this turn: repeated tool failures with no progress. Do not call more tools. Summarize what you tried, the current state of the work, and what is blocking you.';
 const OFFLOAD_BATCH_MIN_CHARS = 8_000; // offloading rewrites history (a cache break), so only do it in worthwhile batches
 
+function inputTokens(usage: Usage): number {
+  return usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
+}
+
+function totalTokens(usage: Usage): number {
+  return inputTokens(usage) + usage.outputTokens;
+}
+
+function usageBudgetReason(usage: Usage, budget: RunBudget): TurnStopReason | undefined {
+  if (budget.maxInputTokens !== undefined && inputTokens(usage) >= budget.maxInputTokens) return 'input_tokens';
+  if (budget.maxOutputTokens !== undefined && usage.outputTokens >= budget.maxOutputTokens) return 'output_tokens';
+  if (budget.maxTotalTokens !== undefined && totalTokens(usage) >= budget.maxTotalTokens) return 'total_tokens';
+  return undefined;
+}
+
+/** A completed response may consume exactly its ceiling; only an overshoot invalidates that completion. */
+function exceededUsageBudgetReason(usage: Usage, budget: RunBudget): TurnStopReason | undefined {
+  if (budget.maxInputTokens !== undefined && inputTokens(usage) > budget.maxInputTokens) return 'input_tokens';
+  if (budget.maxOutputTokens !== undefined && usage.outputTokens > budget.maxOutputTokens) return 'output_tokens';
+  if (budget.maxTotalTokens !== undefined && totalTokens(usage) > budget.maxTotalTokens) return 'total_tokens';
+  return undefined;
+}
+
+function unexecutedToolResults(calls: ToolCallBlock[], explanation: string): Message | undefined {
+  if (calls.length === 0) return undefined;
+  return {
+    role: 'user',
+    content: calls.map(
+      (call): ToolResultBlock => ({
+        type: 'toolResult',
+        toolCallId: call.id,
+        toolName: call.name,
+        content: [{ type: 'text', text: explanation }],
+        isError: true,
+      }),
+    ),
+  };
+}
+
+function boundToolOutput(result: ToolOutput, maxBytes: number): ToolOutput {
+  const bytes = Buffer.byteLength(JSON.stringify(result.content));
+  if (bytes <= maxBytes) return result;
+  const readable = result.content
+    .map((block) => (block.type === 'text' ? block.text : `[${block.mimeType} image omitted by output budget]`))
+    .join('\n');
+  const marker = `[tool output capped: ${bytes} serialized bytes exceeded ${maxBytes}]`;
+  const candidate = (chars: number): ToolOutput => ({
+    content: [{ type: 'text', text: chars > 0 ? `${truncateMiddle(readable, chars)}\n${marker}` : marker }],
+    ...(result.isError ? { isError: true } : {}),
+  });
+  let chars = Math.min(readable.length, maxBytes);
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const bounded = candidate(chars);
+    const candidateBytes = Buffer.byteLength(JSON.stringify(bounded.content));
+    if (candidateBytes <= maxBytes) return bounded;
+    if (chars === 0) break;
+    chars = Math.max(0, Math.min(chars - 1, Math.floor((chars * maxBytes) / candidateBytes) - 1));
+  }
+  // The configured minimum guarantees this final diagnostic fits.
+  return {
+    content: [{ type: 'text', text: '[tool output capped]' }],
+    ...(result.isError ? { isError: true } : {}),
+  };
+}
+
+async function nextStreamEvent<T>(iterator: AsyncIterator<T>, signal?: AbortSignal): Promise<IteratorResult<T>> {
+  if (!signal) return iterator.next();
+  if (signal.aborted) throw signal.reason ?? new Error('aborted');
+  return new Promise<IteratorResult<T>>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      callback();
+    };
+    const onAbort = () => finish(() => reject(signal.reason ?? new Error('aborted')));
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve()
+      .then(() => iterator.next())
+      .then(
+        (result) => finish(() => resolve(result)),
+        (error: unknown) => finish(() => reject(error)),
+      );
+  });
+}
+
+function releaseStream<T>(iterator: AsyncIterator<T>): void {
+  try {
+    const released = iterator.return?.();
+    if (released) void Promise.resolve(released).catch(() => undefined);
+  } catch {
+    /* a hostile/custom iterator cannot block or fail run finalization */
+  }
+}
+
 export class Agent {
   readonly messages: Message[];
   readonly usageTotal: Usage = emptyUsage();
+  /** Whether usageTotal includes every ancestor rather than a bounded legacy prefix. */
+  readonly usageHistoryComplete: boolean;
   lastTurnUsage: Usage = emptyUsage();
   requestCount = 0;
-  /** mutable so /model can switch mid-session */
-  model: string;
+  /** Immutable with its provider client; model switches rebuild the Agent atomically. */
+  readonly model: string;
   /** context tokens consumed by the most recent request (from real usage, not estimates) */
   private lastContextTokens = 0;
+  /** estimate for the same request as lastContextTokens, used to project newly appended content */
+  private lastEstimatedRequestTokens = 0;
   private _session?: Session;
   private cwd: string;
+  private readonly toolPolicy: ToolExecutionPolicy;
   private readonly toolsByName: Map<string, Tool>;
+  private running = false;
+  private activeTelemetryContext?: TelemetryContext;
+  private activeRunSignal?: AbortSignal;
+  private observerDisabled = false;
 
   get session(): Session | undefined {
     return this._session;
@@ -128,15 +349,43 @@ export class Agent {
 
   constructor(private readonly options: AgentOptions) {
     this.messages = options.session ? [...options.session.messages] : [];
-    if (options.session) addUsage(this.usageTotal, options.session.usage);
+    if (options.session) {
+      const history = usageAcrossSessionLineageDetailed(options.session);
+      addUsage(this.usageTotal, history.usage);
+      this.usageHistoryComplete = history.complete;
+    } else {
+      this.usageHistoryComplete = true;
+    }
     this.model = options.model;
     if (options.session) this._session = options.session;
     this.cwd = options.cwd;
+    this.toolPolicy = { ...defaultToolExecutionPolicy(options.cwd), ...options.toolPolicy };
     this.toolsByName = new Map(options.tools.map((tool) => [tool.name, tool]));
-    // a session that died between persisting an assistant tool call and its results
-    // (crash, kill, /branch at a tool-call message) would 400 on every provider —
-    // synthesize error results so the transcript is always well-formed
-    const repair = synthesizeInterruptedResults(this.messages);
+    // Resolve the write-ahead journal before repairing the provider transcript:
+    // planned calls are known not to have run; started calls have unknown outcome.
+    let recoveredExecutions: readonly ToolExecutionState[] = [];
+    if (this._session) {
+      try {
+        this._session.markInterruptedModelRequestsOutcomeUnknown();
+        this._session.markInterruptedCompactionsFailed();
+        for (const pending of this._session.pendingToolExecutions) {
+          if (pending.status === 'planned') {
+            this._session.skipTool(pending.executionId, 'prior process ended before tool execution started');
+          }
+        }
+        this._session.markInterruptedToolsOutcomeUnknown();
+        if (this._session.runStatus?.status === 'running') {
+          this._session.setRunStatus('incomplete', 'prior process stopped before recording a terminal run status');
+        }
+        recoveredExecutions = this._session.toolExecutions;
+      } catch (error) {
+        this.persistDisabled = true;
+        process.stderr.write(`warning: session lifecycle recovery disabled logging — ${String(error)}\n`);
+      }
+    }
+    // A session that ended after an assistant tool call still needs synthetic
+    // result blocks for provider validity, but never claims an uncertain call did not run.
+    const repair = synthesizeInterruptedResults(this.messages, recoveredExecutions);
     if (repair) {
       this.messages.push(repair);
       this.persist(repair);
@@ -149,19 +398,34 @@ export class Agent {
 
   private persistDisabled = false;
 
-  /** Persistence failure (disk full, dir deleted) must never corrupt the live conversation. */
-  private persistEntry(entry: Parameters<Session['append']>[0]): void {
-    if (!this._session || this.persistDisabled) return;
+  private journalFor<T>(session: Session | undefined, operation: (session: Session) => T): T | undefined {
+    if (!session || this.persistDisabled) return undefined;
     try {
-      this._session.append(entry);
+      return operation(session);
     } catch (error) {
       this.persistDisabled = true;
       process.stderr.write(`warning: session logging disabled — ${String(error)}\n`);
+      return undefined;
     }
   }
 
-  private persist(message: Message): void {
-    this.persistEntry({ t: 'msg', message });
+  private journal<T>(operation: (session: Session) => T): T | undefined {
+    return this.journalFor(this._session, operation);
+  }
+
+  /** Persistence failure (disk full, dir deleted) must never corrupt the live conversation. */
+  private persistEntry(entry: Parameters<Session['append']>[0]): boolean {
+    if (!this._session) return true;
+    return (
+      this.journal((session) => {
+        session.append(entry);
+        return true;
+      }) === true
+    );
+  }
+
+  private persist(message: Message): boolean {
+    return this.persistEntry({ t: 'msg', message });
   }
 
   private toolContext(signal?: AbortSignal): ToolContext {
@@ -173,18 +437,159 @@ export class Agent {
       setCwd(dir: string) {
         agent.cwd = dir;
       },
+      policy: agent.toolPolicy,
       ...(signal ? { signal } : {}),
     };
   }
 
-  private async executeCall(call: ToolCallBlock, signal?: AbortSignal): Promise<ToolOutput> {
+  private async executeCall(call: ToolCallBlock, signal?: AbortSignal): Promise<ToolCallExecution> {
     const tool = this.toolsByName.get(call.name);
-    if (!tool) return { content: [{ type: 'text', text: `unknown tool "${call.name}"` }], isError: true };
-    try {
-      return await tool.execute(call.arguments, this.toolContext(signal));
-    } catch (error) {
-      return { content: [{ type: 'text', text: String(error) }], isError: true };
+    if (!tool) {
+      return { result: { content: [{ type: 'text', text: `unknown tool "${call.name}"` }], isError: true } };
     }
+    if (signal?.aborted) {
+      return {
+        result: { content: [{ type: 'text', text: 'not run: canceled before tool dispatch' }], isError: true },
+      };
+    }
+
+    let execution: Promise<ToolOutput>;
+    try {
+      execution = Promise.resolve(tool.execute(call.arguments, this.toolContext(signal)));
+    } catch (error) {
+      return { result: { content: [{ type: 'text', text: String(error) }], isError: true } };
+    }
+    if (!signal) {
+      try {
+        return { result: await execution };
+      } catch (error) {
+        return { result: { content: [{ type: 'text', text: String(error) }], isError: true } };
+      }
+    }
+
+    const interrupted = Symbol('tool-interrupted');
+    let onAbort: (() => void) | undefined;
+    const abort = new Promise<typeof interrupted>((resolveAbort) => {
+      onAbort = () => resolveAbort(interrupted);
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+      const settled = await Promise.race([
+        execution.then(
+          (result) => ({ result }),
+          (error: unknown) => ({ result: { content: [{ type: 'text' as const, text: String(error) }], isError: true } }),
+        ),
+        abort,
+      ]);
+      if (settled === interrupted) {
+        return {
+          result: {
+            content: [
+              {
+                type: 'text',
+                text: 'tool execution was interrupted before a terminal result; its side-effect outcome is unknown',
+              },
+            ],
+            isError: true,
+          },
+          outcomeUnknown: true,
+        };
+      }
+      return settled;
+    } finally {
+      if (onAbort) signal.removeEventListener('abort', onAbort);
+    }
+  }
+
+  private journalSkippedTools(calls: ToolCallBlock[], reason: string, requestId?: string): void {
+    for (const call of calls) {
+      this.journal((session) => {
+        const executionId = session.planTool(call, requestId ? { requestId } : {});
+        session.skipTool(executionId, reason);
+      });
+    }
+  }
+
+  private async runObserverOperation(action: () => void | Promise<void>): Promise<void> {
+    if (this.observerDisabled) return;
+    let pending: Promise<void>;
+    try {
+      pending = Promise.resolve(action());
+    } catch {
+      // Observability is deliberately fail-open; SafeObserver also isolates sink failures.
+      return;
+    }
+    const timedOut = Symbol('observer-timeout');
+    const aborted = Symbol('observer-aborted');
+    let timer: NodeJS.Timeout | undefined;
+    let onAbort: (() => void) | undefined;
+    const timeout = new Promise<typeof timedOut>((resolve) => {
+      timer = setTimeout(() => resolve(timedOut), OBSERVER_OPERATION_TIMEOUT_MS);
+    });
+    const signal = this.activeRunSignal;
+    const interrupted = new Promise<typeof aborted>((resolve) => {
+      if (!signal) return;
+      onAbort = () => resolve(aborted);
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    });
+    const outcome = await Promise.race([
+      pending.then(
+        () => undefined,
+        () => undefined,
+      ),
+      timeout,
+      interrupted,
+    ]);
+    if (timer) clearTimeout(timer);
+    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+    if (outcome === timedOut) this.observerDisabled = true;
+  }
+
+  private async observe(event: RuntimeTelemetryEvent): Promise<void> {
+    const observer = this.options.observer;
+    if (!observer) return;
+    await this.runObserverOperation(() => observer.emit(event));
+  }
+
+  private async flushObserver(): Promise<void> {
+    const observer = this.options.observer;
+    if (!observer) return;
+    await this.runObserverOperation(() => observer.flush());
+  }
+
+  private async observeBudget(context: TelemetryContext, reason: string): Promise<void> {
+    await this.observe(
+      createRuntimeEvent(context, { name: 'budget.exceeded', level: 'warn', attributes: { reason } }),
+    );
+  }
+
+  private toolDefinitions(): CompletionRequest['tools'] {
+    return this.options.tools.map(({ name, description, parameters }) => ({ name, description, parameters }));
+  }
+
+  /** Conservative estimate of the complete fixed + dynamic request sent on the next model call. */
+  private estimateCurrentRequestTokens(messages = this.messages): number {
+    return estimateTokens(
+      JSON.stringify({
+        system: this.options.systemPrompt,
+        tools: this.toolDefinitions(),
+        messages,
+      }),
+    );
+  }
+
+  /**
+   * Project the next request from the last provider-reported context plus the
+   * estimated growth since that request. This preserves real tokenizer evidence
+   * while still catching a newly appended huge user message or tool result.
+   */
+  private projectedContextTokens(): number {
+    const currentEstimate = this.estimateCurrentRequestTokens();
+    if (this.lastContextTokens <= 0 || this.lastEstimatedRequestTokens <= 0) return currentEstimate;
+    const growth = Math.max(0, currentEstimate - this.lastEstimatedRequestTokens);
+    return Math.max(currentEstimate, this.lastContextTokens + growth);
   }
 
   /**
@@ -198,155 +603,1033 @@ export class Agent {
     signal?: AbortSignal,
     steering?: () => string[],
   ): AsyncGenerator<AgentEvent, void, void> {
-    const maxIterations = this.options.maxIterations ?? 40;
-    const turnUsage = emptyUsage();
-    const userMessage: Message = { role: 'user', content: [{ type: 'text', text: input }] };
-    this.messages.push(userMessage);
-    this.persist(userMessage);
+    if (this.running) throw new Error('agent is already running');
+    const inputBytes = Buffer.byteLength(input);
+    if (inputBytes > MAX_USER_INPUT_BYTES) {
+      throw new RangeError(`user input exceeds ${MAX_USER_INPUT_BYTES} UTF-8 bytes`);
+    }
+    if (
+      this.options.contextWindow !== undefined &&
+      (!Number.isSafeInteger(this.options.contextWindow) || this.options.contextWindow <= 0)
+    ) {
+      throw new RangeError('contextWindow must be a safe integer > 0');
+    }
+    if (
+      this.options.requestTimeoutMs !== undefined &&
+      (!Number.isSafeInteger(this.options.requestTimeoutMs) ||
+        this.options.requestTimeoutMs <= 0 ||
+        this.options.requestTimeoutMs > MAX_TIMER_MS)
+    ) {
+      throw new RangeError(`requestTimeoutMs must be a safe integer in 1..${MAX_TIMER_MS}`);
+    }
+    if (
+      this.options.thinkingBudget !== undefined &&
+      (!Number.isSafeInteger(this.options.thinkingBudget) ||
+        this.options.thinkingBudget < 0 ||
+        this.options.thinkingBudget > Number.MAX_SAFE_INTEGER - THINKING_RESPONSE_RESERVE_TOKENS)
+    ) {
+      throw new RangeError('thinkingBudget must be a safe nonnegative integer');
+    }
+    this.running = true;
 
-    const guardOption = this.options.flailGuard;
-    const guard =
-      guardOption === false
-        ? undefined
-        : {
-            nudgeAfter: 5,
-            stopAfter: 10,
-            repeatNudgeAfter: 2,
-            repeatStopAfter: 4,
-            ...(typeof guardOption === 'object' ? guardOption : {}),
-          };
-    let consecutiveFailures = 0;
-    const failCounts = new Map<string, number>();
-    let nudged = false;
-    let stopping = false;
-
-    let iterations = 0;
-    while (iterations < maxIterations) {
-      if (signal?.aborted) break;
-      for (const note of steering?.() ?? []) {
-        const steerMessage: Message = { role: 'user', content: [{ type: 'text', text: `[steering] ${note}` }] };
-        this.messages.push(steerMessage);
-        this.persist(steerMessage);
-        yield { type: 'steered', text: note };
+    const budget: RunBudget = {
+      maxModelRequests: this.options.maxIterations ?? 40,
+      maxToolCalls: DEFAULT_MAX_TOOL_CALLS,
+      maxWallTimeMs: DEFAULT_MAX_WALL_TIME_MS,
+      maxToolOutputBytes: Math.min(
+        50_000,
+        Math.max(1_024, Math.floor((this.options.contextWindow ?? 128_000) * 0.4)),
+      ),
+    };
+    // Optional config objects are commonly assembled with spreads that retain
+    // `undefined` values. Never let those erase mandatory safety defaults.
+    for (const [name, value] of Object.entries(this.options.budget ?? {})) {
+      if (value !== undefined) (budget as unknown as Record<string, number>)[name] = value;
+    }
+    for (const [name, value] of Object.entries(budget)) {
+      if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
+        this.running = false;
+        throw new Error(`invalid run budget ${name}: expected a safe integer > 0`);
       }
-      // compaction first: offloading messages compaction is about to drop wastes
-      // disk writes and hands summarize() stubs instead of real outputs
-      const threshold = this.compactThreshold();
-      if (threshold !== undefined && this.lastContextTokens > threshold && this.messages.length > 1) {
-        const dropped = await this.compact(signal);
-        yield { type: 'compacted', dropped, ...(this._session ? { sessionFile: this._session.file } : {}) };
-      }
-      const offloaded = this.offloadOldToolResults();
-      if (offloaded) yield { type: 'offloaded', ...offloaded };
-      iterations++;
-      this.requestCount++;
-
-      let done: { message: AssistantMessage; stopReason: StopReason; usage: Usage } | undefined;
-      const stream = this.options.client.stream(
-        {
-          model: this.model,
-          system: this.options.systemPrompt,
-          messages: this.messages,
-          tools: this.options.tools.map(({ name, description, parameters }) => ({ name, description, parameters })),
-          ...(this.options.thinkingBudget !== undefined ? { thinkingBudget: this.options.thinkingBudget } : {}),
-        },
-        signal,
+    }
+    if (budget.maxWallTimeMs > MAX_TIMER_MS) {
+      this.running = false;
+      throw new Error(`invalid run budget maxWallTimeMs: maximum supported value is ${MAX_TIMER_MS}`);
+    }
+    if (budget.maxToolOutputBytes < MIN_TOOL_OUTPUT_BYTES) {
+      this.running = false;
+      throw new Error(
+        `invalid run budget maxToolOutputBytes: minimum supported value is ${MIN_TOOL_OUTPUT_BYTES}`,
       );
-      try {
-        for await (const event of stream) {
-          if (event.type === 'text_delta') yield { type: 'text', text: event.text };
-          else if (event.type === 'thinking_delta') yield { type: 'thinking', text: event.text };
-          else if (event.type === 'done') done = event;
-        }
-      } catch (error) {
-        if (signal?.aborted) break; // user interrupt: keep state as-is, stay usable
-        throw error;
-      }
-      if (!done || done.message.content.length === 0) break;
-
-      this.messages.push(done.message);
-      this.persist(done.message);
-      addUsage(turnUsage, done.usage);
-      addUsage(this.usageTotal, done.usage);
-      this.lastContextTokens =
-        done.usage.inputTokens + done.usage.cacheReadTokens + done.usage.cacheWriteTokens + done.usage.outputTokens;
-      this.persistEntry({ t: 'usage', usage: done.usage });
-      yield { type: 'response_done', message: done.message, stopReason: done.stopReason, usage: done.usage };
-
-      const calls = done.message.content.filter((block): block is ToolCallBlock => block.type === 'toolCall');
-      if (stopping) {
-        // final-report round after a flail stop: never execute more tools; if the
-        // model tried anyway, synthesize results so the transcript stays API-valid
-        const repair = synthesizeInterruptedResults(this.messages);
-        if (repair) {
-          this.messages.push(repair);
-          this.persist(repair);
-        }
-        break;
-      }
-      if (calls.length === 0) break;
-
-      const results: ToolResultBlock[] = [];
-      let repeatMax = 0;
-      for (const call of calls) {
-        yield { type: 'tool_start', call };
-        const result = signal?.aborted
-          ? { content: [{ type: 'text' as const, text: 'interrupted by user' }], isError: true }
-          : await this.executeCall(call, signal);
-        yield { type: 'tool_end', call, result };
-        if (result.isError && !signal?.aborted) {
-          // aborted calls are the user's doing, not the model flailing
-          consecutiveFailures++;
-          const key = `${call.name}:${JSON.stringify(call.arguments).slice(0, 200)}`;
-          const repeats = (failCounts.get(key) ?? 0) + 1;
-          failCounts.set(key, repeats);
-          if (repeats > repeatMax) repeatMax = repeats;
-        } else if (!result.isError) {
-          consecutiveFailures = 0;
-        }
-        results.push({
-          type: 'toolResult',
-          toolCallId: call.id,
-          toolName: call.name,
-          content: result.content,
-          ...(result.isError ? { isError: true } : {}),
-        });
-      }
-      const content: UserBlock[] = [...results];
-      if (guard) {
-        // an identical call failing repeatedly is a stronger stall signal than mixed failures
-        const shouldStop = consecutiveFailures >= guard.stopAfter || repeatMax >= guard.repeatStopAfter;
-        if (shouldStop) {
-          stopping = true;
-          content.push({ type: 'text', text: STOP_TEXT });
-          yield { type: 'flail_stop', consecutiveFailures };
-        } else if (!nudged && (consecutiveFailures >= guard.nudgeAfter || repeatMax >= guard.repeatNudgeAfter)) {
-          nudged = true;
-          content.push({ type: 'text', text: NUDGE_TEXT });
-          yield { type: 'flail_nudge', consecutiveFailures };
-        }
-      }
-      const resultMessage: Message = { role: 'user', content };
-      this.messages.push(resultMessage);
-      this.persist(resultMessage);
     }
 
-    this.lastTurnUsage = turnUsage;
-    yield { type: 'turn_done', iterations, usage: turnUsage };
+    const runController = new AbortController();
+    this.activeRunSignal = runController.signal;
+    let deadlineExceeded = false;
+    const forwardAbort = () => runController.abort(signal?.reason ?? new Error('aborted'));
+    if (signal?.aborted) forwardAbort();
+    else signal?.addEventListener('abort', forwardAbort, { once: true });
+    const deadline = setTimeout(() => {
+      deadlineExceeded = true;
+      runController.abort(new Error(`run exceeded ${budget.maxWallTimeMs}ms wall-time budget`));
+    }, budget.maxWallTimeMs);
+
+    const turnUsage = emptyUsage();
+    let iterations = 0;
+    let toolCalls = 0;
+    let status: TurnStatus = 'incomplete';
+    let reason: TurnStopReason = 'empty_response';
+    let failed = false;
+    let failedError: unknown;
+    let runBodyCompleted = false;
+    let terminal = false;
+    const runSessions: Session[] = this._session ? [this._session] : [];
+    const runTelemetryContext = createTelemetryContext(this._session?.id, {
+      ...(this.options.parentRunId ? { parentRunId: this.options.parentRunId } : {}),
+    });
+    let telemetryContext = runTelemetryContext;
+    this.activeTelemetryContext = telemetryContext;
+    const runSpan = createSpanStarted(telemetryContext, {
+      name: 'agent.run',
+      attributes: { model: this.model },
+    });
+    const runStartedAt = Date.now();
+    await this.observe(runSpan);
+
+    try {
+      if (this._session) {
+        try {
+          if (statSync(this._session.file).size >= SESSION_ROTATE_BYTES) {
+            await this.rotateSessionForStorage();
+            telemetryContext = this.activeTelemetryContext ?? telemetryContext;
+            if (this._session && !runSessions.some((session) => session.id === this._session!.id)) {
+              runSessions.push(this._session);
+              yield { type: 'session_rotated', sessionFile: this._session.file };
+            }
+          }
+        } catch (error) {
+          process.stderr.write(`warning: session rotation failed — ${String(error)}\n`);
+          status = 'incomplete';
+          reason = 'persistence';
+          terminal = true;
+        }
+      }
+      for (const session of runSessions) {
+        if (session.runStatus?.status !== 'running') {
+          this.journalFor(session, (target) => target.setRunStatus('running'));
+        }
+      }
+
+      const guardOption = this.options.flailGuard;
+      const guard =
+        guardOption === false
+          ? undefined
+          : {
+              nudgeAfter: 5,
+              stopAfter: 10,
+              repeatNudgeAfter: 2,
+              repeatStopAfter: 4,
+              ...(typeof guardOption === 'object' ? guardOption : {}),
+            };
+      let consecutiveFailures = 0;
+      const failCounts = new Map<string, number>();
+      let nudged = false;
+      let stopping = false;
+      const userMessage: Message = { role: 'user', content: [{ type: 'text', text: input }] };
+      const inputThreshold = this.compactThreshold();
+      const inputOnlyProjection = this.estimateCurrentRequestTokens([userMessage]);
+      if (!terminal && inputThreshold !== undefined && inputOnlyProjection > inputThreshold) {
+        status = 'incomplete';
+        reason = 'context_window';
+        terminal = true;
+        await this.observe(
+          createRuntimeEvent(telemetryContext, {
+            name: 'context.preflight_failed',
+            level: 'warn',
+            attributes: { projectedTokens: inputOnlyProjection, threshold: inputThreshold, currentTurnOnly: true },
+          }),
+        );
+      } else if (!terminal) {
+        this.messages.push(userMessage);
+        if (!this.persist(userMessage)) {
+          status = 'incomplete';
+          reason = 'persistence';
+          terminal = true;
+        }
+      }
+
+      while (!terminal) {
+        if (runController.signal.aborted) {
+          status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
+          reason = deadlineExceeded ? 'wall_time' : 'user_abort';
+          if (deadlineExceeded) {
+            await this.observeBudget(telemetryContext, 'wall_time');
+            yield { type: 'budget_exceeded', reason: 'wall_time' };
+          }
+          break;
+        }
+
+        for (const note of steering?.() ?? []) {
+          if (Buffer.byteLength(note) > MAX_USER_INPUT_BYTES) {
+            throw new RangeError(`steering input exceeds ${MAX_USER_INPUT_BYTES} UTF-8 bytes`);
+          }
+          const steerMessage: Message = { role: 'user', content: [{ type: 'text', text: `[steering] ${note}` }] };
+          this.messages.push(steerMessage);
+          if (!this.persist(steerMessage)) {
+            status = 'incomplete';
+            reason = 'persistence';
+            terminal = true;
+            break;
+          }
+          yield { type: 'steered', text: note };
+        }
+        if (terminal) break;
+
+        const offloaded = this.offloadOldToolResults();
+        if (offloaded) {
+          // The provider-based projection describes the pre-offload request. Once
+          // history shrinks, rebase to the serialized request instead of pinning
+          // context pressure to a stale high-water mark.
+          this.lastContextTokens = 0;
+          this.lastEstimatedRequestTokens = 0;
+          await this.observe(
+            createRuntimeEvent(telemetryContext, {
+              name: 'context.offloaded',
+              attributes: { count: offloaded.count, savedChars: offloaded.savedChars },
+            }),
+          );
+          yield { type: 'offloaded', ...offloaded };
+        }
+
+        if (this._session) {
+          let rotateForStorage = false;
+          try {
+            rotateForStorage = statSync(this._session.file).size >= SESSION_ROTATE_BYTES;
+          } catch (error) {
+            this.persistDisabled = true;
+            process.stderr.write(`warning: cannot inspect session for rotation — ${String(error)}\n`);
+            status = 'incomplete';
+            reason = 'persistence';
+            break;
+          }
+          if (rotateForStorage) {
+            try {
+              await this.rotateSessionForStorage();
+            } catch (error) {
+              process.stderr.write(`warning: session rotation failed — ${String(error)}\n`);
+              status = 'incomplete';
+              reason = 'persistence';
+              break;
+            }
+            telemetryContext = this.activeTelemetryContext ?? telemetryContext;
+            if (this._session && !runSessions.some((session) => session.id === this._session!.id)) {
+              runSessions.push(this._session);
+              yield { type: 'session_rotated', sessionFile: this._session.file };
+            }
+          }
+        }
+
+        const threshold = this.compactThreshold();
+        if (threshold !== undefined && this.projectedContextTokens() > threshold) {
+          if (this.options.autoCompact === false) {
+            status = 'incomplete';
+            reason = 'context_window';
+            await this.observe(
+              createRuntimeEvent(telemetryContext, {
+                name: 'context.preflight_failed',
+                level: 'warn',
+                attributes: { projectedTokens: this.projectedContextTokens(), threshold, autoCompact: false },
+              }),
+            );
+            break;
+          }
+          const keepFrom = chooseKeepBoundary(this.messages, this.compactionKeepTokens());
+          const retainedProjection =
+            keepFrom < this.messages.length
+              ? this.estimateCurrentRequestTokens(this.messages.slice(keepFrom))
+              : Number.POSITIVE_INFINITY;
+          if (
+            this.messages.length <= 1 ||
+            keepFrom <= 0 ||
+            retainedProjection + COMPACTION_SUMMARY_INPUT_RESERVE_TOKENS > threshold
+          ) {
+            status = 'incomplete';
+            reason = 'context_window';
+            await this.observe(
+              createRuntimeEvent(telemetryContext, {
+                name: 'context.preflight_failed',
+                level: 'warn',
+                attributes: {
+                  projectedTokens: this.projectedContextTokens(),
+                  retainedTokens: retainedProjection,
+                  threshold,
+                },
+              }),
+            );
+            break;
+          }
+          // A compaction request without room for the real request is not useful.
+          if (iterations + 1 >= budget.maxModelRequests) {
+            status = 'budget_exceeded';
+            reason = 'model_requests';
+            await this.observeBudget(telemetryContext, 'model_requests');
+            yield { type: 'budget_exceeded', reason: 'model_requests' };
+            break;
+          }
+          let dropped: number;
+          try {
+            dropped = await this.compact(runController.signal, turnUsage, () => iterations++);
+          } catch (error) {
+            if (!runController.signal.aborted && error instanceof CompactionPersistenceError) {
+              status = 'incomplete';
+              reason = 'persistence';
+              break;
+            }
+            if (!runController.signal.aborted) throw error;
+            status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
+            reason = deadlineExceeded ? 'wall_time' : 'user_abort';
+            if (deadlineExceeded) {
+              await this.observeBudget(telemetryContext, 'wall_time');
+              yield { type: 'budget_exceeded', reason: 'wall_time' };
+            }
+            break;
+          }
+          telemetryContext = this.activeTelemetryContext ?? telemetryContext;
+          if (this._session && !runSessions.some((session) => session.id === this._session!.id)) {
+            runSessions.push(this._session);
+          }
+          yield { type: 'compacted', dropped, ...(this._session ? { sessionFile: this._session.file } : {}) };
+          if (runController.signal.aborted) {
+            status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
+            reason = deadlineExceeded ? 'wall_time' : 'user_abort';
+            if (deadlineExceeded) {
+              await this.observeBudget(telemetryContext, 'wall_time');
+              yield { type: 'budget_exceeded', reason: 'wall_time' };
+            }
+            break;
+          }
+          // The retained current turn can itself be too large. Never pay for a
+          // request that preflight already knows lacks the configured reserve.
+          const rebuiltProjection = this.projectedContextTokens();
+          if (rebuiltProjection > threshold) {
+            status = 'incomplete';
+            reason = 'context_window';
+            await this.observe(
+              createRuntimeEvent(telemetryContext, {
+                name: 'context.preflight_failed',
+                level: 'warn',
+                attributes: { projectedTokens: rebuiltProjection, threshold, afterCompaction: true },
+              }),
+            );
+            break;
+          }
+        }
+
+        const priorUsageLimit = usageBudgetReason(turnUsage, budget);
+        if (priorUsageLimit) {
+          status = 'budget_exceeded';
+          reason = priorUsageLimit;
+          await this.observeBudget(telemetryContext, priorUsageLimit);
+          yield {
+            type: 'budget_exceeded',
+            reason: priorUsageLimit as 'input_tokens' | 'output_tokens' | 'total_tokens',
+          };
+          break;
+        }
+        if (iterations >= budget.maxModelRequests) {
+          status = 'budget_exceeded';
+          reason = 'model_requests';
+          await this.observeBudget(telemetryContext, 'model_requests');
+          yield { type: 'budget_exceeded', reason: 'model_requests' };
+          break;
+        }
+
+        const requestEstimate = this.estimateCurrentRequestTokens();
+        const outputLimits = [
+          Math.max(
+            DEFAULT_REQUEST_MAX_TOKENS,
+            this.options.thinkingBudget !== undefined
+              ? this.options.thinkingBudget + THINKING_RESPONSE_RESERVE_TOKENS
+              : 0,
+          ),
+        ];
+        if (budget.maxOutputTokens !== undefined) {
+          outputLimits.push(Math.max(1, budget.maxOutputTokens - turnUsage.outputTokens));
+        }
+        if (budget.maxTotalTokens !== undefined) {
+          outputLimits.push(Math.max(1, budget.maxTotalTokens - totalTokens(turnUsage)));
+        }
+        if (this.options.contextWindow !== undefined) {
+          outputLimits.push(
+            Math.max(1, this.options.contextWindow - Math.ceil(this.projectedContextTokens())),
+          );
+        }
+        const requestMaxTokens = Math.min(...outputLimits);
+        const requestThinkingBudget =
+          this.options.thinkingBudget !== undefined && this.options.thinkingBudget < requestMaxTokens
+            ? this.options.thinkingBudget
+            : undefined;
+        let done: { message: AssistantMessage; stopReason: StopReason; usage: Usage } | undefined;
+        const requestId = createTelemetryId('request');
+        const requestJournaled =
+          !this._session ||
+          this.journal((session) => {
+            session.beginModelRequest(this.model, { requestId, messageCount: this.messages.length });
+            return true;
+          }) === true;
+        if (!requestJournaled) {
+          status = 'incomplete';
+          reason = 'persistence';
+          break;
+        }
+        iterations++;
+        this.requestCount++;
+        const requestContext: TelemetryContext = { ...telemetryContext, requestId };
+        const requestSpan = createSpanStarted(requestContext, {
+          name: 'model.request',
+          parentSpanId: runSpan.spanId,
+          attributes: { model: this.model, messageCount: this.messages.length },
+        });
+        const requestStartedAt = Date.now();
+        await this.observe(requestSpan);
+        const stream = this.options.client.stream(
+          {
+            model: this.model,
+            system: this.options.systemPrompt,
+            messages: this.messages,
+            tools: this.toolDefinitions(),
+            // RunBudget counts actual provider attempts. Retries are modeled as
+            // separate harness decisions rather than hidden inside one request.
+            maxAttempts: 1,
+            timeoutMs: Math.min(this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, budget.maxWallTimeMs),
+            maxTokens: requestMaxTokens,
+            ...(requestThinkingBudget !== undefined ? { thinkingBudget: requestThinkingBudget } : {}),
+          },
+          runController.signal,
+        );
+        const streamIterator = stream[Symbol.asyncIterator]();
+        let streamEnded = false;
+        let requestLifecycleTerminal = false;
+        try {
+          while (true) {
+            const next = await nextStreamEvent(streamIterator, runController.signal);
+            if (next.done) {
+              streamEnded = true;
+              break;
+            }
+            const event = next.value;
+            if (event.type === 'text_delta') yield { type: 'text', text: event.text };
+            else if (event.type === 'thinking_delta') yield { type: 'thinking', text: event.text };
+            else if (event.type === 'done') done = event;
+          }
+        } catch (error) {
+          releaseStream(streamIterator);
+          if (runController.signal.aborted) {
+            this.journal((session) =>
+              session.markModelRequestOutcomeUnknown(
+                requestId,
+                'request was canceled after dispatch before a terminal response was recorded',
+              ),
+            );
+          } else {
+            this.journal((session) => session.failModelRequest(requestId, String(error)));
+          }
+          requestLifecycleTerminal = true;
+          await this.observe(
+            createSpanEnded(requestContext, {
+              name: 'model.request',
+              spanId: requestSpan.spanId,
+              parentSpanId: runSpan.spanId,
+              status: runController.signal.aborted ? 'canceled' : 'error',
+              durationMs: Date.now() - requestStartedAt,
+              error: {
+                type: error instanceof Error ? error.name : 'Error',
+                message: String(error),
+                ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
+              },
+            }),
+          );
+          if (runController.signal.aborted) {
+            status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
+            reason = deadlineExceeded ? 'wall_time' : 'user_abort';
+            if (deadlineExceeded) {
+              await this.observeBudget(telemetryContext, 'wall_time');
+              yield { type: 'budget_exceeded', reason: 'wall_time' };
+            }
+            break;
+          }
+          throw error;
+        } finally {
+          if (!streamEnded && !requestLifecycleTerminal) {
+            if (!runController.signal.aborted) {
+              runController.abort(new Error('agent run consumer stopped during provider streaming'));
+            }
+            releaseStream(streamIterator);
+            this.journal((session) =>
+              session.markModelRequestOutcomeUnknown(
+                requestId,
+                'request iteration stopped before the provider stream reached a terminal boundary',
+              ),
+            );
+          }
+        }
+        if (!done) {
+          this.journal((session) => session.failModelRequest(requestId, 'provider stream produced no complete message'));
+          await this.observe(
+            createSpanEnded(requestContext, {
+              name: 'model.request',
+              spanId: requestSpan.spanId,
+              parentSpanId: runSpan.spanId,
+              status: 'incomplete',
+              durationMs: Date.now() - requestStartedAt,
+            }),
+          );
+          status = 'incomplete';
+          reason = 'empty_response';
+          break;
+        }
+        const responseCalls = done.message.content.filter(
+          (block): block is ToolCallBlock => block.type === 'toolCall',
+        );
+        const hasAnswerText = done.message.content.some(
+          (block) => block.type === 'text' && block.text.trim().length > 0,
+        );
+        const responseJournaled =
+          !this._session ||
+          this.journal((session) => {
+            session.completeModelRequest(requestId, { stopReason: done!.stopReason, usage: done!.usage });
+            return true;
+          }) === true;
+        await this.observe(
+          createSpanEnded(requestContext, {
+            name: 'model.request',
+            spanId: requestSpan.spanId,
+            parentSpanId: runSpan.spanId,
+            status:
+              (done.stopReason === 'end_turn' && hasAnswerText) ||
+              (done.stopReason === 'tool_use' && responseCalls.length > 0)
+                ? 'ok'
+                : 'incomplete',
+            durationMs: Date.now() - requestStartedAt,
+            attributes: {
+              stopReason: done.stopReason,
+              inputTokens: inputTokens(done.usage),
+              outputTokens: done.usage.outputTokens,
+            },
+          }),
+        );
+        await this.observe(
+          createRuntimeEvent(requestContext, {
+            name: 'model.response',
+            attributes: { stopReason: done.stopReason, outputTokens: done.usage.outputTokens },
+          }),
+        );
+
+        addUsage(turnUsage, done.usage);
+        addUsage(this.usageTotal, done.usage);
+        this.lastContextTokens = totalTokens(done.usage);
+        if (!responseJournaled) {
+          status = 'incomplete';
+          reason = 'persistence';
+          break;
+        }
+        if (done.message.content.length === 0) {
+          this.lastEstimatedRequestTokens = requestEstimate;
+          status = 'incomplete';
+          reason = 'empty_response';
+          break;
+        }
+        this.messages.push(done.message);
+        const responsePersisted = this.persist(done.message);
+        this.lastEstimatedRequestTokens = this.estimateCurrentRequestTokens();
+        yield { type: 'response_done', message: done.message, stopReason: done.stopReason, usage: done.usage };
+        if (!responsePersisted) {
+          status = 'incomplete';
+          reason = 'persistence';
+          break;
+        }
+
+        const calls = responseCalls;
+        if (done.stopReason === 'max_tokens') {
+          const explanation = 'not run: the model response was truncated at its token limit';
+          this.journalSkippedTools(calls, explanation, requestId);
+          const skipped = unexecutedToolResults(calls, explanation);
+          if (skipped) {
+            this.messages.push(skipped);
+            this.persist(skipped);
+          }
+          status = 'incomplete';
+          reason = 'max_tokens';
+          break;
+        }
+        if (done.stopReason === 'other') {
+          const explanation = 'not run: the provider returned an unknown terminal status';
+          this.journalSkippedTools(calls, explanation, requestId);
+          const skipped = unexecutedToolResults(calls, explanation);
+          if (skipped) {
+            this.messages.push(skipped);
+            this.persist(skipped);
+          }
+          status = 'incomplete';
+          reason = 'provider_stop';
+          break;
+        }
+        const responseUsageExceeded = exceededUsageBudgetReason(turnUsage, budget);
+        if (responseUsageExceeded) {
+          const explanation = `not run: ${responseUsageExceeded} budget was exceeded by the completed response`;
+          this.journalSkippedTools(calls, explanation, requestId);
+          const skipped = unexecutedToolResults(calls, explanation);
+          if (skipped) {
+            this.messages.push(skipped);
+            this.persist(skipped);
+          }
+          status = 'budget_exceeded';
+          reason = responseUsageExceeded;
+          await this.observeBudget(telemetryContext, responseUsageExceeded);
+          yield {
+            type: 'budget_exceeded',
+            reason: responseUsageExceeded as 'input_tokens' | 'output_tokens' | 'total_tokens',
+          };
+          break;
+        }
+        if (stopping) {
+          const explanation = 'not run: the flail guard already stopped tool execution';
+          this.journalSkippedTools(calls, explanation, requestId);
+          const skipped = unexecutedToolResults(calls, explanation);
+          if (skipped) {
+            this.messages.push(skipped);
+            this.persist(skipped);
+          }
+          status = 'incomplete';
+          reason = 'flail_stop';
+          break;
+        }
+        if (calls.length === 0) {
+          if (done.stopReason === 'end_turn' && hasAnswerText) {
+            status = 'completed';
+            reason = 'end_turn';
+          } else {
+            status = 'incomplete';
+            reason = done.stopReason === 'tool_use' ? 'provider_stop' : 'empty_response';
+          }
+          break;
+        }
+        if (done.stopReason !== 'tool_use') {
+          const explanation = 'not run: tool calls arrived without a tool-use finish reason';
+          this.journalSkippedTools(calls, explanation, requestId);
+          const skipped = unexecutedToolResults(calls, explanation);
+          if (skipped) {
+            this.messages.push(skipped);
+            this.persist(skipped);
+          }
+          status = 'incomplete';
+          reason = 'provider_stop';
+          break;
+        }
+
+        const responseUsageLimit = usageBudgetReason(turnUsage, budget);
+        if (responseUsageLimit) {
+          const explanation = `not run: ${responseUsageLimit} budget was exhausted`;
+          this.journalSkippedTools(calls, explanation, requestId);
+          const skipped = unexecutedToolResults(calls, explanation);
+          if (skipped) {
+            this.messages.push(skipped);
+            this.persist(skipped);
+          }
+          status = 'budget_exceeded';
+          reason = responseUsageLimit;
+          await this.observeBudget(telemetryContext, responseUsageLimit);
+          yield {
+            type: 'budget_exceeded',
+            reason: responseUsageLimit as 'input_tokens' | 'output_tokens' | 'total_tokens',
+          };
+          break;
+        }
+
+        const results: ToolResultBlock[] = [];
+        let repeatMax = 0;
+        let toolBudgetHit = false;
+        let guardStoppedThisBatch = false;
+        let guardNudgedThisBatch = false;
+        const evaluateFlail = (): 'stop' | 'nudge' | undefined => {
+          if (!guard) return undefined;
+          if (consecutiveFailures >= guard.stopAfter || repeatMax >= guard.repeatStopAfter) {
+            stopping = true;
+            return 'stop';
+          }
+          if (!nudged && (consecutiveFailures >= guard.nudgeAfter || repeatMax >= guard.repeatNudgeAfter)) {
+            nudged = true;
+            return 'nudge';
+          }
+          return undefined;
+        };
+        const plannedCalls: { call: ToolCallBlock; executionId: string; journaled: boolean }[] = [];
+        for (const call of calls) {
+          const executionId = createTelemetryId('tool');
+          const journaled = this._session
+            ? this.journal((session) => {
+                session.planTool(call, { executionId, requestId });
+                return true;
+              }) === true
+            : true;
+          plannedCalls.push({ call, executionId, journaled });
+          await this.observe(
+            createRuntimeEvent({ ...telemetryContext, requestId, toolCallId: call.id, toolExecutionId: executionId }, {
+              name: 'tool.planned',
+              attributes: { toolName: call.name },
+            }),
+          );
+        }
+        for (const { call, executionId, journaled } of plannedCalls) {
+          if (guardStoppedThisBatch) {
+            const explanation = 'not run: the flail guard stopped the remaining tool batch';
+            if (journaled && this._session) {
+              this.journal((session) => session.skipTool(executionId, explanation));
+            }
+            results.push({
+              type: 'toolResult',
+              toolCallId: call.id,
+              toolName: call.name,
+              content: [{ type: 'text', text: explanation }],
+              isError: true,
+            });
+            continue;
+          }
+          if (toolCalls >= budget.maxToolCalls) {
+            toolBudgetHit = true;
+            if (journaled && this._session) {
+              this.journal((session) => session.skipTool(executionId, 'per-turn tool-call budget exhausted'));
+            }
+            results.push({
+              type: 'toolResult',
+              toolCallId: call.id,
+              toolName: call.name,
+              content: [{ type: 'text', text: 'not run: per-turn tool-call budget exhausted' }],
+              isError: true,
+            });
+            continue;
+          }
+          if (runController.signal.aborted) {
+            if (journaled && this._session) {
+              this.journal((session) => session.skipTool(executionId, 'run was canceled before execution'));
+            }
+            results.push({
+              type: 'toolResult',
+              toolCallId: call.id,
+              toolName: call.name,
+              content: [{ type: 'text', text: 'not run: canceled before execution' }],
+              isError: true,
+            });
+            continue;
+          }
+          if (!journaled) {
+            results.push({
+              type: 'toolResult',
+              toolCallId: call.id,
+              toolName: call.name,
+              content: [{ type: 'text', text: 'not run: durable lifecycle journal is unavailable' }],
+              isError: true,
+            });
+            continue;
+          }
+          const tool = this.toolsByName.get(call.name);
+          let rejectedBeforeDispatch: string | undefined;
+          if (!tool) {
+            rejectedBeforeDispatch = `unknown tool "${call.name}"`;
+          } else {
+            try {
+              validateToolArguments(tool, call.arguments);
+            } catch (error) {
+              rejectedBeforeDispatch = error instanceof Error ? error.message : String(error);
+            }
+          }
+          if (rejectedBeforeDispatch) {
+            const explanation = `not run: ${rejectedBeforeDispatch}`;
+            if (this._session) {
+              this.journal((session) => session.skipTool(executionId, explanation));
+            }
+            await this.observe(
+              createRuntimeEvent(
+                { ...telemetryContext, requestId, toolCallId: call.id, toolExecutionId: executionId },
+                {
+                  name: 'policy.decision',
+                  level: 'warn',
+                  attributes: {
+                    toolName: call.name,
+                    decision: 'deny',
+                    reason: tool ? 'invalid_arguments' : 'unknown_tool',
+                  },
+                },
+              ),
+            );
+            results.push({
+              type: 'toolResult',
+              toolCallId: call.id,
+              toolName: call.name,
+              content: [{ type: 'text', text: explanation }],
+              isError: true,
+            });
+            consecutiveFailures++;
+            // Validation may reject non-JSON/circular input from an embedded
+            // provider. Do not stringify that hostile value for flail tracking.
+            const key = `${call.name}:rejected:${rejectedBeforeDispatch.slice(0, 256)}`;
+            const repeats = (failCounts.get(key) ?? 0) + 1;
+            failCounts.set(key, repeats);
+            if (repeats > repeatMax) repeatMax = repeats;
+            const decision = evaluateFlail();
+            if (decision === 'stop') {
+              guardStoppedThisBatch = true;
+              yield { type: 'flail_stop', consecutiveFailures };
+            } else if (decision === 'nudge') {
+              guardNudgedThisBatch = true;
+              yield { type: 'flail_nudge', consecutiveFailures };
+            }
+            continue;
+          }
+          if (this._session) {
+            const started = this.journal((session) => {
+              session.startTool(executionId);
+              return true;
+            });
+            if (!started) {
+              results.push({
+                type: 'toolResult',
+                toolCallId: call.id,
+                toolName: call.name,
+                content: [{ type: 'text', text: 'not run: tool start could not be durably recorded' }],
+                isError: true,
+              });
+              continue;
+            }
+          }
+          toolCalls++;
+          const toolContext: TelemetryContext = {
+            ...telemetryContext,
+            requestId,
+            toolCallId: call.id,
+            toolExecutionId: executionId,
+          };
+          const toolSpan = createSpanStarted(toolContext, {
+            name: 'tool.execute',
+            parentSpanId: runSpan.spanId,
+            attributes: { toolName: call.name },
+          });
+          const toolStartedAt = Date.now();
+          await this.observe(toolSpan);
+          // Dispatch before yielding the public start event. If the consumer
+          // returns from the async iterator at that yield, the durable `started`
+          // row truthfully means a side effect may already be in flight.
+          const executionPromise = this.executeCall(call, runController.signal);
+          let resumedAfterToolStart = false;
+          try {
+            yield { type: 'tool_start', call };
+            resumedAfterToolStart = true;
+          } finally {
+            if (!resumedAfterToolStart) {
+              if (!runController.signal.aborted) {
+                runController.abort(new Error('agent run consumer stopped after tool dispatch'));
+              }
+              if (this._session) {
+                this.journal((session) =>
+                  session.markToolOutcomeUnknown(
+                    executionId,
+                    'run consumer stopped after dispatch but before the executor result was recorded',
+                  ),
+                );
+              }
+            }
+          }
+          const execution = await executionPromise;
+          const result = boundToolOutput(execution.result, budget.maxToolOutputBytes);
+          if (this._session) {
+            this.journal((session) => {
+              if (execution.outcomeUnknown) {
+                session.markToolOutcomeUnknown(
+                  executionId,
+                  'cancellation occurred after dispatch but before the executor reported a terminal result',
+                );
+              } else if (result.isError) {
+                const first = result.content.find((block) => block.type === 'text');
+                session.failTool(executionId, first?.type === 'text' ? first.text : 'tool returned an error');
+              } else {
+                session.completeTool(executionId);
+              }
+            });
+          }
+          await this.observe(
+            createSpanEnded(toolContext, {
+              name: 'tool.execute',
+              spanId: toolSpan.spanId,
+              parentSpanId: runSpan.spanId,
+              status: runController.signal.aborted ? 'canceled' : result.isError ? 'error' : 'ok',
+              durationMs: Date.now() - toolStartedAt,
+              attributes: { toolName: call.name, isError: result.isError === true },
+            }),
+          );
+          yield { type: 'tool_end', call, result };
+          if (result.isError && !runController.signal.aborted) {
+            consecutiveFailures++;
+            const key = `${call.name}:${JSON.stringify(call.arguments)}`;
+            const repeats = (failCounts.get(key) ?? 0) + 1;
+            failCounts.set(key, repeats);
+            if (repeats > repeatMax) repeatMax = repeats;
+          } else if (!result.isError) {
+            consecutiveFailures = 0;
+            failCounts.clear();
+            nudged = false;
+          }
+          results.push({
+            type: 'toolResult',
+            toolCallId: call.id,
+            toolName: call.name,
+            content: result.content,
+            ...(result.isError ? { isError: true } : {}),
+          });
+          const decision = evaluateFlail();
+          if (decision === 'stop') {
+            guardStoppedThisBatch = true;
+            yield { type: 'flail_stop', consecutiveFailures };
+          } else if (decision === 'nudge') {
+            guardNudgedThisBatch = true;
+            yield { type: 'flail_nudge', consecutiveFailures };
+          }
+        }
+        const content: UserBlock[] = [...results];
+        if (toolBudgetHit) {
+          status = 'budget_exceeded';
+          reason = 'tool_calls';
+          await this.observeBudget(telemetryContext, 'tool_calls');
+          yield { type: 'budget_exceeded', reason: 'tool_calls' };
+          terminal = true;
+        } else if (runController.signal.aborted) {
+          status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
+          reason = deadlineExceeded ? 'wall_time' : 'user_abort';
+          if (deadlineExceeded) {
+            await this.observeBudget(telemetryContext, 'wall_time');
+            yield { type: 'budget_exceeded', reason: 'wall_time' };
+          }
+          terminal = true;
+        } else if (guardStoppedThisBatch) {
+          content.push({ type: 'text', text: STOP_TEXT });
+        } else if (guardNudgedThisBatch) {
+          content.push({ type: 'text', text: NUDGE_TEXT });
+        }
+        const resultMessage: Message = { role: 'user', content };
+        this.messages.push(resultMessage);
+        if (!this.persist(resultMessage)) {
+          status = 'incomplete';
+          reason = 'persistence';
+          terminal = true;
+        }
+      }
+      runBodyCompleted = true;
+    } catch (error) {
+      failed = true;
+      failedError = error;
+      for (const session of runSessions) {
+        this.journalFor(session, (target) => target.setRunStatus('failed', String(error)));
+      }
+      await this.observe(
+        createRuntimeEvent(telemetryContext, {
+          name: 'runtime.error',
+          level: 'error',
+          attributes: { errorType: error instanceof Error ? error.name : 'Error', message: String(error) },
+        }),
+      );
+      throw error;
+    } finally {
+      if (!runBodyCompleted && !failed) {
+        status = 'canceled';
+        reason = 'user_abort';
+        if (!runController.signal.aborted) {
+          runController.abort(new Error('agent run consumer stopped iteration'));
+        }
+      }
+      if (!failed) {
+        let terminalPersisted = true;
+        for (const session of runSessions) {
+          const written = this.journalFor(session, (target) => {
+            target.setRunStatus(status, reason);
+            return true;
+          });
+          if (written !== true) terminalPersisted = false;
+        }
+        // Every externally visible terminal requires a durable row whenever this
+        // run owns a session. The failing append itself may make a corrective row
+        // impossible, but CLI/telemetry must still identify persistence as the
+        // controlling failure and force the journal to be reopened.
+        if (!terminalPersisted) {
+          status = 'incomplete';
+          reason = 'persistence';
+        }
+        // Once every segment of a continued run has a durable terminal row, the
+        // newest session is the sole append target. Do not retain ancestor locks
+        // (or one process exit listener per historical segment) indefinitely.
+        if (terminalPersisted) {
+          for (const session of runSessions) {
+            if (session.id !== this._session?.id) releaseSessionLock(session.file);
+          }
+        }
+      }
+      const spanStatus = failed
+        ? 'error'
+        : status === 'completed'
+          ? 'ok'
+          : status === 'canceled'
+            ? 'canceled'
+            : status;
+      await this.observe(
+        createRuntimeEvent(telemetryContext, {
+          name: 'run.status',
+          level: failed || status !== 'completed' ? 'warn' : 'info',
+          attributes: { status: failed ? 'failed' : status, reason, modelRequests: iterations, toolCalls },
+        }),
+      );
+      await this.observe(
+        createSpanEnded(runTelemetryContext, {
+          name: 'agent.run',
+          spanId: runSpan.spanId,
+          status: spanStatus,
+          durationMs: Date.now() - runStartedAt,
+          ...(failedError instanceof Error
+            ? { error: { type: failedError.name, message: failedError.message, ...(failedError.stack ? { stack: failedError.stack } : {}) } }
+            : {}),
+          attributes: { reason, modelRequests: iterations, toolCalls },
+        }),
+      );
+      await this.flushObserver();
+      clearTimeout(deadline);
+      signal?.removeEventListener('abort', forwardAbort);
+      this.running = false;
+      this.activeTelemetryContext = undefined;
+      this.activeRunSignal = undefined;
+      this.lastTurnUsage = turnUsage;
+    }
+
+    yield { type: 'turn_done', iterations, toolCalls, usage: turnUsage, status, reason };
   }
 
   private offloadCounter = 0;
   private offloadDirPath?: string;
+  private offloadDirReference?: string;
 
-  private offloadDir(): string {
+  private offloadDir(): { path: string; reference: string } {
     if (!this.offloadDirPath) {
-      const base = this._session
-        ? this._session.file.replace(/\.jsonl$/, '.artifacts')
-        : join(tmpdir(), `pi-offload-${process.pid}`);
-      mkdirSync(base, { recursive: true });
+      const context = this.toolContext();
+      const root = resolveWorkspaceRoot(context);
+      // A fresh unpredictable directory avoids overwriting an earlier run's
+      // offloads after resume. Its local ignore file keeps raw tool output (which
+      // may contain credentials or proprietary source) out of `git add -A`.
+      const reference = join('.pi', 'artifacts', createTelemetryId('event'));
+      let base = resolveWorkspacePath(context, join(root, reference), { allowAbsolute: true, mustExist: false });
+      mkdirSync(base, { recursive: true, mode: 0o700 });
+      // Re-resolve after creation to catch a symlink introduced in the path.
+      base = resolveWorkspacePath(context, join(root, reference), { allowAbsolute: true });
+      atomicWriteTextFile(join(base, '.gitignore'), '*\n!.gitignore\n', { mode: 0o600 });
       this.offloadDirPath = base;
+      this.offloadDirReference = relative(root, base);
     }
-    return this.offloadDirPath;
+    return { path: this.offloadDirPath!, reference: this.offloadDirReference! };
   }
 
   /**
@@ -381,96 +1664,461 @@ export class Agent {
     let count = 0;
     let savedChars = 0;
     for (const { block, chars } of eligible) {
-      const path = join(this.offloadDir(), `offload-${++this.offloadCounter}.txt`);
       const text = block.content
         .filter((inner): inner is Extract<typeof inner, { type: 'text' }> => inner.type === 'text')
         .map((inner) => inner.text)
         .join('\n');
       try {
-        writeFileSync(path, text, 'utf8');
+        const directory = this.offloadDir();
+        const name = `offload-${++this.offloadCounter}.txt`;
+        const path = join(directory.path, name);
+        atomicWriteTextFile(path, text, { mode: 0o600 });
+        block.content = [
+          {
+            type: 'text',
+            text: `[offloaded: ${chars}-char ${block.toolName} output saved to ${join(directory.reference, name)}; read that workspace-relative file again if needed]`,
+          },
+        ];
       } catch {
         continue; // disk trouble: leave the block inline rather than lose it
       }
-      block.content = [
-        {
-          type: 'text',
-          text: `[offloaded: ${chars}-char ${block.toolName} output saved to ${path}; read that file again if needed]`,
-        },
-      ];
       count++;
       savedChars += chars;
     }
     return count > 0 ? { count, savedChars } : undefined;
   }
 
-  /** Compaction fires when the last request's real context use crosses window - reserve. */
+  /** Compaction fires before the projected next request crosses window - reserve. */
   private compactThreshold(): number | undefined {
     const window = this.options.contextWindow;
-    if (!window || this.options.autoCompact === false) return undefined;
+    if (!window) return undefined;
     return window - Math.min(16_384, Math.floor(window / 4));
+  }
+
+  private compactionKeepTokens(): number {
+    const window = this.options.contextWindow ?? 128_000;
+    return Math.min(KEEP_RECENT_TOKENS, Math.max(1_000, Math.floor(window / 5)));
+  }
+
+  /**
+   * Checkpoint the live (possibly micro-offloaded) transcript into a fresh,
+   * self-contained session before the append-only journal reaches its recovery
+   * ceiling. `session_ready` is the atomic publication marker; an interrupted
+   * copy remains discoverable for audit but is never selected by `--continue`.
+   */
+  private async rotateSessionForStorage(): Promise<void> {
+    const source = this._session;
+    if (!source) return;
+    const locked = Session.createLocked(this.cwd, this.model, dirname(source.file), {
+      lineage: {
+        parentSessionId: source.id,
+        parentFile: source.file,
+        relation: 'continuation',
+        priorUsage: structuredClone(this.usageTotal),
+        priorUsageComplete: this.usageHistoryComplete,
+      },
+    });
+    const fresh = locked.session;
+    try {
+      fresh.appendMany(this.messages.map((message) => ({ t: 'msg' as const, message })));
+      // Rotating a snapshot that is already at the threshold would loop forever
+      // and cannot create recovery headroom. Require explicit compaction instead.
+      if (statSync(fresh.file).size >= SESSION_ROTATE_BYTES - 1_024) {
+        throw new RangeError('live transcript is too large for lossless session rotation; compact it first');
+      }
+      fresh.setRunStatus('running', `continued from ${source.id}`);
+      fresh.markReady();
+    } catch (error) {
+      locked.release();
+      try {
+        unlinkSync(fresh.file);
+      } catch {
+        /* preserve the original rotation error */
+      }
+      throw new CompactionPersistenceError(`session rotation failed; original session retained: ${String(error)}`, {
+        cause: error,
+      });
+    }
+    this._session = fresh;
+    const telemetryContext: TelemetryContext = {
+      ...(this.activeTelemetryContext ?? createTelemetryContext(source.id)),
+      sessionId: fresh.id,
+    };
+    this.activeTelemetryContext = telemetryContext;
+    await this.observe(
+      createRuntimeEvent(telemetryContext, {
+        name: 'session.lineage',
+        attributes: { relation: 'continuation', trigger: 'journal_rotation', parentSessionId: source.id },
+      }),
+    );
   }
 
   /**
    * Replaces everything before the keep-boundary with a one-message summary. The
    * compacted state goes to a NEW session file — the full transcript stays on disk.
    */
-  private async compact(signal?: AbortSignal): Promise<number> {
-    const summary = await this.summarize(signal);
-    const keepFrom = chooseKeepBoundary(this.messages);
+  private async compact(
+    signal: AbortSignal | undefined,
+    turnUsage: Usage,
+    onRequestStart: () => void,
+  ): Promise<number> {
+    const keepFrom = chooseKeepBoundary(this.messages, this.compactionKeepTokens());
+    if (keepFrom <= 0) {
+      throw new Error(
+        'context preflight failed: the current turn alone does not fit the configured context window; shorten or offload the input',
+      );
+    }
+    const telemetryContext = this.activeTelemetryContext ?? createTelemetryContext(this._session?.id);
+    const compactSpan = createSpanStarted(telemetryContext, { name: 'context.compact' });
+    const compactStartedAt = Date.now();
+    await this.observe(compactSpan);
+    const sourceSession = this._session;
+    const compactionId = this.journalFor(sourceSession, (session) =>
+      session.beginCompaction('auto', { keepFromMessage: keepFrom }),
+    );
+    if (sourceSession && !compactionId) {
+      throw new CompactionPersistenceError('compaction did not start because its source journal is unavailable');
+    }
+    const droppedMessages = this.messages.slice(0, keepFrom);
+    let summarized: { text: string; usage: Usage };
+    try {
+      summarized = await this.summarizeMessages(droppedMessages, signal, turnUsage, onRequestStart);
+    } catch (error) {
+      if (compactionId) {
+        this.journalFor(sourceSession, (session) => session.failCompaction(compactionId, String(error)));
+      }
+      await this.observe(
+        createSpanEnded(telemetryContext, {
+          name: 'context.compact',
+          spanId: compactSpan.spanId,
+          status: 'error',
+          durationMs: Date.now() - compactStartedAt,
+          error: { type: error instanceof Error ? error.name : 'Error', message: String(error) },
+        }),
+      );
+      throw error;
+    }
     const kept = this.messages.slice(keepFrom);
     const dropped = this.messages.length - kept.length;
     const rebuilt: Message[] = [
       {
         role: 'user',
-        content: [{ type: 'text', text: `Summary of the earlier part of this session (auto-compacted):\n\n${summary}` }],
+        content: [
+          {
+            type: 'text',
+            text: `Summary of the earlier part of this session (auto-compacted):\n\n${summarized.text}`,
+          },
+        ],
       },
       ...kept,
     ];
-    if (this._session && !this.persistDisabled) {
+    if (sourceSession && this.persistDisabled) {
+      throw new CompactionPersistenceError(
+        'compaction persistence failed; the billed summary could not be durably linked to its source session',
+      );
+    }
+    if (sourceSession && !this.persistDisabled) {
       try {
-        const fresh = Session.create(this.cwd, this.model, dirname(this._session.file));
-        tryLockSession(fresh.file);
-        for (const message of rebuilt) fresh.append({ t: 'msg', message });
+        const locked = Session.createLocked(this.cwd, this.model, dirname(sourceSession.file), {
+          lineage: {
+            parentSessionId: sourceSession.id,
+            parentFile: sourceSession.file,
+            relation: 'compaction',
+            priorUsage: structuredClone(this.usageTotal),
+            priorUsageComplete: this.usageHistoryComplete,
+          },
+        });
+        const fresh = locked.session;
+        let commitAttempted = false;
+        try {
+          fresh.appendMany(rebuilt.map((message) => ({ t: 'msg' as const, message })));
+          // The child must identify the interrupted run before the source commit
+          // makes it the resumable head. A crash in the publication window can
+          // then be recovered as incomplete instead of silently abandoning work.
+          fresh.setRunStatus('running', `continued from ${sourceSession.id}`);
+          commitAttempted = true;
+          const committed =
+            compactionId !== undefined &&
+            this.journalFor(sourceSession, (session) => {
+              session.completeCompaction(compactionId, dropped, {
+                targetSessionId: fresh.id,
+                usage: summarized.usage,
+              });
+              return true;
+            }) === true;
+          if (!committed) throw new Error('source compaction commit was not durably recorded');
+        } catch (error) {
+          locked.release();
+          if (!commitAttempted) {
+            try {
+              unlinkSync(fresh.file);
+            } catch {
+              /* retain the original persistence error */
+            }
+          }
+          throw error;
+        }
         this._session = fresh;
+        const childTelemetryContext: TelemetryContext = {
+          ...telemetryContext,
+          sessionId: fresh.id,
+        };
+        this.activeTelemetryContext = childTelemetryContext;
+        await this.observe(
+          createRuntimeEvent(childTelemetryContext, {
+            name: 'session.lineage',
+            attributes: { relation: 'compaction', parentSessionId: sourceSession.id },
+          }),
+        );
       } catch (error) {
-        this.persistDisabled = true;
-        process.stderr.write(`warning: session logging disabled — ${String(error)}\n`);
+        if (compactionId) {
+          this.journalFor(sourceSession, (session) => session.failCompaction(compactionId, String(error)));
+        }
+        await this.observe(
+          createSpanEnded(telemetryContext, {
+            name: 'context.compact',
+            spanId: compactSpan.spanId,
+            status: 'error',
+            durationMs: Date.now() - compactStartedAt,
+            error: { type: error instanceof Error ? error.name : 'Error', message: String(error) },
+          }),
+        );
+        throw new CompactionPersistenceError(
+          `compaction persistence failed; original session retained: ${String(error)}`,
+          { cause: error },
+        );
       }
     }
     this.messages.splice(0, this.messages.length, ...rebuilt);
-    this.lastContextTokens = 0; // next real usage report re-establishes the level
+    this.lastContextTokens = 0;
+    this.lastEstimatedRequestTokens = 0;
+    await this.observe(
+      createSpanEnded(telemetryContext, {
+        name: 'context.compact',
+        spanId: compactSpan.spanId,
+        status: 'ok',
+        durationMs: Date.now() - compactStartedAt,
+        attributes: { droppedMessages: dropped },
+      }),
+    );
     return dropped;
   }
 
   /**
-   * One non-persisted model call that condenses the conversation into a handoff
-   * summary — the caller seeds a fresh session with it (/compact and auto-compaction).
+   * Build a bounded summary request. If old history alone exceeds the context
+   * window, serialize it and retain its beginning and end rather than submitting
+   * another request that is guaranteed to overflow.
    */
-  async summarize(signal?: AbortSignal): Promise<string> {
+  private summaryRequestMessages(messages: Message[]): Message[] {
+    const instructionText =
+      'Summarize this earlier session prefix for continuation: goal, completed work, files touched, key decisions, unresolved risks, and immediate next steps. Markdown, under 300 words.';
+    const instruction: Message = {
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: instructionText,
+        },
+      ],
+    };
+    // The summary output cap must fit in the same model window as its input.
+    // Normal compaction has a larger reserve, but tiny/custom windows need this
+    // explicit bound as well.
+    const threshold = Math.min(
+      this.compactThreshold() ?? 96_000,
+      this.options.contextWindow
+        ? Math.max(0, this.options.contextWindow - COMPACTION_SUMMARY_MAX_TOKENS)
+        : Number.POSITIVE_INFINITY,
+    );
+    const estimate = (candidate: Message[]): number =>
+      estimateTokens(JSON.stringify({ system: COMPACTION_SYSTEM_PROMPT, messages: candidate, tools: [] }));
+    const direct = [...messages, instruction];
+    if (estimate(direct) <= threshold) return direct;
+
+    const serialized = JSON.stringify(messages);
+    const bounded = (maxChars: number): Message[] => {
+      const transcript =
+        maxChars === 0
+          ? '[serialized transcript omitted because even its bounded envelope was too large]'
+          : truncateMiddle(serialized, maxChars);
+      return [{
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: `The following serialized earlier transcript was bounded for safety; a marker identifies omitted middle content. Summarize only what is present.\n\n${transcript}\n\n${instructionText}`,
+          },
+        ],
+      }];
+    };
+
+    // Truncation markers and JSON escaping add their own bytes. Binary-search
+    // against the final request envelope rather than assuming four chars/token;
+    // code-heavy transcripts full of quotes/backslashes can otherwise double.
+    let low = 0;
+    let high = serialized.length;
+    let best: Message[] | undefined;
+    while (low <= high) {
+      const midpoint = Math.floor((low + high) / 2);
+      const candidate = bounded(midpoint);
+      if (estimate(candidate) <= threshold) {
+        best = candidate;
+        low = midpoint + 1;
+      } else {
+        high = midpoint - 1;
+      }
+    }
+    if (!best) {
+      throw new RangeError(
+        `context preflight failed: compaction summary envelope exceeds the ${threshold}-token input limit`,
+      );
+    }
+    return best;
+  }
+
+  private async summarizeMessages(
+    messages: Message[],
+    signal?: AbortSignal,
+    turnUsage?: Usage,
+    onRequestStart?: () => void,
+  ): Promise<{ text: string; usage: Usage }> {
     let text = '';
+    let done: { message: AssistantMessage; stopReason: StopReason; usage: Usage } | undefined;
+    const summaryMessages = this.summaryRequestMessages(messages);
+    const summaryThreshold = Math.min(
+      this.compactThreshold() ?? 96_000,
+      this.options.contextWindow
+        ? Math.max(0, this.options.contextWindow - COMPACTION_SUMMARY_MAX_TOKENS)
+        : Number.POSITIVE_INFINITY,
+    );
+    const summaryEstimate = estimateTokens(
+      JSON.stringify({ system: COMPACTION_SYSTEM_PROMPT, messages: summaryMessages, tools: [] }),
+    );
+    if (summaryEstimate > summaryThreshold) {
+      throw new RangeError(
+        `context preflight failed: compaction summary request projects ${summaryEstimate} tokens against a ${summaryThreshold}-token input limit`,
+      );
+    }
+    const requestId = createTelemetryId('request');
+    const requestJournaled =
+      !this._session ||
+      this.journal((session) => {
+        session.beginModelRequest(this.model, { requestId, messageCount: summaryMessages.length });
+        return true;
+      }) === true;
+    if (!requestJournaled) {
+      throw new CompactionPersistenceError('summary request did not start because its session journal is unavailable');
+    }
+    this.requestCount++;
+    onRequestStart?.();
+    const telemetryContext = {
+      ...(this.activeTelemetryContext ?? createTelemetryContext(this._session?.id)),
+      requestId,
+    };
+    const requestSpan = createSpanStarted(telemetryContext, {
+      name: 'model.request',
+      attributes: { model: this.model, purpose: 'compaction', messageCount: summaryMessages.length },
+    });
+    const requestStartedAt = Date.now();
+    await this.observe(requestSpan);
     const stream = this.options.client.stream(
       {
         model: this.model,
-        system: 'You condense coding sessions into handoff notes. Be terse and concrete.',
-        messages: [
-          ...this.messages,
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: 'Summarize this session for a fresh continuation: goal, current state, files touched, key decisions, and immediate next steps. Markdown, under 300 words.',
-              },
-            ],
-          },
-        ],
+        system: COMPACTION_SYSTEM_PROMPT,
+        messages: summaryMessages,
         tools: [],
+        maxAttempts: 1,
+        maxTokens: COMPACTION_SUMMARY_MAX_TOKENS,
+        timeoutMs: this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
       },
       signal,
     );
-    for await (const event of stream) {
-      if (event.type === 'text_delta') text += event.text;
+    const streamIterator = stream[Symbol.asyncIterator]();
+    try {
+      while (true) {
+        const next = await nextStreamEvent(streamIterator, signal);
+        if (next.done) break;
+        const event = next.value;
+        if (event.type === 'text_delta') text += event.text;
+        else if (event.type === 'done') done = event;
+      }
+    } catch (error) {
+      releaseStream(streamIterator);
+      if (signal?.aborted) {
+        this.journal((session) =>
+          session.markModelRequestOutcomeUnknown(
+            requestId,
+            'summary request was canceled after dispatch before a terminal response was recorded',
+          ),
+        );
+      } else {
+        this.journal((session) => session.failModelRequest(requestId, String(error)));
+      }
+      await this.observe(
+        createSpanEnded(telemetryContext, {
+          name: 'model.request',
+          spanId: requestSpan.spanId,
+          status: 'error',
+          durationMs: Date.now() - requestStartedAt,
+          error: { type: error instanceof Error ? error.name : 'Error', message: String(error) },
+          attributes: { purpose: 'compaction' },
+        }),
+      );
+      throw error;
     }
-    return text.trim();
+    if (!done) {
+      this.journal((session) => session.failModelRequest(requestId, 'summarizer had no terminal result'));
+      await this.observe(
+        createSpanEnded(telemetryContext, {
+          name: 'model.request',
+          spanId: requestSpan.spanId,
+          status: 'incomplete',
+          durationMs: Date.now() - requestStartedAt,
+          attributes: { purpose: 'compaction' },
+        }),
+      );
+      throw new Error('compaction failed: summarizer stream ended without a terminal result');
+    }
+    const completionJournaled =
+      !this._session ||
+      this.journal((session) => {
+        session.completeModelRequest(requestId, { stopReason: done!.stopReason, usage: done!.usage });
+        return true;
+      }) === true;
+    // Usage is billable once the provider has completed, even if the summary is
+    // semantically unusable (truncated/empty) or its later persistence fails.
+    addUsage(this.usageTotal, done.usage);
+    if (turnUsage) addUsage(turnUsage, done.usage);
+    await this.observe(
+      createSpanEnded(telemetryContext, {
+        name: 'model.request',
+        spanId: requestSpan.spanId,
+        status: done.stopReason === 'end_turn' ? 'ok' : 'incomplete',
+        durationMs: Date.now() - requestStartedAt,
+        attributes: { purpose: 'compaction', stopReason: done.stopReason, outputTokens: done.usage.outputTokens },
+      }),
+    );
+    if (!completionJournaled) {
+      throw new CompactionPersistenceError(
+        'compaction failed: the billed summary completion could not be durably recorded',
+      );
+    }
+    if (done.stopReason !== 'end_turn') {
+      throw new Error(`compaction failed: summarizer stopped with ${done.stopReason}`);
+    }
+    if (!text.trim()) {
+      text = done.message.content
+        .filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text')
+        .map((block) => block.text)
+        .join('');
+    }
+    if (!text.trim()) throw new Error('compaction failed: summarizer returned an empty summary');
+    return { text: text.trim(), usage: done.usage };
+  }
+
+  /** Manual handoff summary; unlike old behavior, its request and usage are accounted. */
+  async summarize(signal?: AbortSignal): Promise<string> {
+    const summarized = await this.summarizeMessages(this.messages, signal);
+    return summarized.text;
   }
 }

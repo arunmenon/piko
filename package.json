@@ -1,16 +1,34 @@
 {
   "name": "piko",
   "private": true,
-  "repository": "github:arunmenon/piko",
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "description": "Lean, inspectable agentic coding harness",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arunmenon/piko.git"
+  },
+  "homepage": "https://github.com/arunmenon/piko#readme",
+  "bugs": {
+    "url": "https://github.com/arunmenon/piko/issues"
+  },
   "type": "module",
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
     "build": "tsc -b packages/ai packages/core packages/cli",
-    "test": "npm run build && node --import tsx --test packages/ai/tests/*.test.ts packages/core/tests/*.test.ts packages/cli/tests/*.test.ts",
+    "test": "npm run build && npm run typecheck:eval && npm run test:unit && npm run test:bench",
+    "typecheck:eval": "tsc -p eval/tsconfig.json",
+    "test:unit": "node --import tsx --test packages/ai/tests/*.test.ts packages/core/tests/*.test.ts packages/cli/tests/*.test.ts eval/*.test.ts",
+    "test:bench": "python3 -m unittest discover -s bench -p 'test_*.py'",
     "check-budget": "node --import tsx scripts/check-budget.ts",
+    "preeval": "npm run build",
     "eval": "node --import tsx eval/run.ts",
+    "pack:dry-run": "npm pack --dry-run --workspaces --json",
+    "verify": "npm test && npm run check-budget && npm run pack:dry-run",
     "pi": "node packages/cli/dist/main.js"
   },
   "devDependencies": {
@@ -20,6 +38,7 @@
     "typescript": "^5.7.2"
   },
   "engines": {
-    "node": ">=20.0.0"
-  }
+    "node": ">=20.11.0"
+  },
+  "packageManager": "npm@10.9.2"
 }

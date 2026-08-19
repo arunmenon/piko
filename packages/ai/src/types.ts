@@ -92,11 +92,35 @@ export interface CompletionRequest {
   temperature?: number;
   /** extended-thinking budget in tokens (Anthropic only; ignored elsewhere) */
   thinkingBudget?: number;
+  /**
+   * Wall-clock deadline for this completion, including retries and streaming.
+   * A timeout rejects with {@link RequestTimeoutError}; it is never reported as
+   * a successful or retryable completion.
+   */
+  timeoutMs?: number;
+  /**
+   * Maximum provider HTTP attempts for this logical completion. The client
+   * validates this value and clamps it to its configured retry bound.
+   */
+  maxAttempts?: number;
+}
+
+/**
+ * Internal per-attempt signal used by retrying clients. Bundled providers mark
+ * it as soon as they receive a successful HTTP response with a body, before the
+ * first body read, so a possibly billed/side-effecting generation is never replayed.
+ */
+export interface ProviderAttemptActivity {
+  markResponseActivity(): void;
 }
 
 export interface Provider {
   readonly name: string;
-  stream(request: CompletionRequest, signal?: AbortSignal): AsyncGenerator<StreamEvent, void, void>;
+  stream(
+    request: CompletionRequest,
+    signal?: AbortSignal,
+    attemptActivity?: ProviderAttemptActivity,
+  ): AsyncGenerator<StreamEvent, void, void>;
 }
 
 export class ApiError extends Error {
@@ -113,5 +137,63 @@ export class ApiError extends Error {
   get retryable(): boolean {
     if (this.status === undefined) return true; // network-level failure
     return this.status === 429 || this.status >= 500;
+  }
+}
+
+/** The provider returned a syntactically or structurally invalid stream. */
+export class ProviderProtocolError extends Error {
+  constructor(
+    public readonly provider: string,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(`${provider}: protocol error: ${message}`, options);
+    this.name = 'ProviderProtocolError';
+  }
+}
+
+/** The HTTP connection failed before the provider produced a valid terminal event. */
+export class ProviderTransportError extends Error {
+  constructor(
+    public readonly provider: string,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(`${provider}: transport error: ${message}`, options);
+    this.name = 'ProviderTransportError';
+  }
+}
+
+/** The completion exceeded its configured wall-clock deadline. */
+export class RequestTimeoutError extends Error {
+  constructor(public readonly timeoutMs: number) {
+    super(`completion timed out after ${timeoutMs}ms`);
+    this.name = 'RequestTimeoutError';
+  }
+}
+
+/** Reads one provider-reported token counter without allowing coercion or precision loss. */
+export function readUsageCounter(provider: string, field: string, value: unknown): number {
+  if (value === undefined || value === null) {
+    throw new ProviderProtocolError(provider, `missing required usage counter ${field}`);
+  }
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new ProviderProtocolError(provider, `usage counter ${field} must be a finite nonnegative integer`);
+  }
+  return value;
+}
+
+/** Validates every token-shaped counter in a provider usage object, including nested detail fields. */
+export function validateUsageCounters(provider: string, value: unknown, path = 'usage'): void {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ProviderProtocolError(provider, `${path} must be an object`);
+  }
+  for (const [key, child] of Object.entries(value)) {
+    const childPath = `${path}.${key}`;
+    if (key.endsWith('_tokens') && child !== undefined && child !== null) {
+      readUsageCounter(provider, childPath, child);
+    } else if (child !== null && typeof child === 'object' && !Array.isArray(child)) {
+      validateUsageCounters(provider, child, childPath);
+    }
   }
 }

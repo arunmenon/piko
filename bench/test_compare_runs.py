@@ -1,0 +1,63 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from bench.compare_runs import collect, paired_task_ratio, pi_tokens, summarize, terminus_tokens
+
+
+def make_trial(root: Path, task: str, trial: str, *, resolved: bool, input_tokens: int, output_tokens: int):
+    directory = root / task / trial
+    (directory / "panes").mkdir(parents=True)
+    (directory / "results.json").write_text(
+        json.dumps(
+            {
+                "is_resolved": resolved,
+                "total_input_tokens": input_tokens,
+                "total_output_tokens": output_tokens,
+            }
+        )
+    )
+    usage = {
+        "v": 1,
+        "type": "usage_summary",
+        "usage": {
+            "inputTokens": input_tokens - 3,
+            "outputTokens": output_tokens,
+            "cacheReadTokens": 2,
+            "cacheWriteTokens": 1,
+        },
+        "requests": 2,
+    }
+    spoofed = {"usage": {"inputTokens": 999999}, "requests": 77}
+    (directory / "panes" / "agent.txt").write_text(json.dumps(spoofed) + "\n" + json.dumps(usage) + "\n")
+
+
+class CompareRunsTests(unittest.TestCase):
+    def test_repeated_trials_are_retained_and_summarized(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            make_trial(root, "task-a", "trial-1", resolved=True, input_tokens=100, output_tokens=10)
+            make_trial(root, "task-a", "trial-2", resolved=False, input_tokens=200, output_tokens=20)
+            rows = collect(root, pi_tokens)
+            self.assertEqual(len(rows["task-a"]), 2)
+            summary = summarize("pi", rows, emit=False)
+            self.assertEqual(summary["trials"], 2)
+            self.assertEqual(summary["solved_trials"], 1)
+            self.assertEqual(summary["input_tokens"], 300)
+            self.assertEqual(summary["mean_input_per_measured_trial"], 150)
+
+    def test_ratio_uses_matched_task_means(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            pi_root, base_root = Path(first), Path(second)
+            make_trial(pi_root, "task-a", "trial-1", resolved=True, input_tokens=100, output_tokens=10)
+            make_trial(pi_root, "pi-only", "trial-1", resolved=True, input_tokens=1, output_tokens=1)
+            make_trial(base_root, "task-a", "trial-1", resolved=True, input_tokens=300, output_tokens=10)
+            make_trial(base_root, "base-only", "trial-1", resolved=True, input_tokens=999, output_tokens=1)
+            ratio = paired_task_ratio(collect(pi_root, pi_tokens), collect(base_root, terminus_tokens))
+            self.assertIsNotNone(ratio)
+            self.assertEqual(ratio, (3.0, 1))
+
+
+if __name__ == "__main__":
+    unittest.main()

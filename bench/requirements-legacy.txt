@@ -1,0 +1,4 @@
+# Legacy adapter compatibility. 0.2.18 is a published PyPI release and is the
+# final Terminal-Bench 0.2.x release as of this adapter update.
+# Requires Python >=3.12 and Docker.
+terminal-bench==0.2.18

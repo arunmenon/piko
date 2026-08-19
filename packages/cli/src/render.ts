@@ -1,7 +1,18 @@
 const useColor = process.stdout.isTTY === true && process.env['NO_COLOR'] === undefined;
 
+/**
+ * Remove terminal control bytes from untrusted text while retaining ordinary
+ * multiline output. In particular, ESC/C1 removal neutralizes CSI and OSC
+ * sequences instead of allowing model or repository content to control the
+ * user's terminal. Application-owned styling is added only after this boundary.
+ */
+export function sanitizeTerminalText(text: string): string {
+  return text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/gu, '');
+}
+
 function wrap(code: string, text: string): string {
-  return useColor ? `\x1b[${code}m${text}\x1b[0m` : text;
+  const safe = sanitizeTerminalText(text);
+  return useColor ? `\x1b[${code}m${safe}\x1b[0m` : safe;
 }
 
 export const dim = (text: string): string => wrap('2', text);
@@ -16,7 +27,7 @@ export function summarizeArgs(args: Record<string, unknown>): string {
 }
 
 export function oneLine(text: string, max: number): string {
-  const line = text.split('\n')[0] ?? '';
+  const line = sanitizeTerminalText(text).split('\n')[0] ?? '';
   return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 

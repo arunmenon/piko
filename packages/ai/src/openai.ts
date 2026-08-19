@@ -1,16 +1,26 @@
-import { sseEvents } from './sse.js';
+import {
+  createRequestSignalScope,
+  PROVIDER_STREAM_LIMITS,
+  readTextBodyLimited,
+  SSELimitError,
+  sseEvents,
+} from './sse.js';
 import {
   ApiError,
-  emptyUsage,
+  ProviderProtocolError,
+  ProviderTransportError,
+  readUsageCounter,
   type AssistantBlock,
   type AssistantMessage,
   type CompletionRequest,
   type Message,
   type Provider,
+  type ProviderAttemptActivity,
   type StopReason,
   type StreamEvent,
   type ToolCallBlock,
   type Usage,
+  validateUsageCounters,
 } from './types.js';
 
 const DEFAULT_MAX_TOKENS = 8192; // safe across deepseek/qwen/kimi output caps
@@ -117,6 +127,78 @@ interface PendingToolCall {
   argumentsJson: string;
 }
 
+function optionalUsageCounter(provider: string, field: string, value: unknown): number | undefined {
+  return value === undefined || value === null ? undefined : readUsageCounter(provider, field, value);
+}
+
+function addOpenAIChars(current: number, added: number, limit: number, label: string): number {
+  if (added > limit - current) {
+    throw new ProviderProtocolError('openai', `${label} exceeded ${limit} characters`);
+  }
+  return current + added;
+}
+
+/** A non-null usage object may be an incomplete compatibility placeholder. It
+ * is validated immediately, but only a self-contained prompt+completion report
+ * can satisfy the terminal accounting invariant. */
+function parseOpenAIUsage(raw: unknown): Usage | undefined {
+  validateUsageCounters('openai', raw);
+  const value = raw as Record<string, unknown>;
+  const promptTokens = optionalUsageCounter('openai', 'usage.prompt_tokens', value['prompt_tokens']);
+  const completionTokens = optionalUsageCounter('openai', 'usage.completion_tokens', value['completion_tokens']);
+
+  const detailsRaw = value['prompt_tokens_details'];
+  if (
+    detailsRaw !== undefined &&
+    detailsRaw !== null &&
+    (typeof detailsRaw !== 'object' || Array.isArray(detailsRaw))
+  ) {
+    throw new ProviderProtocolError('openai', 'usage.prompt_tokens_details must be an object');
+  }
+  const details = (detailsRaw ?? {}) as Record<string, unknown>;
+  const detailsCached = optionalUsageCounter(
+    'openai',
+    'usage.prompt_tokens_details.cached_tokens',
+    details['cached_tokens'],
+  );
+  const legacyCached = optionalUsageCounter(
+    'openai',
+    'usage.prompt_cache_hit_tokens',
+    value['prompt_cache_hit_tokens'],
+  );
+  if (detailsCached !== undefined && legacyCached !== undefined && detailsCached !== legacyCached) {
+    throw new ProviderProtocolError('openai', 'usage reported conflicting cached token counts');
+  }
+
+  // Missing required counters is not converted to zero. A later complete usage
+  // chunk may replace a compatibility placeholder; terminal validation requires it.
+  if (promptTokens === undefined || completionTokens === undefined) return undefined;
+
+  const cachedTokens = detailsCached ?? legacyCached ?? 0;
+  if (cachedTokens > promptTokens) {
+    throw new ProviderProtocolError('openai', 'cached tokens exceed prompt tokens');
+  }
+  const totalTokens = optionalUsageCounter('openai', 'usage.total_tokens', value['total_tokens']);
+  if (totalTokens !== undefined && totalTokens !== promptTokens + completionTokens) {
+    throw new ProviderProtocolError('openai', 'usage.total_tokens does not equal prompt_tokens + completion_tokens');
+  }
+  const cacheMissTokens = optionalUsageCounter(
+    'openai',
+    'usage.prompt_cache_miss_tokens',
+    value['prompt_cache_miss_tokens'],
+  );
+  if (cacheMissTokens !== undefined && cacheMissTokens !== promptTokens - cachedTokens) {
+    throw new ProviderProtocolError('openai', 'prompt cache hit/miss counters are inconsistent');
+  }
+  return {
+    inputTokens: promptTokens - cachedTokens,
+    outputTokens: completionTokens,
+    cacheReadTokens: cachedTokens,
+    // Chat Completions exposes cache reads, but no cache-write token counter.
+    cacheWriteTokens: 0,
+  };
+}
+
 /** Works with any OpenAI-compatible endpoint: OpenAI, Qwen, Moonshot/Kimi, DeepSeek, OpenRouter, vLLM, llama.cpp. */
 export class OpenAIProvider implements Provider {
   readonly name = 'openai';
@@ -126,101 +208,296 @@ export class OpenAIProvider implements Provider {
     private readonly baseUrl = 'https://api.openai.com/v1',
   ) {}
 
-  async *stream(request: CompletionRequest, signal?: AbortSignal): AsyncGenerator<StreamEvent, void, void> {
-    const response = await fetch(`${this.baseUrl.replace(/\/$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(buildOpenAIBody(request)),
-      signal,
-    });
-    if (!response.ok || !response.body) {
-      const body = await response.text().catch(() => '');
-      const retryAfter = Number(response.headers.get('retry-after'));
-      throw new ApiError(
-        `openai: HTTP ${response.status}`,
-        response.status,
-        body,
-        Number.isFinite(retryAfter) ? retryAfter * 1000 : undefined,
-      );
-    }
-
-    const usage: Usage = emptyUsage();
-    let text = '';
-    const toolCalls: PendingToolCall[] = [];
-    const slotByIndex = new Map<number, PendingToolCall>();
-    let stopReason: StopReason = 'end_turn';
-
-    for await (const event of sseEvents(response.body, signal)) {
-      const raw = event.data.trim();
-      if (!raw) continue;
-      if (raw === '[DONE]') break;
-      let data: Record<string, any>;
+  async *stream(
+    request: CompletionRequest,
+    signal?: AbortSignal,
+    attemptActivity?: ProviderAttemptActivity,
+  ): AsyncGenerator<StreamEvent, void, void> {
+    const scope = createRequestSignalScope(signal, request.timeoutMs);
+    try {
+      let response: Response;
       try {
-        data = JSON.parse(raw) as Record<string, any>;
-      } catch {
-        continue; // garbage/keepalive data line
-      }
-      if (data['usage']) {
-        const cached =
-          data['usage'].prompt_tokens_details?.cached_tokens ?? data['usage'].prompt_cache_hit_tokens ?? 0;
-        // normalize to Anthropic semantics: inputTokens excludes cache reads
-        usage.inputTokens = Math.max(0, (data['usage'].prompt_tokens ?? 0) - cached);
-        usage.outputTokens = data['usage'].completion_tokens ?? 0;
-        usage.cacheReadTokens = cached;
-      }
-      const choice = data['choices']?.[0];
-      if (!choice) continue;
-      if (choice.finish_reason) stopReason = mapFinishReason(choice.finish_reason);
-      const delta = choice.delta ?? {};
-      if (typeof delta.content === 'string' && delta.content.length > 0) {
-        text += delta.content;
-        yield { type: 'text_delta', text: delta.content };
-      }
-      if (typeof delta.refusal === 'string' && delta.refusal.length > 0) {
-        text += delta.refusal; // surface refusals instead of ending the turn with empty output
-        yield { type: 'text_delta', text: delta.refusal };
-      }
-      if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) {
-        yield { type: 'thinking_delta', text: delta.reasoning_content };
-      }
-      for (const part of delta.tool_calls ?? []) {
-        let entry = typeof part.index === 'number' ? slotByIndex.get(part.index) : toolCalls[toolCalls.length - 1];
-        // no index (or a fresh id on the last slot) starts a new call rather than corrupting the previous one
-        if (!entry || (part.id && entry.id && part.id !== entry.id)) {
-          entry = { id: '', name: '', argumentsJson: '' };
-          toolCalls.push(entry);
-          if (typeof part.index === 'number') slotByIndex.set(part.index, entry);
+        response = await fetch(`${this.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify(buildOpenAIBody(request)),
+          signal: scope.signal,
+        });
+      } catch (error) {
+        if (scope.signal?.aborted) throw scope.signal.reason ?? error;
+        if (error instanceof Error) {
+          throw new ProviderTransportError('openai', error.message, { cause: error });
         }
-        if (part.id) entry.id = part.id;
-        if (part.function?.name && !entry.name) entry.name = part.function.name;
-        if (part.function?.arguments) entry.argumentsJson += part.function.arguments;
+        throw error;
       }
-    }
+      if (!response.ok || !response.body) {
+        const body = await readTextBodyLimited(
+          response.body,
+          PROVIDER_STREAM_LIMITS.errorBodyChars,
+          scope.signal,
+        ).catch((error: unknown) => {
+          if (scope.signal?.aborted) throw scope.signal.reason ?? error;
+          return '';
+        });
+        if (scope.signal?.aborted) throw scope.signal.reason ?? new Error('aborted');
+        const retryAfter = Number(response.headers.get('retry-after'));
+        throw new ApiError(
+          `openai: HTTP ${response.status}`,
+          response.status,
+          body,
+          Number.isFinite(retryAfter) ? retryAfter * 1000 : undefined,
+        );
+      }
 
-    const blocks: AssistantBlock[] = [];
-    if (text.length > 0) blocks.push({ type: 'text', text });
-    for (const [index, entry] of toolCalls.entries()) {
-      let parsed: Record<string, unknown> = {};
+      // A successful response with a stream may already represent a billed
+      // generation even if the first body read fails. Cross this retry boundary
+      // before touching the stream so LLMClient never replays that request.
+      attemptActivity?.markResponseActivity();
+
+      let usage: Usage | undefined;
+      let previousCompleteUsage: Usage | undefined;
+      let text = '';
+      let assistantOutputChars = 0;
+      let totalToolArgumentChars = 0;
+      const toolCalls: PendingToolCall[] = [];
+      const slotByIndex = new Map<number, PendingToolCall>();
+      let stopReason: StopReason = 'other';
+      let sawDoneMarker = false;
+      let sawFinishReason = false;
+
       try {
-        parsed = entry.argumentsJson ? (JSON.parse(entry.argumentsJson) as Record<string, unknown>) : {};
-      } catch {
-        parsed = { __raw: entry.argumentsJson };
+        for await (const event of sseEvents(response.body, scope.signal)) {
+          const raw = event.data.trim();
+          if (!raw) continue;
+          if (raw === '[DONE]') {
+            sawDoneMarker = true;
+            break;
+          }
+          let parsedData: unknown;
+          try {
+            parsedData = JSON.parse(raw);
+          } catch (error) {
+            throw new ProviderProtocolError('openai', 'received malformed JSON in SSE data', { cause: error });
+          }
+          if (parsedData === null || typeof parsedData !== 'object' || Array.isArray(parsedData)) {
+            throw new ProviderProtocolError('openai', 'SSE data payload was not a JSON object');
+          }
+          const data = parsedData as Record<string, any>;
+          if (data['error']) {
+            throw new ApiError(
+              `openai: ${data['error'].type ?? 'error'}: ${data['error'].message ?? 'stream error'}`,
+              undefined,
+              raw,
+            );
+          }
+          if (data['usage'] !== undefined && data['usage'] !== null) {
+            const reported = parseOpenAIUsage(data['usage']);
+            if (reported && previousCompleteUsage) {
+              const reportedInput = reported.inputTokens + reported.cacheReadTokens + reported.cacheWriteTokens;
+              const previousInput =
+                previousCompleteUsage.inputTokens +
+                previousCompleteUsage.cacheReadTokens +
+                previousCompleteUsage.cacheWriteTokens;
+              if (reportedInput < previousInput || reported.outputTokens < previousCompleteUsage.outputTokens) {
+                throw new ProviderProtocolError('openai', 'aggregate token usage decreased during the stream');
+              }
+            }
+            if (reported) previousCompleteUsage = reported;
+            usage = reported;
+          }
+          if (data['choices'] === undefined) {
+            continue; // provider metadata chunk (errors were handled above)
+          }
+          if (!Array.isArray(data['choices'])) {
+            throw new ProviderProtocolError('openai', 'choices was not an array');
+          }
+          if (data['choices'].length === 0) {
+            continue; // usage or provider metadata chunk
+          }
+          const choice = data['choices'][0];
+          if (choice === null || typeof choice !== 'object' || Array.isArray(choice)) {
+            throw new ProviderProtocolError('openai', 'choice was not an object');
+          }
+          if (choice.finish_reason !== null && choice.finish_reason !== undefined) {
+            if (typeof choice.finish_reason !== 'string') {
+              throw new ProviderProtocolError('openai', 'finish_reason was not a string');
+            }
+            const mapped = mapFinishReason(choice.finish_reason);
+            if (sawFinishReason && mapped !== stopReason) {
+              throw new ProviderProtocolError('openai', 'received conflicting finish reasons');
+            }
+            sawFinishReason = true;
+            stopReason = mapped;
+          }
+          const delta = choice.delta ?? {};
+          if (typeof delta !== 'object' || Array.isArray(delta)) {
+            throw new ProviderProtocolError('openai', 'choice delta was not an object');
+          }
+          if (typeof delta.content === 'string' && delta.content.length > 0) {
+            assistantOutputChars = addOpenAIChars(
+              assistantOutputChars,
+              delta.content.length,
+              PROVIDER_STREAM_LIMITS.assistantOutputChars,
+              'assistant output',
+            );
+            text += delta.content;
+            yield { type: 'text_delta', text: delta.content };
+          }
+          if (typeof delta.refusal === 'string' && delta.refusal.length > 0) {
+            assistantOutputChars = addOpenAIChars(
+              assistantOutputChars,
+              delta.refusal.length,
+              PROVIDER_STREAM_LIMITS.assistantOutputChars,
+              'assistant output',
+            );
+            text += delta.refusal; // surface refusals instead of ending the turn with empty output
+            yield { type: 'text_delta', text: delta.refusal };
+          }
+          if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) {
+            assistantOutputChars = addOpenAIChars(
+              assistantOutputChars,
+              delta.reasoning_content.length,
+              PROVIDER_STREAM_LIMITS.assistantOutputChars,
+              'assistant output',
+            );
+            yield { type: 'thinking_delta', text: delta.reasoning_content };
+          }
+          if (delta.tool_calls !== undefined && !Array.isArray(delta.tool_calls)) {
+            throw new ProviderProtocolError('openai', 'tool_calls delta was not an array');
+          }
+          for (const part of delta.tool_calls ?? []) {
+            if (part === null || typeof part !== 'object' || Array.isArray(part)) {
+              throw new ProviderProtocolError('openai', 'tool call delta was not an object');
+            }
+            if (!Number.isInteger(part.index) || part.index < 0) {
+              throw new ProviderProtocolError('openai', 'tool call delta is missing a valid index');
+            }
+            let entry = slotByIndex.get(part.index);
+            if (!entry) {
+              if (toolCalls.length >= PROVIDER_STREAM_LIMITS.toolCalls) {
+                throw new ProviderProtocolError(
+                  'openai',
+                  `tool call count exceeded ${PROVIDER_STREAM_LIMITS.toolCalls}`,
+                );
+              }
+              entry = { id: '', name: '', argumentsJson: '' };
+              toolCalls.push(entry);
+              slotByIndex.set(part.index, entry);
+            } else if (part.id && entry.id && part.id !== entry.id) {
+              throw new ProviderProtocolError('openai', `tool call index ${part.index} changed id`);
+            }
+            if (part.id !== undefined) {
+              if (typeof part.id !== 'string') throw new ProviderProtocolError('openai', 'tool call id was not a string');
+              if (part.id.length > PROVIDER_STREAM_LIMITS.toolIdentifierChars) {
+                throw new ProviderProtocolError('openai', 'tool call id exceeded the identifier limit');
+              }
+              entry.id = part.id;
+            }
+            if (part.function?.name !== undefined) {
+              if (typeof part.function.name !== 'string') {
+                throw new ProviderProtocolError('openai', 'tool call name was not a string');
+              }
+              if (!entry.name || part.function.name.startsWith(entry.name)) entry.name = part.function.name;
+              else if (part.function.name !== entry.name) entry.name += part.function.name;
+              if (entry.name.length > PROVIDER_STREAM_LIMITS.toolIdentifierChars) {
+                throw new ProviderProtocolError('openai', 'tool call name exceeded the identifier limit');
+              }
+            }
+            if (part.function?.arguments !== undefined) {
+              if (typeof part.function.arguments !== 'string') {
+                throw new ProviderProtocolError('openai', 'tool call arguments delta was not a string');
+              }
+              if (
+                part.function.arguments.length >
+                PROVIDER_STREAM_LIMITS.toolArgumentsPerCallChars - entry.argumentsJson.length
+              ) {
+                throw new ProviderProtocolError(
+                  'openai',
+                  `tool arguments exceeded ${PROVIDER_STREAM_LIMITS.toolArgumentsPerCallChars} characters`,
+                );
+              }
+              totalToolArgumentChars = addOpenAIChars(
+                totalToolArgumentChars,
+                part.function.arguments.length,
+                PROVIDER_STREAM_LIMITS.toolArgumentsTotalChars,
+                'total tool arguments',
+              );
+              entry.argumentsJson += part.function.arguments;
+            }
+          }
+        }
+      } catch (error) {
+        if (scope.signal?.aborted) throw scope.signal.reason ?? error;
+        if (error instanceof SSELimitError) {
+          throw new ProviderProtocolError('openai', error.message, { cause: error });
+        }
+        if (
+          error instanceof Error &&
+          !(error instanceof ApiError) &&
+          !(error instanceof ProviderProtocolError) &&
+          !(error instanceof ProviderTransportError)
+        ) {
+          throw new ProviderTransportError('openai', error.message, { cause: error });
+        }
+        throw error;
       }
-      const call: ToolCallBlock = {
-        type: 'toolCall',
-        id: entry.id || `call_${index}`,
-        name: entry.name,
-        arguments: parsed,
-      };
-      blocks.push(call);
-      yield { type: 'tool_call', call };
-    }
-    if (toolCalls.length > 0 && stopReason === 'end_turn') stopReason = 'tool_use';
 
-    const message: AssistantMessage = { role: 'assistant', content: blocks };
-    yield { type: 'done', message, stopReason, usage };
+      if (scope.signal?.aborted) throw scope.signal.reason ?? new Error('aborted');
+      if (!sawDoneMarker) throw new ProviderProtocolError('openai', 'stream ended before the [DONE] marker');
+      if (!sawFinishReason) throw new ProviderProtocolError('openai', 'stream ended without a finish_reason');
+      if (!usage) {
+        throw new ProviderProtocolError(
+          'openai',
+          'stream ended without a complete usage report (prompt_tokens and completion_tokens)',
+        );
+      }
+
+      const blocks: AssistantBlock[] = [];
+      const seenToolCallIds = new Set<string>();
+      if (text.length > 0) blocks.push({ type: 'text', text });
+      for (const entry of toolCalls) {
+        if (!entry.id) throw new ProviderProtocolError('openai', 'tool call completed without an id');
+        if (!entry.name) throw new ProviderProtocolError('openai', 'tool call completed without a name');
+        if (seenToolCallIds.has(entry.id)) {
+          throw new ProviderProtocolError('openai', `duplicate tool call id ${entry.id}`);
+        }
+        seenToolCallIds.add(entry.id);
+        let parsed: unknown = {};
+        try {
+          parsed = entry.argumentsJson ? JSON.parse(entry.argumentsJson) : {};
+        } catch (error) {
+          throw new ProviderProtocolError('openai', `tool call ${entry.id} has incomplete JSON arguments`, {
+            cause: error,
+          });
+        }
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new ProviderProtocolError('openai', `tool call ${entry.id} arguments must be a JSON object`);
+        }
+        const call: ToolCallBlock = {
+          type: 'toolCall',
+          id: entry.id,
+          name: entry.name,
+          arguments: parsed as Record<string, unknown>,
+        };
+        blocks.push(call);
+      }
+      if (toolCalls.length > 0 && stopReason !== 'tool_use') {
+        throw new ProviderProtocolError('openai', `received tool calls with finish reason ${stopReason}`);
+      }
+      if (toolCalls.length === 0 && stopReason === 'tool_use') {
+        throw new ProviderProtocolError('openai', 'finish_reason announced tool calls but none were completed');
+      }
+
+      for (const call of blocks.filter((block): block is ToolCallBlock => block.type === 'toolCall')) {
+        yield { type: 'tool_call', call };
+      }
+      const message: AssistantMessage = { role: 'assistant', content: blocks };
+      yield { type: 'done', message, stopReason, usage };
+    } finally {
+      scope.cleanup();
+    }
   }
 }

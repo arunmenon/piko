@@ -1,76 +1,49 @@
 # piko roadmap
 
-Derived from the Aug 2026 competitive study and piko's own measured benchmarks.
-Ordered by evidence-weighted value. Each item cites the finding that justifies it.
+Updated after the August 2026 reliability and industry-maturity audit. The project is an
+early-alpha harness; completion here means implemented and locally tested, not production proof.
 
-## P0 — identity-defining
+## v0.2 safety and correctness — implemented in this working tree, unreleased
 
-### 1. Flail-capping (doom-loop detection)
-The single most valuable unbuilt feature. Evidence: our own benchmark lost 231k
-tokens to one failed grind; doom-loop token burn is the shared top complaint across
-Claude Code and Codex communities (up to enterprise-budget scale); no harness ships
-a real answer. Design sketch: track consecutive failed tool results and absence of
-file-state progress; after N stalled rounds inject a one-line "step back or stop"
-nudge; after M, end the turn with a partial-result report. Saves tokens, cannot hurt
-winnable tasks, and differentiates in the one regime where lean currently loses.
+Package manifests remain at `0.1.0`; this heading describes the pending change set, not a published release.
 
-### 2. Cost-per-completed-task as the headline metric
-The caching-inversion finding demotes prefix size to a philosophy signal: sub-1k
-prefixes often sit below provider cache floors (1,024 tokens on Sonnet 5), while big
-cached prefixes bill at 0.1x from turn two. The mechanism that saves money is
-per-turn working set (Databricks: 3x; openbench: 37.6k vs 117k tokens/solve).
-Action: extend bench/ into a reproducible model-held-constant comparison (openbench
-style), publish methodology + per-task data, and reframe README metrics around
-tokens-per-solved-task. The field's biggest deficit is honest harness comparisons —
-publishing ours is both credibility and contribution.
+- Workspace-relative, symlink-aware file containment and atomic writes.
+- Deny-by-default host bash with a sanitized environment and explicit `--allow-host-bash` opt-in.
+- Opt-in, byte-bounded project instructions (`--trust-project`).
+- Strict provider stream completion, request deadlines, and non-success `max_tokens` handling.
+- Hard model-request, tool-call, wall-time, token, and tool-output budgets.
+- UUID/`0600`/exclusive/fsynced sessions with runtime schema validation.
+- Write-ahead model/tool/compaction/run lifecycle journal and `outcome_unknown` crash semantics.
+- Next-request context preflight, prefix-only bounded summaries, billed compaction usage, and lineage.
+- Fault tests for truncation, path/symlink escape, special files, crash resume, limits, and timeouts.
 
-### 3. Official Terminal-Bench 2.x submission via Harbor
-No lean harness has an official entry — upstream pi never submitted (its adapter has
-been dormant since Dec 2025). Port bench/ to the Harbor framework, run TB 2.1 under
-official constraints, submit. Even a mid-table score with a verifiable public number
-is a first for the segment. Requires a frontier-model key for a competitive score
-(leaderboard runs cost roughly $250–600).
+## v0.3 framework beta — in progress
 
-## P1 — durability and positioning
+- [x] Versioned `--json` automation event stream and typed terminal states.
+- [x] Versioned redacted telemetry contract, durable JSONL sink, and model/tool/run spans.
+- [x] Runtime validation and byte ceilings for tool extensions; duplicate names rejected.
+- [x] Atomic CLI model/profile switch that rebuilds provider and context-window state.
+- [x] Linked-session audit and per-request model attribution.
+- [ ] Persistent approve/edit/reject workflow that can suspend and survive process loss.
+- [ ] Container or microVM `ToolExecutor` adapter with filesystem and egress policy.
+- [ ] Stable bidirectional RPC/SDK surface beyond one-shot JSONL output.
+- [ ] Provider capability registry and native OpenAI Responses adapter.
+- [ ] Structured child-run identities, cancellation propagation, aggregate budgets, and handoffs.
+- [ ] OpenTelemetry exporter adapter (the core sink contract is implemented).
 
-### 4. Cache-floor investigation
-Our ~557-token fixed prefix cannot be cached on models with a 1,024-token minimum
-(Sonnet 5, most OpenAI models). Measure the real effect; if long sessions justify
-it, consider an opt-in that folds the skills index or a stable pad into the prefix
-to cross the floor. Do not give up the small prefix by default — first turns, short
-sessions, and fleet fan-outs (many cold starts) are where lean wins most.
+## v1.0 evidence and release candidate
 
-### 5. ACP support
-The Agent Client Protocol (25+ agents, JetBrains/Zed native) is the cheap path onto
-the editor surface without building IDE plugins. Fits the headless architecture.
+- [ ] Repeated external benchmark runs with raw trajectories, manifests, model snapshots, and
+      confidence intervals; report cost per completed task.
+- [ ] Adversarial prompt-injection, long-context, crash/chaos, concurrency, and provider-conformance suites.
+- [ ] Official supported-provider and supported-platform compatibility matrix.
+- [ ] Containerized reference deployment and threat model validation.
+- [ ] Public package names, semver/migration policy, provenance, changelog, and release automation.
+- [ ] Choose and add an OSI license. This is an owner/legal decision, not an automated code change.
 
-### 6. Single-binary distribution
-The study identified single-binary minimal + OSI license as an unclaimed axis (pi
-and piko are both Node). `bun build --compile` gets a single executable from the
-existing codebase for near-zero effort; full Go/Rust rewrite is not warranted.
+## Non-goals for the lean core
 
-### 7. npm publish + install docs
-piko is npm-link-only today. Publish @piko scoped packages; the 64KB bundled build
-already proves the packaging story.
-
-## P2 — expansion, driven by use
-
-### 8. Meta-harness backend contract
-Enterprises are commoditizing harnesses behind meta-layers (Databricks Omnigent,
-Orca — which already lists upstream pi). Document and test piko's headless contract
-(exit codes, stdout purity, --usage JSON) as a stable interface; consider a JSON
-event-stream mode like pi's RPC mode.
-
-### 9. MCP-proxy extension (only if needed)
-Never load MCP schemas into context. If integrations become necessary, adopt the
-pi-mcp-adapter pattern: one ~200-token proxy tool that fetches schemas on demand.
-
-### 10. Daily-driver mileage
-The roadmap beyond this point should come from real use, not analysis. Upstream pi
-got good through daily friction; the same applies here.
-
-## Explicit non-goals (unchanged, evidence reaffirmed)
-
-Permission prompts (users alias them away; sandbox instead), built-in sub-agent
-orchestration (headless self-spawn is the context-firewall benchmarks reward),
-MCP-in-core, planning/todo modes, competing with OpenCode for mass-market mindshare.
+- Building a proprietary distributed workflow engine; integrate with established durable runtimes.
+- Loading a large MCP catalog into every prompt. If MCP is added, use bounded discovery/proxy tools.
+- Treating permission prompts as a sandbox. Approval and OS isolation solve different problems.
+- Claiming exactly-once side effects without tool-specific idempotency or transactional integration.

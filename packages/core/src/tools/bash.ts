@@ -1,13 +1,59 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
 import { truncateMiddle } from '../truncate.js';
-import { requireString, textOutput, type Tool, type ToolContext, type ToolOutput } from './types.js';
+import { resolveWorkspacePath, resolveWorkspaceRoot } from './filesystem.js';
+import {
+  requireString,
+  textOutput,
+  type BashExecutionPolicy,
+  type Tool,
+  type ToolContext,
+  type ToolOutput,
+} from './types.js';
 
 const DEFAULT_TIMEOUT_S = 120;
 const MAX_TIMEOUT_S = 600;
 const MAX_BUFFER = 10_000_000;
 const CWD_SENTINEL = '\x01PI_CWD\x01';
+const SAFE_ENVIRONMENT_NAMES = [
+  'PATH',
+  'HOME',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TERM',
+  'COLORTERM',
+  'NO_COLOR',
+  // Required to locate executables on Windows environments that provide bash.
+  'SystemRoot',
+  'WINDIR',
+  'COMSPEC',
+  'PATHEXT',
+] as const;
+
+/** Construct the deliberately small environment inherited by bash tools. */
+export function sanitizedBashEnvironment(policy?: BashExecutionPolicy): NodeJS.ProcessEnv {
+  const environment = Object.create(null) as NodeJS.ProcessEnv;
+  const inherit = new Set<string>([...SAFE_ENVIRONMENT_NAMES, ...(policy?.inheritEnvironment ?? [])]);
+  for (const name of inherit) {
+    const value = process.env[name];
+    if (value !== undefined) environment[name] = value;
+  }
+  // A usable deterministic fallback when a parent launches pi without PATH.
+  if (!environment['PATH']) environment['PATH'] = '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
+  for (const [name, value] of Object.entries(policy?.environment ?? {})) {
+    if (value === undefined) delete environment[name];
+    else environment[name] = value;
+  }
+  return environment;
+}
 
 interface BashResult {
   stdout: string;
@@ -19,7 +65,13 @@ interface BashResult {
   aborted: boolean;
 }
 
-function runBash(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<BashResult> {
+function runBash(
+  command: string,
+  cwd: string,
+  timeoutMs: number,
+  environment: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<BashResult> {
   // The sentinel (on stderr, control-char delimited) carries the final $PWD back so
   // `cd` persists across tool calls without any shell state living in this process.
   // Inherent limit: a command ending in `exit`/`exec` skips the sentinel — cwd just
@@ -27,7 +79,12 @@ function runBash(command: string, cwd: string, timeoutMs: number, signal?: Abort
   const script = `${command}\n__pi_exit=$?; printf '\\n${CWD_SENTINEL}%s' "$PWD" >&2; exit $__pi_exit`;
   return new Promise((resolvePromise) => {
     // detached => own process group, so timeout/abort can kill the whole tree
-    const child = spawn('bash', ['-c', script], { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    const child = spawn('bash', ['-c', script], {
+      cwd,
+      env: environment,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+    });
     const stdoutDecoder = new StringDecoder('utf8');
     const stderrDecoder = new StringDecoder('utf8');
     let stdout = '';
@@ -35,6 +92,7 @@ function runBash(command: string, cwd: string, timeoutMs: number, signal?: Abort
     let stderrTail = '';
     let timedOut = false;
     let settled = false;
+    let escalationTimer: NodeJS.Timeout | undefined;
 
     const killGroup = (sig: NodeJS.Signals) => {
       try {
@@ -50,7 +108,8 @@ function runBash(command: string, cwd: string, timeoutMs: number, signal?: Abort
     };
     const terminate = () => {
       killGroup('SIGTERM');
-      setTimeout(() => killGroup('SIGKILL'), 2000).unref();
+      escalationTimer ??= setTimeout(() => killGroup('SIGKILL'), 2000);
+      escalationTimer.unref();
     };
     const killTimer = setTimeout(() => {
       timedOut = true;
@@ -58,6 +117,7 @@ function runBash(command: string, cwd: string, timeoutMs: number, signal?: Abort
     }, timeoutMs);
     const onAbort = () => terminate();
     signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
 
     child.stdout.on('data', (chunk: Buffer) => {
       if (stdout.length < MAX_BUFFER) stdout += stdoutDecoder.write(chunk);
@@ -72,6 +132,7 @@ function runBash(command: string, cwd: string, timeoutMs: number, signal?: Abort
       if (settled) return;
       settled = true;
       clearTimeout(killTimer);
+      if (escalationTimer) clearTimeout(escalationTimer);
       signal?.removeEventListener('abort', onAbort);
       resolvePromise({ stdout, stderr, stderrTail, exitCode, timedOut, aborted: signal?.aborted ?? false });
     };
@@ -83,6 +144,13 @@ function runBash(command: string, cwd: string, timeoutMs: number, signal?: Abort
     // stall the agent forever. The short delay collects already-buffered output and must
     // stay ref'd — it is the promise's resolution path.
     child.on('exit', (code, sig) => {
+      // The direct shell may exit successfully after launching background jobs. Those
+      // jobs are still part of this tool invocation and must not outlive its reported
+      // terminal state. The shell owns a detached process group, so an unconditional
+      // group kill here is harmless when it is empty and closes the common `cmd &`
+      // deadline escape. An explicitly daemonized/setsid process is one reason this
+      // capability remains documented as unsandboxed host execution.
+      killGroup('SIGKILL');
       setTimeout(() => settle(code ?? (sig ? null : 0)), 25);
     });
   });
@@ -91,7 +159,7 @@ function runBash(command: string, cwd: string, timeoutMs: number, signal?: Abort
 export const bashTool: Tool = {
   name: 'bash',
   description:
-    'Run a bash command in the project (search, git, tests, any CLI). Working directory persists across calls. Non-interactive commands only.',
+    'Run unsandboxed host bash from the project (search, git, tests, any CLI). It can access host files and network. Working directory persists across calls. Non-interactive commands only.',
   parameters: {
     type: 'object',
     properties: {
@@ -103,31 +171,59 @@ export const bashTool: Tool = {
 
   async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolOutput> {
     const command = requireString(args, 'command');
+    if (context.policy?.bash?.allowHostExecution !== true) {
+      return textOutput(
+        'host bash execution is disabled by tool policy; run inside an isolated executor or explicitly allow host bash',
+        true,
+      );
+    }
     const timeoutS = Math.min(
       typeof args['timeout_seconds'] === 'number' && args['timeout_seconds'] > 0
         ? args['timeout_seconds']
         : DEFAULT_TIMEOUT_S,
       MAX_TIMEOUT_S,
     );
-    const result = await runBash(command, context.cwd, timeoutS * 1000, context.signal);
+    // Validate the configured root and current directory before starting a host
+    // process. This does not replace an OS sandbox, but prevents persisted cwd
+    // state from escaping the workspace boundary.
+    resolveWorkspaceRoot(context);
+    const executionCwd = resolveWorkspacePath(context, context.cwd, { allowAbsolute: true });
+    if (!statSync(executionCwd).isDirectory()) throw new Error(`bash cwd is not a directory: ${executionCwd}`);
+    const result = await runBash(
+      command,
+      executionCwd,
+      timeoutS * 1000,
+      sanitizedBashEnvironment(context.policy?.bash),
+      context.signal,
+    );
 
     let stderr = result.stderr;
+    let cwdPolicyError: string | undefined;
     const tailIndex = result.stderrTail.lastIndexOf(CWD_SENTINEL);
     if (tailIndex !== -1) {
       const newCwd = result.stderrTail.slice(tailIndex + CWD_SENTINEL.length).trim();
       const inStderr = stderr.lastIndexOf(CWD_SENTINEL);
       if (inStderr !== -1) stderr = stderr.slice(0, inStderr).replace(/\n$/, '');
-      if (newCwd && newCwd !== context.cwd && existsSync(newCwd)) context.setCwd(newCwd);
+      if (newCwd && newCwd !== context.cwd) {
+        try {
+          const resolvedCwd = resolveWorkspacePath(context, newCwd, { allowAbsolute: true });
+          if (!statSync(resolvedCwd).isDirectory()) throw new Error(`not a directory: ${resolvedCwd}`);
+          context.setCwd(resolvedCwd);
+        } catch (error) {
+          cwdPolicyError = String(error);
+        }
+      }
     }
 
     let text = result.stdout;
     if (stderr.trim().length > 0) text += `${text.length > 0 ? '\n' : ''}[stderr]\n${stderr}`;
     text = truncateMiddle(text);
     // exitCode null (spawn failure or signal kill) is a failure, not a success
-    const failed = result.timedOut || result.aborted || result.exitCode !== 0;
+    const failed = result.timedOut || result.aborted || result.exitCode !== 0 || cwdPolicyError !== undefined;
     if (result.aborted) text += '\n[interrupted by user]';
     else if (result.timedOut) text += `\n[timed out after ${timeoutS}s]`;
     else if (result.exitCode !== 0) text += `\n[exit code ${result.exitCode ?? 'killed'}]`;
+    if (cwdPolicyError) text += `\n[working directory rejected: ${cwdPolicyError}]`;
     return textOutput(text.trim().length > 0 ? text : '(no output)', failed);
   },
 };

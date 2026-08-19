@@ -1,7 +1,10 @@
 {
   "name": "@pi/cli",
   "version": "0.1.0",
+  "description": "Interactive and headless CLI for the piko coding-agent harness",
+  "private": true,
   "type": "module",
+  "sideEffects": false,
   "bin": {
     "pi": "./dist/main.js"
   },
@@ -14,7 +17,28 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "prepack": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arunmenon/piko.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/arunmenon/piko#readme",
+  "bugs": {
+    "url": "https://github.com/arunmenon/piko/issues"
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "os": [
+    "darwin",
+    "linux"
   ],
   "dependencies": {
     "@pi/ai": "0.1.0",

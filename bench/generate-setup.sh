@@ -15,8 +15,9 @@ set -e
 export DEBIAN_FRONTEND=noninteractive
 command -v curl > /dev/null 2>&1 || (apt-get update && apt-get install -y curl ca-certificates) > /dev/null 2>&1 || true
 
-# Direct node tarball (~15s) instead of nvm (~90s) — install time counts against the
-# task's agent timeout. Fall back to nvm if the tarball route fails (musl, odd arch).
+# Use one pinned, checksum-verified Node archive. Install time counts against the
+# task's agent timeout, and an unpinned fallback would make benchmark runs harder
+# to reproduce.
 NODE_VERSION=v22.12.0
 case "$(uname -m)" in
   x86_64) NODE_ARCH=x64 ;;
@@ -26,18 +27,20 @@ esac
 NODE_BIN=""
 if [ -n "$NODE_ARCH" ]; then
   mkdir -p /opt/node
-  if curl -fsSL "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-${NODE_ARCH}.tar.gz" \
-      | tar -xz -C /opt/node --strip-components=1 2> /dev/null; then
+  NODE_ARCHIVE="node-${NODE_VERSION}-linux-${NODE_ARCH}.tar.gz"
+  if curl -fsSLO "https://nodejs.org/dist/${NODE_VERSION}/${NODE_ARCHIVE}" &&
+      curl -fsSLO "https://nodejs.org/dist/${NODE_VERSION}/SHASUMS256.txt" &&
+      grep "  ${NODE_ARCHIVE}$" SHASUMS256.txt | sha256sum -c - > /dev/null &&
+      tar -xzf "$NODE_ARCHIVE" -C /opt/node --strip-components=1 2> /dev/null; then
     if /opt/node/bin/node --version > /dev/null 2>&1; then
       NODE_BIN=/opt/node/bin/node
     fi
   fi
+  rm -f "$NODE_ARCHIVE" SHASUMS256.txt
 fi
 if [ -z "$NODE_BIN" ]; then
-  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
-  source "$HOME/.nvm/nvm.sh"
-  nvm install 22 > /dev/null
-  NODE_BIN="$(command -v node)"
+  echo "unable to install checksum-verified Node ${NODE_VERSION} for $(uname -m)" >&2
+  exit 1
 fi
 
 mkdir -p /opt/pi

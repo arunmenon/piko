@@ -6,6 +6,8 @@ import { writeTool } from './write.js';
 import type { Tool } from './types.js';
 
 export * from './types.js';
+export * from './filesystem.js';
+export * from './validation.js';
 export { readTool, writeTool, editTool, bashTool, mapTool };
 
 export function defaultTools(): Tool[] {

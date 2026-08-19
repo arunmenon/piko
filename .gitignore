@@ -6,3 +6,5 @@ dist/
 bench/pi-bundle.mjs
 bench/pi-setup.sh.j2
 bench/__pycache__/
+artifacts/
+.pi/

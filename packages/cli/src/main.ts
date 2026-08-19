@@ -1,37 +1,83 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, unlinkSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { LLMClient, addUsage, contextWindowFor, emptyUsage, loadConfig, resolveProfile, type Profile, type Usage } from '@pi/ai';
+import {
+  LLMClient,
+  addUsage,
+  contextWindowFor,
+  configPath,
+  emptyUsage,
+  loadConfig,
+  resolveProfile,
+  type PiConfig,
+  type Profile,
+  type Usage,
+} from '@pi/ai';
 import {
   Agent,
+  JsonlEventSink,
+  MAX_USER_INPUT_BYTES,
+  SafeObserver,
   Session,
   buildSystemPrompt,
   defaultTools,
   discoverSkills,
   latestSessionFile,
   loadAgentsMd,
+  releaseSessionLock,
   sessionsDirFor,
   tryLockSession,
+  validateToolSet,
   type AgentEvent,
+  type Observer,
+  type RunBudget,
   type Tool,
 } from '@pi/core';
 import { HELP, parseArgs, type CliArgs } from './args.js';
-import { loadExtensions } from './extensions.js';
+import { loadConfiguredExtensions } from './extensions.js';
 import { interpolate, loadTemplates, type PromptTemplate } from './templates.js';
-import { bold, cacheHitRate, cyan, dim, formatUsage, oneLine, red, summarizeArgs } from './render.js';
+import {
+  bold,
+  cacheHitRate,
+  cyan,
+  dim,
+  formatUsage,
+  oneLine,
+  red,
+  sanitizeTerminalText,
+  summarizeArgs,
+} from './render.js';
 
 interface Setup {
   agent: Agent;
   profile: Profile;
+  config: PiConfig;
   session: Session;
   tools: Tool[];
   maxIterations?: number;
+  budget: Partial<RunBudget>;
+  systemPrompt: string;
+  allowHostBash: boolean;
+  observer?: Observer;
   thinkingBudget?: number;
   contextWindow: number;
   autoCompact: boolean;
   flailGuard: boolean;
   offload: boolean;
+}
+
+class JsonRunFailure extends Error {
+  readonly sessionId?: string;
+  readonly body?: string;
+
+  constructor(error: unknown, sessionId?: string) {
+    super(error instanceof Error ? error.message : String(error), { cause: error });
+    this.name = 'JsonRunFailure';
+    this.sessionId = sessionId;
+    const body = (error as { body?: unknown })?.body;
+    if (typeof body === 'string') this.body = body;
+  }
 }
 
 function openSession(args: CliArgs, cwd: string, model: string): Session {
@@ -41,31 +87,33 @@ function openSession(args: CliArgs, cwd: string, model: string): Session {
     file = existsSync(args.session) ? args.session : inDir;
     if (!existsSync(file)) throw new Error(`session not found: ${args.session}`);
   } else if (args.continue) {
-    file = latestSessionFile(sessionsDirFor(cwd));
+    file = latestSessionFile(sessionsDirFor(cwd), { excludeActivelyLocked: true });
     if (!file) process.stderr.write(dim('no previous session here; starting a new one\n'));
   }
   if (file) {
     if (tryLockSession(file)) return Session.open(file);
+    if (args.session) throw new Error(`requested session is already in use: ${file}`);
     process.stderr.write(dim('that session is in use by another pi process; starting a new one\n'));
   }
-  const session = Session.create(cwd, model);
-  tryLockSession(session.file);
-  return session;
+  return Session.createLocked(cwd, model).session;
 }
 
 function buildAgent(setup: Omit<Setup, 'agent'>, cwd: string, model: string): Agent {
   return new Agent({
     client: new LLMClient(setup.profile),
     model,
-    systemPrompt: buildSystemPrompt({ cwd, agentsMd: loadAgentsMd(cwd), skills: discoverSkills(cwd) }),
+    systemPrompt: setup.systemPrompt,
     tools: setup.tools,
     cwd,
     session: setup.session,
+    toolPolicy: { workspaceRoot: cwd, bash: { allowHostExecution: setup.allowHostBash } },
+    ...(setup.observer ? { observer: setup.observer } : {}),
     contextWindow: setup.contextWindow,
     autoCompact: setup.autoCompact,
     ...(setup.flailGuard === false ? { flailGuard: false as const } : {}),
     ...(setup.offload === false ? { offload: false as const } : {}),
     ...(setup.maxIterations !== undefined ? { maxIterations: setup.maxIterations } : {}),
+    ...(Object.keys(setup.budget).length > 0 ? { budget: setup.budget } : {}),
     ...(setup.thinkingBudget !== undefined ? { thinkingBudget: setup.thinkingBudget } : {}),
   });
 }
@@ -74,16 +122,42 @@ async function setup(args: CliArgs): Promise<Setup> {
   const cwd = process.cwd();
   const config = loadConfig();
   const profile = resolveProfile(config, args.profile, args.model);
-  const agentsMd = loadAgentsMd(cwd);
-  if (agentsMd?.oversized) {
+  const hasAgentsMd = existsSync(join(cwd, 'AGENTS.md'));
+  const hasProjectTemplates = existsSync(join(cwd, '.agent', 'commands'));
+  const agentsMd = args.trustProject ? loadAgentsMd(cwd) : undefined;
+  const skills = args.trustProject ? discoverSkills(cwd) : [];
+  if (!args.trustProject && (hasAgentsMd || existsSync(join(cwd, '.agent', 'skills')) || hasProjectTemplates)) {
     process.stderr.write(
-      dim(`warning: AGENTS.md is ${agentsMd.lines} lines — guides over ~60 lines measurably hurt agent performance\n`),
+      dim('project instructions and templates ignored by default; pass --trust-project to load them\n'),
     );
   }
-  const tools = [...defaultTools(), ...(await loadExtensions([...(config.extensions ?? []), ...args.extensions], cwd))];
+  if (agentsMd?.oversized) {
+    process.stderr.write(
+      dim(
+        `warning: AGENTS.md is ${agentsMd.lines} loaded lines${agentsMd.truncated ? ' and was truncated' : ''} — large guides hurt context quality\n`,
+      ),
+    );
+  }
+  const builtins = defaultTools().filter((tool) => tool.name !== 'bash' || args.allowHostBash);
+  if (args.allowHostBash) {
+    process.stderr.write(dim('warning: host bash enabled without OS isolation; use only in a trusted environment\n'));
+  }
+  const tools = validateToolSet(
+    [
+      ...builtins,
+      ...(await loadConfiguredExtensions({
+        configPaths: config.extensions ?? [],
+        configFile: configPath(),
+        cliPaths: args.extensions,
+        cwd,
+      })),
+    ],
+    { source: 'configured tools' },
+  );
   const session = openSession(args, cwd, profile.model);
   const envWindow = Number(process.env['PI_CONTEXT_WINDOW']);
   const partial: Omit<Setup, 'agent'> = {
+    config,
     profile,
     session,
     tools,
@@ -94,19 +168,46 @@ async function setup(args: CliArgs): Promise<Setup> {
     autoCompact: args.autoCompact,
     flailGuard: args.flailGuard,
     offload: args.offload,
+    systemPrompt: buildSystemPrompt({ cwd, agentsMd, skills, bashAvailable: args.allowHostBash }),
+    allowHostBash: args.allowHostBash,
+    ...(args.telemetry
+      ? {
+          observer: new SafeObserver({
+            sink: new JsonlEventSink(args.telemetry),
+            onError: (error) => process.stderr.write(dim(`telemetry warning: ${String(error)}\n`)),
+          }),
+        }
+      : {}),
+    budget: {
+      ...(args.maxToolCalls !== undefined ? { maxToolCalls: args.maxToolCalls } : {}),
+      ...(args.maxToolOutputBytes !== undefined ? { maxToolOutputBytes: args.maxToolOutputBytes } : {}),
+      ...(args.maxTimeMs !== undefined ? { maxWallTimeMs: args.maxTimeMs } : {}),
+      ...(args.maxInputTokens !== undefined ? { maxInputTokens: args.maxInputTokens } : {}),
+      ...(args.maxOutputTokens !== undefined ? { maxOutputTokens: args.maxOutputTokens } : {}),
+      ...(args.maxTotalTokens !== undefined ? { maxTotalTokens: args.maxTotalTokens } : {}),
+    },
     ...(args.maxTurns !== undefined ? { maxIterations: args.maxTurns } : {}),
     ...(args.thinking !== undefined && args.thinking > 0 ? { thinkingBudget: args.thinking } : {}),
   };
   return { ...partial, agent: buildAgent(partial, cwd, profile.model) };
 }
 
-function printUsageSummary(agent: Agent, session: Session): void {
+function printUsageSummary(
+  agent: Agent,
+  session: Session,
+  terminal?: Extract<AgentEvent, { type: 'turn_done' }>,
+): void {
   process.stderr.write(
     `${JSON.stringify({
+      v: 1,
+      type: 'usage_summary',
       usage: agent.usageTotal,
       lastTurn: agent.lastTurnUsage,
       requests: agent.requestCount,
+      usageHistoryComplete: agent.usageHistoryComplete,
+      unknownPriorRequests: agent.session?.modelRequests.filter((request) => request.status === 'outcome_unknown').length ?? 0,
       session: session.file,
+      ...(terminal ? { status: terminal.status, reason: terminal.reason } : {}),
     })}\n`,
   );
 }
@@ -119,10 +220,19 @@ async function headless(args: CliArgs): Promise<number> {
   let prompt = args.prompt;
   if (!prompt && !process.stdin.isTTY) {
     const chunks: Buffer[] = [];
-    for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+    let bytes = 0;
+    for await (const chunk of process.stdin) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+      bytes += buffer.length;
+      if (bytes > MAX_USER_INPUT_BYTES) {
+        throw new JsonRunFailure(`stdin prompt exceeds ${MAX_USER_INPUT_BYTES} UTF-8 bytes`);
+      }
+      chunks.push(buffer);
+    }
     prompt = Buffer.concat(chunks).toString('utf8').trim();
   }
   if (!prompt) {
+    if (args.json) throw new JsonRunFailure('no prompt: pass one as an argument or on stdin');
     process.stderr.write('no prompt: pass one as an argument or on stdin\n');
     return 1;
   }
@@ -135,43 +245,64 @@ async function headless(args: CliArgs): Promise<number> {
     controller.abort();
     process.stderr.write('interrupting — Ctrl+C again to force quit\n');
   });
+  process.once('SIGTERM', () => controller.abort(new Error('terminated')));
 
   let finalText = '';
-  let sawToolLimit = false;
-  let iterations = 0;
-  for await (const event of agent.run(prompt, controller.signal)) {
-    if (event.type === 'tool_start') {
-      process.stderr.write(dim(`⚙ ${event.call.name} ${summarizeArgs(event.call.arguments)}\n`));
-    } else if (event.type === 'compacted') {
-      process.stderr.write(dim(`auto-compacted ${event.dropped} messages\n`));
-    } else if (event.type === 'flail_nudge') {
-      process.stderr.write(dim(`flail guard: nudged after ${event.consecutiveFailures} consecutive failures\n`));
-    } else if (event.type === 'flail_stop') {
-      process.stderr.write(`flail guard: stopped the turn after repeated failures\n`);
-    } else if (event.type === 'offloaded') {
-      process.stderr.write(dim(`offloaded ${event.count} old tool outputs\n`));
-    } else if (event.type === 'response_done') {
-      const text = event.message.content
-        .filter((block) => block.type === 'text')
-        .map((block) => block.text)
-        .join('');
-      if (text.trim()) finalText = text;
-      sawToolLimit = event.stopReason === 'tool_use';
-    } else if (event.type === 'turn_done') {
-      iterations = event.iterations;
+  let terminal: Extract<AgentEvent, { type: 'turn_done' }> | undefined;
+  try {
+    for await (const event of agent.run(prompt, controller.signal)) {
+      if (args.json) {
+        process.stdout.write(`${JSON.stringify({ v: 1, sessionId: (agent.session ?? session).id, event })}\n`);
+      }
+      if (event.type === 'response_done') {
+        const text = event.message.content
+          .filter((block) => block.type === 'text')
+          .map((block) => block.text)
+          .join('');
+        if (text.trim()) finalText = text;
+      } else if (event.type === 'turn_done') {
+        terminal = event;
+      }
+      if (args.json) continue;
+
+      if (event.type === 'tool_start') {
+        process.stderr.write(dim(`⚙ ${oneLine(event.call.name, 64)} ${summarizeArgs(event.call.arguments)}\n`));
+      } else if (event.type === 'compacted') {
+        process.stderr.write(dim(`auto-compacted ${event.dropped} messages\n`));
+      } else if (event.type === 'session_rotated') {
+        process.stderr.write(dim(`rotated session journal to ${oneLine(event.sessionFile, 4096)}\n`));
+      } else if (event.type === 'flail_nudge') {
+        process.stderr.write(dim(`flail guard: nudged after ${event.consecutiveFailures} consecutive failures\n`));
+      } else if (event.type === 'flail_stop') {
+        process.stderr.write(`flail guard: stopped the turn after repeated failures\n`);
+      } else if (event.type === 'offloaded') {
+        process.stderr.write(dim(`offloaded ${event.count} old tool outputs\n`));
+      } else if (event.type === 'budget_exceeded') {
+        process.stderr.write(`budget exceeded: ${event.reason}\n`);
+      }
     }
+  } catch (error) {
+    if (args.json) throw new JsonRunFailure(error, (agent.session ?? session).id);
+    throw error;
   }
-  if (args.usage) printUsageSummary(agent, agent.session ?? session);
   // always emit what we have — a parent process needs the partial answer even on truncation
-  process.stdout.write(`${finalText}\n`);
-  if (controller.signal.aborted) return 130;
-  if (sawToolLimit) {
+  if (!args.json) process.stdout.write(`${finalText}\n`);
+  let exitCode: number;
+  if (!terminal) {
+    exitCode = controller.signal.aborted ? 130 : 1;
+  } else if (terminal.status === 'completed') {
+    exitCode = 0;
+  } else {
     process.stderr.write(
-      `stopped at the turn cap (${iterations}) before the model finished — tools may already have made changes\n`,
+      `run ${terminal.status}: ${terminal.reason} after ${terminal.iterations} model request(s) and ${terminal.toolCalls} tool call(s)\n`,
     );
-    return 2;
+    exitCode = terminal.status === 'canceled' ? 130 : terminal.status === 'budget_exceeded' ? 2 : 3;
   }
-  return 0;
+  // Keep this typed record last on stderr. Legacy benchmark panes may combine
+  // stdout/stderr, so emitting it after model text prevents echoed JSON from
+  // being mistaken for the authoritative terminal usage row.
+  if (args.usage) printUsageSummary(agent, agent.session ?? session, terminal);
+  return exitCode;
 }
 
 interface ReplState {
@@ -188,15 +319,19 @@ function handleEvent(event: AgentEvent, state: ReplState): void {
     }
   };
   switch (event.type) {
-    case 'text':
-      process.stdout.write(event.text);
-      state.atNewline = event.text.endsWith('\n');
+    case 'text': {
+      const safeText = sanitizeTerminalText(event.text);
+      process.stdout.write(safeText);
+      state.atNewline = safeText.endsWith('\n');
       break;
+    }
     case 'thinking':
       break; // reasoning is not rendered; it is still visible in the session file if the provider stores it
     case 'tool_start':
       ensureNewline();
-      process.stdout.write(`${cyan('⚙')} ${bold(event.call.name)} ${dim(summarizeArgs(event.call.arguments))}\n`);
+      process.stdout.write(
+        `${cyan('⚙')} ${bold(oneLine(event.call.name, 64))} ${dim(summarizeArgs(event.call.arguments))}\n`,
+      );
       break;
     case 'tool_end': {
       const first = event.result.content[0];
@@ -209,6 +344,10 @@ function handleEvent(event: AgentEvent, state: ReplState): void {
       process.stdout.write(
         dim(`[auto-compacted: summarized ${event.dropped} earlier messages into a fresh session]\n`),
       );
+      break;
+    case 'session_rotated':
+      ensureNewline();
+      process.stdout.write(dim(`[session journal rotated to ${oneLine(event.sessionFile, 4096)}]\n`));
       break;
     case 'flail_nudge':
       ensureNewline();
@@ -226,9 +365,17 @@ function handleEvent(event: AgentEvent, state: ReplState): void {
       ensureNewline();
       process.stdout.write(dim(`[↪ steering applied: ${oneLine(event.text, 80)}]\n`));
       break;
+    case 'budget_exceeded':
+      ensureNewline();
+      process.stdout.write(red(`[budget exceeded: ${event.reason}]\n`));
+      break;
     case 'turn_done':
       ensureNewline();
-      process.stdout.write(dim(`[${event.iterations} call${event.iterations === 1 ? '' : 's'} | ${formatUsage(event.usage)}]\n`));
+      process.stdout.write(
+        dim(
+          `[${event.status}:${event.reason} | ${event.iterations} model call${event.iterations === 1 ? '' : 's'} | ${event.toolCalls} tool call${event.toolCalls === 1 ? '' : 's'} | ${formatUsage(event.usage)}]\n`,
+        ),
+      );
       break;
     case 'response_done':
       ensureNewline();
@@ -236,11 +383,31 @@ function handleEvent(event: AgentEvent, state: ReplState): void {
   }
 }
 
-async function runInput(agent: Agent, input: string, state: ReplState): Promise<void> {
+interface ReplTurnResult {
+  exitCode: number;
+  persistenceFailure: boolean;
+}
+
+async function runInput(agent: Agent, input: string, state: ReplState): Promise<ReplTurnResult> {
   state.running = new AbortController();
+  let exitCode = 1;
+  let persistenceFailure = false;
   try {
     const drainSteering = () => state.steering.splice(0);
-    for await (const event of agent.run(input, state.running.signal, drainSteering)) handleEvent(event, state);
+    for await (const event of agent.run(input, state.running.signal, drainSteering)) {
+      handleEvent(event, state);
+      if (event.type === 'turn_done') {
+        persistenceFailure = event.reason === 'persistence';
+        exitCode =
+          event.status === 'completed'
+            ? 0
+            : event.status === 'canceled'
+              ? 130
+              : event.status === 'budget_exceeded'
+                ? 2
+                : 3;
+      }
+    }
   } catch (error) {
     const text = String(error instanceof Error ? error.message : error);
     process.stdout.write(`\n${red(text)}\n`);
@@ -252,6 +419,7 @@ async function runInput(agent: Agent, input: string, state: ReplState): Promise<
     // a note typed during the final response would otherwise leak into the next turn
     state.steering.length = 0;
   }
+  return { exitCode, persistenceFailure };
 }
 
 interface SlashResult {
@@ -259,6 +427,7 @@ interface SlashResult {
   exit?: boolean;
   newSession?: Session;
   compact?: boolean;
+  switchModel?: string;
 }
 
 function handleSlash(
@@ -272,7 +441,9 @@ function handleSlash(
   switch (command) {
     case 'help':
       process.stdout.write(`${HELP}\n`);
-      if (templates.size > 0) process.stdout.write(`templates: ${[...templates.keys()].map((n) => `/${n}`).join(' ')}\n`);
+      if (templates.size > 0) {
+        process.stdout.write(`templates: ${[...templates.keys()].map((n) => `/${oneLine(n, 128)}`).join(' ')}\n`);
+      }
       return {};
     case 'exit':
     case 'quit':
@@ -283,11 +454,13 @@ function handleSlash(
       process.stdout.write(`requests:  ${agent.requestCount}\n`);
       return {};
     case 'model':
-      if (argText) agent.model = argText;
-      process.stdout.write(`model: ${agent.model}\n`);
-      return {};
+      if (!argText) {
+        process.stdout.write(`model: ${oneLine(agent.model, 256)}\n`);
+        return {};
+      }
+      return { switchModel: argText };
     case 'session':
-      process.stdout.write(`${session.file}\n${agent.messages.length} messages\n`);
+      process.stdout.write(`${oneLine(session.file, 4096)}\n${agent.messages.length} messages\n`);
       return {};
     case 'compact':
       return { compact: true };
@@ -297,8 +470,9 @@ function handleSlash(
         process.stdout.write(red(`usage: /branch <message-index 0..${agent.messages.length - 1}>\n`));
         return {};
       }
-      const branched = session.branch(at, agent.workingDirectory, agent.model);
-      process.stdout.write(`branched to ${branched.file}\n`);
+      const branched = session.branchLocked(at, agent.workingDirectory, agent.model).session;
+      releaseSessionLock(session.file);
+      process.stdout.write(`branched to ${oneLine(branched.file, 4096)}\n`);
       return { newSession: branched };
     }
     default: {
@@ -312,11 +486,14 @@ function handleSlash(
 
 async function repl(args: CliArgs): Promise<number> {
   const initial = await setup(args);
+  let runtimeSetup = initial;
   let { agent, session } = initial;
-  const templates = loadTemplates(process.cwd());
+  const templates = loadTemplates(process.cwd(), { trustProject: args.trustProject });
   const state: ReplState = { running: undefined, atNewline: true, steering: [] };
 
-  process.stdout.write(`${bold('pi')} ${dim(`| ${initial.profile.name}:${agent.model} | session ${session.id} | /help`)}\n`);
+  process.stdout.write(
+    `${bold('pi')} ${dim(`| ${oneLine(initial.profile.name, 128)}:${oneLine(agent.model, 256)} | session ${oneLine(session.id, 128)} | /help`)}\n`,
+  );
 
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: `\n${cyan('pi>')} ` });
   let sigintArmed = false;
@@ -341,12 +518,14 @@ async function repl(args: CliArgs): Promise<number> {
     let finished = false;
     let processing = false;
     let eof = false;
+    let exitCode = 0;
+    const scripted = !process.stdin.isTTY;
     const pending: string[] = [];
     const finish = () => {
       if (finished) return;
       finished = true;
       if (args.usage) printUsageSummary(agent, session);
-      resolveRepl(0);
+      resolveRepl(exitCode);
     };
     // stdin EOF (piped input) closes readline immediately — queued lines must still run
     rl.on('close', () => {
@@ -370,28 +549,100 @@ async function repl(args: CliArgs): Promise<number> {
           rl.close();
           return true;
         }
+        if (result.switchModel) {
+          const parts = result.switchModel.split(/\s+/).filter(Boolean);
+          const profileName = parts.length > 1 ? parts[0] : runtimeSetup.profile.name;
+          const model = parts.length > 1 ? parts.slice(1).join(' ') : parts[0]!;
+          try {
+            const profile = resolveProfile(runtimeSetup.config, profileName, model);
+            const envWindow = Number(process.env['PI_CONTEXT_WINDOW']);
+            const contextWindow =
+              Number.isFinite(envWindow) && envWindow > 0
+                ? envWindow
+                : (profile.contextWindow ?? contextWindowFor(profile.model));
+            const nextSetup = { ...runtimeSetup, profile, contextWindow, session };
+            agent = buildAgent(nextSetup, agent.workingDirectory, profile.model);
+            runtimeSetup = { ...nextSetup, agent };
+            process.stdout.write(
+              `model: ${oneLine(profile.name, 128)}:${oneLine(profile.model, 256)} (${contextWindow.toLocaleString()} context)\n`,
+            );
+          } catch (error) {
+            process.stdout.write(red(`model switch failed: ${String(error)}\n`));
+          }
+        }
         if (result.compact) {
           if (agent.messages.length === 0) {
             process.stdout.write(dim('nothing to compact\n'));
           } else {
             process.stdout.write(dim('compacting…\n'));
+            const source = session;
+            let compactionId: string | undefined;
+            let lockedChild: ReturnType<typeof Session.createLocked> | undefined;
+            let commitAttempted = false;
+            state.running = new AbortController();
             try {
-              const summary = await agent.summarize();
-              const fresh = Session.create(agent.workingDirectory, agent.model);
-              tryLockSession(fresh.file);
+              compactionId = source.beginCompaction('manual', { keepFromMessage: agent.messages.length });
+              const summary = await agent.summarize(state.running.signal);
+              lockedChild = Session.createLocked(agent.workingDirectory, agent.model, dirname(source.file), {
+                lineage: {
+                  parentSessionId: source.id,
+                  parentFile: source.file,
+                  relation: 'compaction',
+                  priorUsage: structuredClone(agent.usageTotal),
+                  priorUsageComplete: agent.usageHistoryComplete,
+                },
+              });
+              const fresh = lockedChild.session;
               fresh.append({
                 t: 'msg',
                 message: { role: 'user', content: [{ type: 'text', text: `Summary of the previous session:\n\n${summary}` }] },
               });
-              session = fresh;
-              agent = buildAgent(
-                { ...initial, session, maxIterations: initial.maxIterations, thinkingBudget: initial.thinkingBudget },
+              const nextAgent = buildAgent(
+                {
+                  ...runtimeSetup,
+                  session: fresh,
+                  maxIterations: runtimeSetup.maxIterations,
+                  thinkingBudget: runtimeSetup.thinkingBudget,
+                },
                 agent.workingDirectory,
                 agent.model,
               );
-              process.stdout.write(`compacted into session ${session.id}\n`);
+              commitAttempted = true;
+              source.completeCompaction(compactionId, agent.messages.length, { targetSessionId: fresh.id });
+              releaseSessionLock(source.file);
+              session = fresh;
+              agent = nextAgent;
+              runtimeSetup = { ...runtimeSetup, session, agent };
+              process.stdout.write(`compacted into session ${oneLine(session.id, 128)}\n`);
             } catch (error) {
-              process.stdout.write(red(`compaction failed: ${String(error)}\n`));
+              if (lockedChild && !commitAttempted) {
+                lockedChild.release();
+                try {
+                  unlinkSync(lockedChild.session.file);
+                } catch {
+                  /* preserve the original compaction error */
+                }
+              }
+              if (compactionId && !commitAttempted) {
+                try {
+                  source.failCompaction(compactionId, String(error));
+                } catch {
+                  /* preserve the original compaction error */
+                }
+              }
+              process.stdout.write(
+                red(
+                  `${commitAttempted ? 'compaction commit outcome is unknown; exit and resume before continuing' : 'compaction failed'}: ${String(error)}\n`,
+                ),
+              );
+              if (commitAttempted) {
+                exitCode = 3;
+                pending.length = 0;
+                rl.close();
+                return true;
+              }
+            } finally {
+              state.running = undefined;
             }
           }
         }
@@ -399,19 +650,33 @@ async function repl(args: CliArgs): Promise<number> {
           session = result.newSession;
           // rebuild on the branched session, keeping tools/extensions, caps, and model
           agent = buildAgent(
-            { ...initial, session, maxIterations: initial.maxIterations, thinkingBudget: initial.thinkingBudget },
+            {
+              ...runtimeSetup,
+              session,
+              maxIterations: runtimeSetup.maxIterations,
+              thinkingBudget: runtimeSetup.thinkingBudget,
+            },
             agent.workingDirectory,
             agent.model,
           );
+          runtimeSetup = { ...runtimeSetup, session, agent };
         }
         input = result.input;
       } else {
         input = line;
       }
       if (input) {
-        await runInput(agent, input, state);
+        const turn = await runInput(agent, input, state);
+        if (scripted && turn.exitCode !== 0 && exitCode === 0) exitCode = turn.exitCode;
         // auto-compaction may have moved the agent to a fresh session file
         if (agent.session && agent.session !== session) session = agent.session;
+        if (turn.persistenceFailure) {
+          exitCode = turn.exitCode || 3;
+          pending.length = 0;
+          process.stdout.write(red('session persistence failed; exiting so the journal can be reopened and reconciled\n'));
+          rl.close();
+          return true;
+        }
       }
       if (!eof) rl.prompt();
       return false;
@@ -419,13 +684,20 @@ async function repl(args: CliArgs): Promise<number> {
 
     const drainQueue = async (first: string): Promise<void> => {
       processing = true;
-      let line: string | undefined = first;
-      while (line !== undefined) {
-        if (await handleLine(line)) break;
-        line = pending.shift();
+      let completed = false;
+      try {
+        let line: string | undefined = first;
+        while (line !== undefined) {
+          if (await handleLine(line)) break;
+          line = pending.shift();
+        }
+        completed = true;
+      } finally {
+        processing = false;
+        // On rejection the outer handler must set the nonzero code before close
+        // resolves the REPL promise.
+        if (completed && eof) finish();
       }
-      processing = false;
-      if (eof) finish();
     };
 
     rl.on('line', (rawLine) => {
@@ -448,7 +720,12 @@ async function repl(args: CliArgs): Promise<number> {
         }
         return;
       }
-      void drainQueue(rawLine);
+      void drainQueue(rawLine).catch((error: unknown) => {
+        exitCode = 1;
+        pending.length = 0;
+        process.stdout.write(`\n${red(String(error instanceof Error ? error.message : error))}\n`);
+        rl.close();
+      });
     });
 
     rl.prompt();
@@ -457,8 +734,8 @@ async function repl(args: CliArgs): Promise<number> {
 
 /**
  * Reconstructs a session's per-request economics from its JSONL — the local answer
- * to "what did this actually cost and why": every number here is what the provider
- * reported, recorded at request time, auditable after the fact.
+ * to "what token usage did this run report": every number here is what the provider
+ * reported at request time. Monetary cost requires a separate, versioned price table.
  */
 function auditSession(target: string, cwd: string): number {
   let file: string | undefined;
@@ -469,24 +746,65 @@ function auditSession(target: string, cwd: string): number {
     if (existsSync(inDir)) file = inDir;
   }
   if (!file) {
-    process.stderr.write(`no session found for "${target}"\n`);
+    process.stderr.write(`no session found for "${oneLine(target, 4096)}"\n`);
     return 1;
   }
-  const rows: Usage[] = [];
-  let model = '?';
-  let messages = 0;
-  for (const line of readFileSync(file, 'utf8').split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const entry = JSON.parse(line) as { t: string; usage?: Usage; model?: string };
-      if (entry.t === 'meta' && entry.model) model = entry.model;
-      else if (entry.t === 'usage' && entry.usage) rows.push(entry.usage);
-      else if (entry.t === 'msg') messages++;
-    } catch {
-      /* corrupt line — already warned elsewhere */
+  const chain: Session[] = [];
+  const seen = new Set<string>();
+  let cursor: string | undefined = file;
+  while (cursor && !seen.has(cursor)) {
+    seen.add(cursor);
+    const current = Session.open(cursor);
+    chain.unshift(current);
+    const lineage = current.lineage;
+    cursor =
+      (lineage?.relation === 'compaction' || lineage?.relation === 'continuation') &&
+      lineage.parentFile &&
+      existsSync(lineage.parentFile)
+        ? lineage.parentFile
+        : undefined;
+  }
+  const latest = chain.at(-1)!;
+  const rows: Usage[] = chain.flatMap((item) => [...item.usageEntries]);
+  const requests = chain.flatMap((item) => [...item.modelRequests]);
+  const unknownRequests = requests.filter((request) => request.status === 'outcome_unknown');
+  const failedCompactions = chain.flatMap((item) =>
+    item.lifecycleEntries.filter((entry) => entry.t === 'compaction_failed'),
+  );
+  const messages = latest.messages.length;
+  const models = new Set<string>();
+  for (const item of chain) {
+    if (item.meta?.model) models.add(item.meta.model);
+    for (const entry of item.lifecycleEntries) {
+      if (entry.t === 'model_request_started') models.add(entry.model);
     }
   }
-  process.stdout.write(`${file}\nmodel ${model} | ${messages} messages | ${rows.length} requests\n\n`);
+  const safeModels = [...models].map((model) => oneLine(model, 256));
+  process.stdout.write(
+    `${oneLine(file, 4096)}\nmodel${models.size === 1 ? '' : 's'} ${safeModels.join(', ') || '?'} | ${messages} live messages | ${requests.length} provider attempts | ${rows.length} with reported usage | ${unknownRequests.length} outcome unknown | ${chain.length} linked session${chain.length === 1 ? '' : 's'}\n`,
+  );
+  if (latest.lineage) {
+    process.stdout.write(
+      `lineage ${latest.lineage.relation} from ${oneLine(latest.lineage.parentSessionId, 256)}\n`,
+    );
+  }
+  if (latest.runStatus) {
+    process.stdout.write(
+      `terminal ${latest.runStatus.status}${latest.runStatus.reason ? `:${oneLine(latest.runStatus.reason, 512)}` : ''}\n`,
+    );
+  }
+  for (const request of unknownRequests.slice(0, 10)) {
+    process.stdout.write(
+      `unknown request ${oneLine(request.requestId, 256)} (${oneLine(request.model, 256)}): ${oneLine(request.reason ?? 'no terminal record', 512)}\n`,
+    );
+  }
+  if (unknownRequests.length > 10) process.stdout.write(`... ${unknownRequests.length - 10} more unknown requests\n`);
+  for (const compaction of failedCompactions.slice(-10)) {
+    process.stdout.write(
+      `failed compaction ${oneLine(compaction.compactionId, 256)}: ${oneLine(compaction.error, 512)}\n`,
+    );
+  }
+  process.stdout.write('\n');
   process.stdout.write('req      input  cache-read  cache-write  output  hit%\n');
   const total = emptyUsage();
   rows.forEach((row, index) => {
@@ -507,6 +825,7 @@ function auditSession(target: string, cwd: string): number {
 }
 
 async function main(): Promise<void> {
+  const jsonRequested = process.argv.slice(2).includes('--json');
   try {
     const args = parseArgs(process.argv.slice(2));
     if (args.help) {
@@ -514,6 +833,7 @@ async function main(): Promise<void> {
       return;
     }
     if (args.audit !== undefined) {
+      if (args.json) throw new Error('--json cannot be combined with --audit');
       process.exitCode = auditSession(args.audit, process.cwd());
       return;
     }
@@ -522,8 +842,26 @@ async function main(): Promise<void> {
     let text = String(error instanceof Error ? error.message : error);
     // surface the API's own explanation (model not found, quota, …), not just the status
     const body = (error as { body?: string }).body;
-    if (body) text += ` — ${oneLine(body.replace(/\s+/g, ' ').trim(), 300)}`;
-    process.stderr.write(`${red(text)}\n`);
+    if (body) {
+      const flattenedBody = body.replace(/\s+/g, ' ').trim();
+      const boundedBody =
+        flattenedBody.length > 300 ? `${flattenedBody.slice(0, 300)}…` : flattenedBody;
+      // JSON remains an encoded lossless transport for the bounded provider
+      // diagnostic. Human-facing output is sanitized by red() below.
+      text += ` — ${jsonRequested ? boundedBody : oneLine(boundedBody, 301)}`;
+    }
+    if (jsonRequested) {
+      const failure = error instanceof JsonRunFailure ? error : new JsonRunFailure(error);
+      process.stdout.write(
+        `${JSON.stringify({
+          v: 1,
+          ...(failure.sessionId ? { sessionId: failure.sessionId } : {}),
+          event: { type: 'run_error', error: text },
+        })}\n`,
+      );
+    } else {
+      process.stderr.write(`${red(text)}\n`);
+    }
     process.exitCode = 1;
   }
 }

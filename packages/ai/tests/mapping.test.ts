@@ -83,6 +83,21 @@ test('anthropic body: thinking blocks are replayed with signature and enable bud
   assert.deepEqual(body.messages[1].content[0], { type: 'thinking', thinking: 'hmm', signature: 'sig123' });
 });
 
+test('anthropic body: maxTokens remains a hard cap and safely disables oversized thinking', () => {
+  const body = buildAnthropicBody({ ...request, maxTokens: 4096, thinkingBudget: 2048 }) as any;
+  assert.equal(body.max_tokens, 4096);
+  assert.deepEqual(body.thinking, { type: 'enabled', budget_tokens: 2048 });
+
+  for (const [incompatible, expectedCap] of [
+    [buildAnthropicBody({ ...request, maxTokens: 2048, thinkingBudget: 2048 }), 2048],
+    [buildAnthropicBody({ ...request, maxTokens: 2048, thinkingBudget: 4096 }), 2048],
+    [buildAnthropicBody({ ...request, thinkingBudget: 8192 }), 8192],
+  ] as [any, number][]) {
+    assert.equal(incompatible.max_tokens, expectedCap);
+    assert.equal(incompatible.thinking, undefined);
+  }
+});
+
 test('openai body: reasoning models get max_completion_tokens and no temperature', () => {
   assert.equal(usesCompletionTokensParam('gpt-5.2'), true);
   assert.equal(usesCompletionTokensParam('o3-mini'), true);

@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "runId": "YYYYMMDD-piko-model-dataset-arm",
+  "createdAt": "YYYY-MM-DDTHH:MM:SSZ",
+  "harness": {
+    "repository": "https://github.com/arunmenon/piko",
+    "commit": "40-character-git-sha",
+    "dirty": false,
+    "packageVersion": "0.1.0",
+    "adapter": "legacy-terminal-bench-0.2.18"
+  },
+  "benchmark": {
+    "name": "terminal-bench-core",
+    "version": "0.1.1",
+    "datasetCommit": "dataset-git-sha-or-registry-digest",
+    "taskSubset": ["task-id"],
+    "scorerCommit": "scorer-git-sha-or-version"
+  },
+  "model": {
+    "provider": "openai",
+    "id": "model-id",
+    "revision": "provider-reported-snapshot-if-available",
+    "endpointClass": "hosted-or-local",
+    "temperature": null,
+    "seed": null,
+    "contextWindow": 0
+  },
+  "runPolicy": {
+    "attemptsPerTask": 5,
+    "maxTurns": 80,
+    "maxToolCalls": 100,
+    "timeoutSeconds": 0,
+    "concurrency": 1,
+    "networkPolicy": "benchmark-default",
+    "environment": "docker-image-digest"
+  },
+  "artifacts": {
+    "rawRunDirectory": "relative/or/content-addressed/path",
+    "comparisonJson": "relative/path/to/comparison.json",
+    "publishedUri": null
+  },
+  "results": {
+    "resolvedTrials": 0,
+    "totalTrials": 0,
+    "timeouts": 0,
+    "harnessFailures": 0,
+    "trialsWithTokenData": 0,
+    "totalInputTokens": 0,
+    "totalOutputTokens": 0
+  }
+}

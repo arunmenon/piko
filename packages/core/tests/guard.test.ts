@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { test } from 'node:test';
 import { Agent, type CompletionClient } from '../src/agent.js';
 import { Session } from '../src/session.js';
@@ -94,6 +94,42 @@ test('flail guard: consecutive varied failures respect configured thresholds', a
   assert.equal(client.requests.length, 4); // fail, fail->nudge, fail->stop, final report
 });
 
+test('flail guard stops the remainder of one large failing tool batch before dispatch', async () => {
+  let executions = 0;
+  const batchTool: Tool = {
+    ...failingTool,
+    async execute() {
+      executions++;
+      return { content: [{ type: 'text', text: 'exploded' }], isError: true };
+    },
+  };
+  const client = scriptedClient((request, call) => {
+    if (call > 1 || lastText(request).includes('Stopping this turn')) {
+      return { role: 'assistant', content: [{ type: 'text', text: 'final report' }] };
+    }
+    return {
+      role: 'assistant',
+      content: Array.from({ length: 20 }, (_, index) => ({
+        type: 'toolCall' as const,
+        id: `batch-${index}`,
+        name: 'boom',
+        arguments: { command: 'same thing' },
+      })),
+    };
+  });
+  const agent = new Agent({ client, model: 'fake', systemPrompt: 't', tools: [batchTool], cwd: '/tmp' });
+  const events: string[] = [];
+  for await (const event of agent.run('go')) events.push(event.type);
+  assert.equal(executions, 4, 'repeatStopAfter must apply inside one provider batch');
+  assert.ok(events.includes('flail_stop'));
+  const results = agent.messages.find(
+    (message) => message.role === 'user' && message.content.some((block) => block.type === 'toolResult'),
+  );
+  assert.ok(results?.role === 'user');
+  assert.equal(results.content.filter((block) => block.type === 'toolResult').length, 20);
+  assert.match(JSON.stringify(results.content), /remaining tool batch/);
+});
+
 test('flail guard: disabled means no interference', async () => {
   let calls = 0;
   const client = scriptedClient(() => {
@@ -119,7 +155,7 @@ test('offload: old bulky tool results move to disk with a re-readable stub', asy
   const dir = mkdtempSync(join(tmpdir(), 'pi-offload-'));
   const session = Session.create('/some/project', 'fake', dir);
   const client = scriptedClient(() => ({ role: 'assistant', content: [{ type: 'text', text: 'noted' }] }));
-  const agent = new Agent({ client, model: 'fake', systemPrompt: 't', tools: [], cwd: '/tmp', session });
+  const agent = new Agent({ client, model: 'fake', systemPrompt: 't', tools: [], cwd: dir, session });
 
   const bigText = 'x'.repeat(10_000);
   const seed: Message[] = [
@@ -144,8 +180,10 @@ test('offload: old bulky tool results move to disk with a re-readable stub', asy
   const stubText = stubBlock.content[0]!.text;
   assert.match(stubText, /^\[offloaded: 10,?000-char bash output saved to /);
   const path = stubText.match(/saved to (\S+);/)?.[1];
-  assert.ok(path && existsSync(path), 'offload file should exist');
-  assert.equal(readFileSync(path!, 'utf8'), bigText);
+  assert.ok(path && !isAbsolute(path), 'offload reference should be workspace-relative');
+  assert.ok(existsSync(join(dir, path!)), 'offload file should exist inside the workspace');
+  assert.equal(readFileSync(join(dir, path!), 'utf8'), bigText);
+  assert.equal(readFileSync(join(dir, path!, '..', '.gitignore'), 'utf8'), '*\n!.gitignore\n');
 });
 
 test('steering: mid-turn notes are injected before the next model call', async () => {
