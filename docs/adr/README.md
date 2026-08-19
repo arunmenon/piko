@@ -13,3 +13,8 @@ new decisions get an ADR in the same change that implements them.
 | 0004 | Headless self-spawn as the sub-agent mechanism | accepted |
 | 0005 | Loop-side failure control (flail guard) over prompt-side | accepted |
 | 0006 | Workspace containment and deny-by-default host bash | accepted |
+| 0007 | Write-ahead lifecycle journal with unknown-outcome semantics | accepted |
+| 0008 | Strict provider contract with typed terminal states | accepted |
+| 0009 | Hard run budgets enforced in the loop | accepted |
+| 0010 | Fail-closed headless and JSON automation contract | accepted |
+| 0011 | Persistent approve/edit/reject workflow | **proposed** |
