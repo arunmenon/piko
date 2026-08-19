@@ -1,3 +1,11 @@
+/** A decision supplied on the command line for one suspended execution. */
+export interface ApprovalFlag {
+  executionId: string;
+  decision: 'approved' | 'edited' | 'rejected';
+  editedArguments?: Record<string, unknown>;
+  reason?: string;
+}
+
 export interface CliArgs {
   print: boolean;
   json: boolean;
@@ -14,6 +22,12 @@ export interface CliArgs {
   maxTotalTokens?: number;
   trustProject: boolean;
   allowHostBash: boolean;
+  /** tool names gated behind a human decision, or '*' for all (ADR 0011) */
+  requireApproval?: readonly string[] | '*';
+  /** decisions applied to a suspended session when it is reopened */
+  approvals: ApprovalFlag[];
+  /** --approve all: every pending approval in the reopened session */
+  approveAll: boolean;
   thinking?: number;
   autoCompact: boolean;
   flailGuard: boolean;
@@ -36,12 +50,22 @@ export function parseArgs(argv: string[]): CliArgs {
     offload: true,
     trustProject: false,
     allowHostBash: false,
+    approvals: [],
+    approveAll: false,
     extensions: [],
     usage: false,
     help: false,
     prompt: '',
   };
   const positional: string[] = [];
+  const gatedTools = new Set<string>();
+  let gateEveryTool = false;
+  let sawApprovalGate = false;
+  const lastDecision = (flag: string): ApprovalFlag => {
+    const decision = args.approvals[args.approvals.length - 1];
+    if (!decision) throw new Error(`${flag} must follow --reject or --edit`);
+    return decision;
+  };
   const positiveInteger = (flag: string, raw: string): number => {
     const value = Number(raw);
     if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${flag} requires an integer >= 1`);
@@ -135,6 +159,47 @@ export function parseArgs(argv: string[]): CliArgs {
       case '--allow-host-bash':
         args.allowHostBash = true;
         break;
+      case '--require-approval': {
+        // Repeatable and comma-separated; "*" anywhere gates every tool.
+        sawApprovalGate = true;
+        for (const name of next().split(',')) {
+          const trimmed = name.trim();
+          if (trimmed.length === 0) throw new Error('--require-approval requires tool names or "*"');
+          if (trimmed === '*') gateEveryTool = true;
+          else gatedTools.add(trimmed);
+        }
+        break;
+      }
+      case '--approve': {
+        const value = next();
+        if (value === 'all') args.approveAll = true;
+        else args.approvals.push({ executionId: value, decision: 'approved' });
+        break;
+      }
+      case '--reject':
+        args.approvals.push({ executionId: next(), decision: 'rejected' });
+        break;
+      case '--edit':
+        args.approvals.push({ executionId: next(), decision: 'edited' });
+        break;
+      case '--args': {
+        const decision = lastDecision('--args');
+        if (decision.decision !== 'edited') throw new Error('--args must follow --edit');
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(next()) as unknown;
+        } catch (error) {
+          throw new Error(`--args requires a JSON object: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          throw new Error('--args requires a JSON object');
+        }
+        decision.editedArguments = parsed as Record<string, unknown>;
+        break;
+      }
+      case '--reason':
+        lastDecision('--reason').reason = next();
+        break;
       case '--audit': {
         const peek = argv[i + 1];
         args.audit = peek !== undefined && !peek.startsWith('-') ? argv[++i]! : 'latest';
@@ -155,6 +220,22 @@ export function parseArgs(argv: string[]): CliArgs {
         if (arg.startsWith('-') && arg !== '-') throw new Error(`unknown flag ${arg} — see pi --help`);
         positional.push(arg);
     }
+  }
+  if (sawApprovalGate) args.requireApproval = gateEveryTool ? '*' : [...gatedTools];
+  for (const decision of args.approvals) {
+    if (decision.decision === 'edited' && decision.editedArguments === undefined) {
+      throw new Error(`--edit ${decision.executionId} requires --args '<json>'`);
+    }
+  }
+  if (args.approveAll && args.approvals.length > 0) {
+    throw new Error('--approve all cannot be combined with per-execution decisions');
+  }
+  const decided = new Set<string>();
+  for (const decision of args.approvals) {
+    if (decided.has(decision.executionId)) {
+      throw new Error(`more than one decision for execution ${decision.executionId}`);
+    }
+    decided.add(decision.executionId);
   }
   args.prompt = positional.join(' ');
   return args;
@@ -184,6 +265,13 @@ options:
   --no-offload         keep old bulky tool outputs inline instead of offloading to disk
   --trust-project      load repository AGENTS.md, skill index, and prompt templates
   --allow-host-bash    expose unsandboxed host bash (dangerous; environment is sanitized)
+  --require-approval <names|*>  gate these tools behind a human decision; repeatable and
+                       comma-separated. The turn suspends at the first gated call (exit 4)
+                       and survives process loss; only this flag and ~/.config/pi/config.json
+                       can set it. Gating is per tool name, not per argument.
+  --approve <id|all>   approve a suspended execution when reopening the session (with -c/--session)
+  --reject <id>        reject one, with an optional following --reason "<text>"
+  --edit <id> --args '<json>'  run one with replacement arguments (validated, and noted to the model)
   --audit [id|path]    print a per-request token-usage audit (default: latest here)
   --telemetry <path>   append redacted versioned runtime spans/events as owner-only JSONL
   --ext <path>         load a compiled JavaScript extension module (repeatable)

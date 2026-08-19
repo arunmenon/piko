@@ -21,12 +21,18 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { addUsage, emptyUsage, type Message, type ToolCallBlock, type Usage } from '@pi/ai';
 import {
+  JOURNAL_SCHEMA_VERSION,
+  journalSchemaVersion,
   parseSessionEntry,
   reduceModelRequests,
+  reduceOpenRun,
   reduceToolExecutions,
   validateLifecycle,
+  type ApprovalDecision,
   type LifecycleEntry,
   type ModelRequestState,
+  type OpenRunState,
+  type RunBudgetSnapshot,
   type RunStatus,
   type SessionEntry,
   type SessionLineage,
@@ -34,16 +40,20 @@ import {
 } from './journal.js';
 
 export type {
+  ApprovalDecision,
   CompactionEntry,
   LegacySessionEntry,
   LifecycleEntry,
   ModelRequestEntry,
   ModelRequestState,
   ModelRequestStatus,
+  OpenRunState,
+  RunBudgetSnapshot,
   RunStatus,
   SessionEntry,
   SessionLineage,
   SessionLineageRelation,
+  ToolApprovalState,
   ToolExecutionState,
   ToolExecutionStatus,
   ToolLifecycleEntry,
@@ -477,7 +487,10 @@ export class Session {
       const id = options.id ?? randomUUID();
       const file = join(dir, `${id}.jsonl`);
       const created = now();
-      const entries: SessionEntry[] = [{ t: 'meta', v: 1, id, cwd, model, created }];
+      const entries: SessionEntry[] = [
+        { t: 'meta', v: 1, id, cwd, model, created },
+        { t: 'journal_schema', v: 2, at: created, schema: JOURNAL_SCHEMA_VERSION },
+      ];
       if (options.lineage) {
         entries.push({ t: 'session_lineage', v: 2, at: created, ...options.lineage });
       }
@@ -653,8 +666,15 @@ export class Session {
     this.entries.push(...normalized);
   }
 
-  setRunStatus(status: RunStatus, reason?: string): void {
-    this.append({ t: 'run_status', v: 2, at: now(), status, ...(reason ? { reason } : {}) });
+  setRunStatus(status: RunStatus, reason?: string, options: { budget?: RunBudgetSnapshot } = {}): void {
+    this.append({
+      t: 'run_status',
+      v: 2,
+      at: now(),
+      status,
+      ...(reason ? { reason } : {}),
+      ...(options.budget ? { budget: options.budget } : {}),
+    });
   }
 
   markReady(): void {
@@ -719,6 +739,36 @@ export class Session {
       call,
     });
     return executionId;
+  }
+
+  /** Defer a planned call pending a human decision; the derived status becomes awaiting_approval. */
+  requestToolApproval(executionId: string): void {
+    this.append({ t: 'tool_approval_requested', v: 2, at: now(), executionId });
+  }
+
+  /**
+   * Record the human decision. `decidedAt` defaults to append time and should be
+   * passed when the decision was collected earlier (a resume invocation applying
+   * flags recorded before the journal was reopened).
+   */
+  decideToolApproval(
+    executionId: string,
+    decision: ApprovalDecision,
+    options: { decidedAt?: string; editedArguments?: Record<string, unknown>; reason?: string } = {},
+  ): void {
+    if (decision !== 'edited' && options.editedArguments !== undefined) {
+      throw new TypeError('editedArguments is only valid for an edited decision');
+    }
+    this.append({
+      t: 'tool_approval_decided',
+      v: 2,
+      at: now(),
+      executionId,
+      decision,
+      decidedAt: options.decidedAt ?? now(),
+      ...(options.editedArguments !== undefined ? { editedArguments: options.editedArguments } : {}),
+      ...(options.reason ? { reason: options.reason } : {}),
+    });
   }
 
   startTool(executionId: string): void {
@@ -873,6 +923,34 @@ export class Session {
 
   get pendingToolExecutions(): readonly ToolExecutionState[] {
     return this.toolExecutions.filter((state) => state.status === 'planned' || state.status === 'started');
+  }
+
+  /** Gated calls with no recorded decision yet. */
+  get awaitingApprovalExecutions(): readonly ToolExecutionState[] {
+    return this.toolExecutions.filter((state) => state.status === 'awaiting_approval');
+  }
+
+  /**
+   * Executions a resume must still settle: undecided gated calls plus decisions
+   * that were recorded before anything started (0011 decision 4 — approved with
+   * no `started` row means nothing began).
+   */
+  get suspendedToolExecutions(): readonly ToolExecutionState[] {
+    return this.toolExecutions.filter(
+      (state) =>
+        state.status === 'awaiting_approval' ||
+        (state.status === 'planned' && state.approval?.decision !== undefined),
+    );
+  }
+
+  /** Budget accounting for the run segment that is open or ended suspended. */
+  get openRun(): OpenRunState {
+    return reduceOpenRun(this.entries);
+  }
+
+  /** Declared journal generation; 1 for sessions written before the marker existed. */
+  get schemaVersion(): number {
+    return journalSchemaVersion(this.entries);
   }
 
   get interruptedToolExecutions(): readonly ToolExecutionState[] {

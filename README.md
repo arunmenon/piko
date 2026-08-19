@@ -53,6 +53,15 @@ industry harnesses.
   reconstructing linked-session economics. A versioned write-ahead lifecycle journal records
   model requests, tool planned/started/completed/failed/unknown states, compaction lineage, and
   terminal run status. Only a corrupt partial tail is ignored; invalid middle rows fail closed.
+- **Approvals that survive process loss**: `--require-approval <names|*>` gates tools behind a
+  recorded human decision. The batch runs in order until the first gated call, journals the rest,
+  and the turn ends `suspended` (exit 4) without another model request. The decision is a journal
+  row, not process state, so a suspended run can be approved, edited, or rejected minutes or days
+  later — after a crash or a reboot — by resuming the session. Gating is per tool name; the policy
+  comes only from CLI flags and `~/.config/pi/config.json`, never from project files or extensions.
+  A resumed run continues the suspended run's token, tool-call, and model-request accounting under
+  the ceilings recorded on its terminal row: raising one needs an explicit flag and is journaled.
+  Only the wall-time deadline restarts, because waiting for a human is not the run's own compute.
 - **Prompt-cache conscious**: stable prefix ordering with Anthropic cache breakpoints; normal
   turns append. Explicit microcompaction rewrites only eligible old tool-result blocks, while full
   compaction starts a lineage-linked session and preserves the prior transcript.
@@ -90,6 +99,14 @@ node packages/cli/dist/main.js -p "review these files" --max-turns 20
 # versioned JSONL automation stream; incomplete/capped runs exit nonzero
 node packages/cli/dist/main.js --json "review these files"
 
+# gate a tool behind a human decision: the run suspends at the first gated call and exits 4
+node packages/cli/dist/main.js -p --require-approval write,bash "apply the migration"
+
+# decide later — in this process, or days later after a crash — and the run continues
+node packages/cli/dist/main.js -p -c --approve all
+node packages/cli/dist/main.js -p -c --reject tool_8f31 --reason "not on a Friday"
+node packages/cli/dist/main.js -p -c --edit tool_8f31 --args '{"path":"safe.txt","content":"…"}'
+
 # extended thinking on Anthropic models
 node packages/cli/dist/main.js --thinking 8192 "untangle this race condition"
 
@@ -106,12 +123,30 @@ Config file (`~/.config/pi/config.json`, optional):
 ```json
 {
   "defaultProfile": "kimi",
+  "approval": ["bash", "write"],
   "profiles": {
     "kimi": { "provider": "openai", "baseUrl": "https://api.moonshot.ai/v1", "model": "kimi-k3", "apiKeyEnv": "MOONSHOT_API_KEY" }
   },
   "extensions": []
 }
 ```
+
+`approval` gates those tools behind a human decision for every profile; a profile may set its own
+`approval` (a list of tool names or `"*"`) to override it. This file and the `--require-approval`
+flag are its only sources.
+
+Headless exit codes are semantic and fail closed — success must be proven by a terminal status:
+
+| Code | Meaning |
+| ---- | ------- |
+| 0 | completed turn |
+| 1 | error (bad flags, setup failure, provider error) |
+| 2 | budget exceeded (`--max-turns`, tool calls, wall time, tokens) |
+| 3 | incomplete or unknown terminal state |
+| 4 | suspended awaiting tool approval; resume with `--approve`/`--reject`/`--edit` |
+| 130 | canceled by the user |
+
+A parent process spawning children must treat exit 4 as "forward the decision", not as failure.
 
 ## Sandboxing
 
@@ -142,8 +177,12 @@ trusted-environment capability.
 Piko is an experimental, pre-1.0 framework. Its current local evidence includes unit, integration,
 fault-injection, packaging, and prompt-budget checks, plus an eval runner that writes versioned
 per-trial artifacts. It has not had an independent security audit, does not yet provide an OS
-sandbox or persistent approval policy, and has no published representative industry benchmark.
-APIs and journal schemas should be treated as unstable until a compatibility policy is published.
+sandbox, and has no published representative industry benchmark. Approval gating is per tool name
+only: no argument-pattern matching, no session-scoped "always allow", and a rejected call is not a
+sandbox — containment still does that work.
+APIs are unstable until a compatibility policy is published. The journal now carries an explicit
+schema generation: sessions written before the marker are read as generation 1, and a file
+declaring a newer generation is refused rather than half-understood.
 Workspace packages are intentionally marked private and must not be published until the owner
 chooses a license and release policy.
 See the [evaluation methodology](docs/evaluation.md) for pass criteria, artifact contents, and the

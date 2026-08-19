@@ -91,7 +91,7 @@ function incompleteMarker(stderr: string, usage: UsageSummary | undefined): stri
   if (usage?.status && usage.status !== 'completed') {
     return `usage reported status ${usage.status}${usage.reason ? `: ${usage.reason}` : ''}`;
   }
-  const match = stderr.match(/^run (incomplete|budget_exceeded|failed|canceled):\s*(.*)$/m);
+  const match = stderr.match(/^run (incomplete|budget_exceeded|failed|canceled|suspended):\s*(.*)$/m);
   return match ? `${match[1]}${match[2] ? `: ${match[2]}` : ''}` : undefined;
 }
 

@@ -67,7 +67,14 @@ export type RuntimeEventName =
 
 export type RuntimeSpanName = 'agent.run' | 'model.request' | 'tool.execute' | 'context.compact';
 export type TelemetryLevel = 'debug' | 'info' | 'warn' | 'error';
-export type TelemetrySpanStatus = 'ok' | 'error' | 'canceled' | 'incomplete' | 'budget_exceeded' | 'unknown';
+export type TelemetrySpanStatus =
+  | 'ok'
+  | 'error'
+  | 'canceled'
+  | 'incomplete'
+  | 'budget_exceeded'
+  | 'suspended'
+  | 'unknown';
 
 interface RuntimeTelemetryBase extends TelemetryContext {
   schemaVersion: typeof TELEMETRY_SCHEMA_VERSION;
@@ -234,6 +241,7 @@ const telemetrySpanStatuses = new Set<TelemetrySpanStatus>([
   'canceled',
   'incomplete',
   'budget_exceeded',
+  'suspended',
   'unknown',
 ]);
 

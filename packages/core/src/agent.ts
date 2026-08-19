@@ -19,10 +19,14 @@ import {
   Session,
   releaseSessionLock,
   usageAcrossSessionLineageDetailed,
+  type ApprovalDecision,
+  type RunBudgetSnapshot,
+  type ToolApprovalState,
   type ToolExecutionState,
 } from './session.js';
 import {
   defaultToolExecutionPolicy,
+  requiresApproval,
   type Tool,
   type ToolContext,
   type ToolExecutionPolicy,
@@ -79,9 +83,10 @@ export interface RunBudget {
   maxTotalTokens?: number;
 }
 
-export type TurnStatus = 'completed' | 'incomplete' | 'budget_exceeded' | 'canceled';
+export type TurnStatus = 'completed' | 'incomplete' | 'budget_exceeded' | 'canceled' | 'suspended';
 export type TurnStopReason =
   | 'end_turn'
+  | 'awaiting_approval'
   | 'max_tokens'
   | 'provider_stop'
   | 'empty_response'
@@ -101,6 +106,44 @@ interface ToolCallExecution {
   /** Dispatch began, but cancellation won before the executor reported a terminal result. */
   outcomeUnknown?: boolean;
 }
+
+/** One gated call presented to a human for approval. */
+export interface PendingApproval {
+  executionId: string;
+  call: ToolCallBlock;
+}
+
+/** A human decision applied when a suspended session is resumed. */
+export interface ApprovalDecisionInput {
+  executionId: string;
+  decision: ApprovalDecision;
+  /** Required for `edited`; validated against the tool schema before anything is journaled. */
+  editedArguments?: Record<string, unknown>;
+  /** Human explanation, carried into the tool result the model sees. */
+  reason?: string;
+  /** When the human decided, if that predates this process. */
+  decidedAt?: string;
+}
+
+/** One entry of the tool batch produced by a single assistant response. */
+interface BatchCall {
+  call: ToolCallBlock;
+  executionId: string;
+  journaled: boolean;
+  /** Result already produced — executed before a suspension, or reconstructed on resume. */
+  settled?: ToolResultBlock;
+  approval?: ToolApprovalState;
+}
+
+/** The batch a suspended turn stopped inside, retained for an in-process resume. */
+interface SuspendedBatch {
+  requestId?: string;
+  calls: BatchCall[];
+}
+
+type TurnStart =
+  | { kind: 'input'; input: string }
+  | { kind: 'resume'; batch: SuspendedBatch; decisions: ApprovalDecisionInput[] };
 
 class CompactionPersistenceError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -130,6 +173,33 @@ export function chooseKeepBoundary(messages: Message[], keepTokens = KEEP_RECENT
   return earliestFittingBoundary ?? latestBoundary;
 }
 
+function toolResultBlock(call: ToolCallBlock, text: string, isError = false): ToolResultBlock {
+  return {
+    type: 'toolResult',
+    toolCallId: call.id,
+    toolName: call.name,
+    content: [{ type: 'text', text }],
+    ...(isError ? { isError: true } : {}),
+  };
+}
+
+/** What the model is told about a call whose result payload never reached the transcript. */
+function interruptedResultText(state?: ToolExecutionState): string {
+  if (state?.approval?.decision === 'rejected') {
+    return `not run: a human reviewer rejected this tool call${state.approval.reason ? `: ${state.approval.reason}` : ''}`;
+  }
+  if (state?.status === 'planned' || state?.status === 'awaiting_approval' || state?.status === 'skipped') {
+    return 'interrupted: this tool call was durably recorded as not started; it did not run';
+  }
+  if (state?.status === 'completed') {
+    return 'interrupted: this tool call completed, but its result payload was not recorded; do not repeat it without reconciliation';
+  }
+  if (state?.status === 'failed') {
+    return `interrupted: this tool call finished with an error before its result payload was recorded${state.error ? `: ${state.error}` : ''}`;
+  }
+  return 'interrupted: the prior process ended before recording this tool result; the outcome is unknown and the call must not be repeated without reconciliation';
+}
+
 /** If the transcript ends in an assistant message with tool calls but no results,
  *  produce a user message of synthesized error results (both APIs reject the gap). */
 export function synthesizeInterruptedResults(
@@ -143,27 +213,7 @@ export function synthesizeInterruptedResults(
   const stateByCallId = new Map(executions.map((state) => [state.call.id, state]));
   return {
     role: 'user',
-    content: calls.map(
-      (call): ToolResultBlock => {
-        const state = stateByCallId.get(call.id);
-        let text =
-          'interrupted: the prior process ended before recording this tool result; the outcome is unknown and the call must not be repeated without reconciliation';
-        if (state?.status === 'planned' || state?.status === 'skipped') {
-          text = 'interrupted: this tool call was durably recorded as not started; it did not run';
-        } else if (state?.status === 'completed') {
-          text = 'interrupted: this tool call completed, but its result payload was not recorded; do not repeat it without reconciliation';
-        } else if (state?.status === 'failed') {
-          text = `interrupted: this tool call finished with an error before its result payload was recorded${state.error ? `: ${state.error}` : ''}`;
-        }
-        return {
-          type: 'toolResult',
-          toolCallId: call.id,
-          toolName: call.name,
-          content: [{ type: 'text', text }],
-          isError: true,
-        };
-      },
-    ),
+    content: calls.map((call): ToolResultBlock => toolResultBlock(call, interruptedResultText(stateByCallId.get(call.id)), true)),
   };
 }
 
@@ -179,6 +229,14 @@ export type AgentEvent =
   | { type: 'flail_stop'; consecutiveFailures: number }
   | { type: 'offloaded'; count: number; savedChars: number }
   | { type: 'steered'; text: string }
+  | { type: 'approval_required'; executions: PendingApproval[] }
+  | {
+      type: 'approval_decided';
+      executionId: string;
+      call: ToolCallBlock;
+      decision: ApprovalDecision;
+      reason?: string;
+    }
   | {
       type: 'budget_exceeded';
       reason: 'model_requests' | 'tool_calls' | 'wall_time' | 'input_tokens' | 'output_tokens' | 'total_tokens';
@@ -339,6 +397,8 @@ export class Agent {
   private readonly toolPolicy: ToolExecutionPolicy;
   private readonly toolsByName: Map<string, Tool>;
   private running = false;
+  /** Set when a turn stops at an approval gate; retains results already produced. */
+  private suspendedBatch?: SuspendedBatch;
   private activeTelemetryContext?: TelemetryContext;
   private activeRunSignal?: AbortSignal;
   private observerDisabled = false;
@@ -368,14 +428,28 @@ export class Agent {
       try {
         this._session.markInterruptedModelRequestsOutcomeUnknown();
         this._session.markInterruptedCompactionsFailed();
+        // A batch that stopped at an approval gate is not an interrupted batch:
+        // its unstarted calls are waiting for a decision, not lost. Crash repair
+        // must leave them for the resume flow (ADR 0011 decision 4).
+        const suspended = this._session.suspendedToolExecutions;
+        this.suspendedAtOpen = suspended.length > 0;
+        const suspendedRequests = new Set(suspended.map((state) => state.requestId));
         for (const pending of this._session.pendingToolExecutions) {
-          if (pending.status === 'planned') {
-            this._session.skipTool(pending.executionId, 'prior process ended before tool execution started');
-          }
+          if (pending.status !== 'planned') continue;
+          if (pending.approval || suspendedRequests.has(pending.requestId)) continue;
+          this._session.skipTool(pending.executionId, 'prior process ended before tool execution started');
         }
+        // A started call still has an unknown outcome whether or not the batch
+        // later suspended — 0007 is unchanged by approvals.
         this._session.markInterruptedToolsOutcomeUnknown();
-        if (this._session.runStatus?.status === 'running') {
-          this._session.setRunStatus('incomplete', 'prior process stopped before recording a terminal run status');
+        const priorStatus = this._session.runStatus?.status;
+        if (priorStatus === 'running' || (priorStatus === 'suspended' && !this.suspendedAtOpen)) {
+          this._session.setRunStatus(
+            this.suspendedAtOpen ? 'suspended' : 'incomplete',
+            this.suspendedAtOpen
+              ? 'prior process stopped while tool approvals were pending'
+              : 'prior process stopped before recording a terminal run status',
+          );
         }
         recoveredExecutions = this._session.toolExecutions;
       } catch (error) {
@@ -385,12 +459,17 @@ export class Agent {
     }
     // A session that ended after an assistant tool call still needs synthetic
     // result blocks for provider validity, but never claims an uncertain call did not run.
-    const repair = synthesizeInterruptedResults(this.messages, recoveredExecutions);
+    // Pending approvals are the exception: those calls get real results once the
+    // decisions are applied, so the transcript stays open until then.
+    const repair = this.suspendedAtOpen ? undefined : synthesizeInterruptedResults(this.messages, recoveredExecutions);
     if (repair) {
       this.messages.push(repair);
       this.persist(repair);
     }
   }
+
+  /** True when this agent opened a session whose last batch stopped at an approval gate. */
+  private suspendedAtOpen = false;
 
   get workingDirectory(): string {
     return this.cwd;
@@ -511,6 +590,116 @@ export class Agent {
     }
   }
 
+  /** Undecided gated calls, in batch order, for a surface that will collect decisions. */
+  get pendingApprovals(): PendingApproval[] {
+    if (this.suspendedBatch) {
+      return this.suspendedBatch.calls
+        .filter((item) => item.approval !== undefined && item.approval.decision === undefined)
+        .map((item) => ({ executionId: item.executionId, call: structuredClone(item.call) }));
+    }
+    return (this._session?.awaitingApprovalExecutions ?? []).map((state) => ({
+      executionId: state.executionId,
+      call: structuredClone(state.call),
+    }));
+  }
+
+  /** True when the loaded session (or the last turn) stopped at an approval gate. */
+  get suspended(): boolean {
+    return this.suspendedBatch !== undefined || this.suspendedAtOpen;
+  }
+
+  /**
+   * The batch a suspended turn stopped inside. Same-process suspension keeps the
+   * results of the calls that already ran; a reopened session can only reconstruct
+   * them from the journal, which records that they ran but not what they returned.
+   */
+  private pendingBatch(): SuspendedBatch {
+    if (this.suspendedBatch) return this.suspendedBatch;
+    const session = this._session;
+    const last = this.messages[this.messages.length - 1];
+    const calls =
+      last?.role === 'assistant'
+        ? last.content.filter((block): block is ToolCallBlock => block.type === 'toolCall')
+        : [];
+    if (!session || calls.length === 0 || session.suspendedToolExecutions.length === 0) {
+      throw new Error('no suspended tool batch to resume');
+    }
+    const byCallId = new Map(session.toolExecutions.map((state) => [state.call.id, state]));
+    const items = calls.map((call): BatchCall => {
+      const state = byCallId.get(call.id);
+      if (!state) {
+        return {
+          call,
+          executionId: `unrecorded-${call.id}`,
+          journaled: false,
+          settled: toolResultBlock(
+            call,
+            'interrupted: this tool call has no lifecycle record; its outcome is unknown and it must not be repeated without reconciliation',
+            true,
+          ),
+        };
+      }
+      const item: BatchCall = {
+        call: state.call,
+        executionId: state.executionId,
+        journaled: true,
+        ...(state.approval ? { approval: state.approval } : {}),
+      };
+      if (state.status !== 'planned' && state.status !== 'awaiting_approval') {
+        item.settled = toolResultBlock(state.call, interruptedResultText(state), true);
+      }
+      return item;
+    });
+    const requestId = items.map((item) => byCallId.get(item.call.id)?.requestId).find((id) => id !== undefined);
+    return { ...(requestId ? { requestId } : {}), calls: items };
+  }
+
+  /** Validate every decision before any of them is journaled: a bad edit must change nothing. */
+  private prepareDecisions(
+    batch: SuspendedBatch,
+    decisions: readonly ApprovalDecisionInput[],
+  ): ApprovalDecisionInput[] {
+    const byExecutionId = new Map(batch.calls.map((item) => [item.executionId, item]));
+    const seen = new Set<string>();
+    for (const decision of decisions) {
+      const item = byExecutionId.get(decision.executionId);
+      if (!item?.approval || item.approval.decision !== undefined) {
+        throw new Error(`no undecided approval for execution ${decision.executionId}`);
+      }
+      if (seen.has(decision.executionId)) throw new Error(`duplicate decision for execution ${decision.executionId}`);
+      seen.add(decision.executionId);
+      if (decision.decision === 'edited') {
+        const edited = decision.editedArguments;
+        if (edited === undefined || typeof edited !== 'object' || Array.isArray(edited)) {
+          throw new Error(`an edited decision for execution ${decision.executionId} requires replacement arguments`);
+        }
+        const tool = this.toolsByName.get(item.call.name);
+        if (!tool) throw new Error(`cannot edit arguments for unknown tool "${item.call.name}"`);
+        validateToolArguments(tool, edited);
+      } else if (decision.editedArguments !== undefined) {
+        throw new Error('editedArguments is only valid for an edited decision');
+      }
+    }
+    return [...decisions];
+  }
+
+  /**
+   * Apply human decisions to a suspended batch and continue the turn: approved
+   * calls dispatch, edited calls dispatch with the replacement arguments and
+   * visible provenance, rejected calls become an error result carrying the human
+   * reason. Undecided gated calls suspend the turn again, in batch order.
+   */
+  async *resume(
+    decisions: readonly ApprovalDecisionInput[] = [],
+    signal?: AbortSignal,
+    steering?: () => string[],
+  ): AsyncGenerator<AgentEvent, void, void> {
+    if (this.running) throw new Error('agent is already running');
+    const batch = this.pendingBatch();
+    const prepared = this.prepareDecisions(batch, decisions);
+    yield* this.turn({ kind: 'resume', batch, decisions: prepared }, signal, steering);
+  }
+
   private async runObserverOperation(action: () => void | Promise<void>): Promise<void> {
     if (this.observerDisabled) return;
     let pending: Promise<void>;
@@ -604,10 +793,25 @@ export class Agent {
     steering?: () => string[],
   ): AsyncGenerator<AgentEvent, void, void> {
     if (this.running) throw new Error('agent is already running');
+    // The transcript ends at an assistant tool_use whose results are still
+    // pending: new input here would ask the provider to accept a gap, and would
+    // strand a durable decision nobody is waiting on.
+    if (this.suspended) {
+      throw new Error('tool approvals are pending; apply decisions with resume() before sending new input');
+    }
     const inputBytes = Buffer.byteLength(input);
     if (inputBytes > MAX_USER_INPUT_BYTES) {
       throw new RangeError(`user input exceeds ${MAX_USER_INPUT_BYTES} UTF-8 bytes`);
     }
+    yield* this.turn({ kind: 'input', input }, signal, steering);
+  }
+
+  private async *turn(
+    start: TurnStart,
+    signal?: AbortSignal,
+    steering?: () => string[],
+  ): AsyncGenerator<AgentEvent, void, void> {
+    if (this.running) throw new Error('agent is already running');
     if (
       this.options.contextWindow !== undefined &&
       (!Number.isSafeInteger(this.options.contextWindow) || this.options.contextWindow <= 0)
@@ -632,6 +836,9 @@ export class Agent {
     }
     this.running = true;
 
+    // A resumed turn continues the suspended run's accounting and ceilings, so a
+    // suspension cannot be used to buy a second full budget (ADR 0011 decision 5).
+    const openRun = start.kind === 'resume' ? this._session?.openRun : undefined;
     const budget: RunBudget = {
       maxModelRequests: this.options.maxIterations ?? 40,
       maxToolCalls: DEFAULT_MAX_TOOL_CALLS,
@@ -641,10 +848,19 @@ export class Agent {
         Math.max(1_024, Math.floor((this.options.contextWindow ?? 128_000) * 0.4)),
       ),
     };
+    for (const [name, value] of Object.entries(openRun?.budget ?? {})) {
+      if (value !== undefined) (budget as unknown as Record<string, number>)[name] = value;
+    }
     // Optional config objects are commonly assembled with spreads that retain
     // `undefined` values. Never let those erase mandatory safety defaults.
+    const raised: string[] = [];
     for (const [name, value] of Object.entries(this.options.budget ?? {})) {
-      if (value !== undefined) (budget as unknown as Record<string, number>)[name] = value;
+      if (value === undefined) continue;
+      const prior = (openRun?.budget as Record<string, number | undefined> | undefined)?.[name];
+      // Only an explicitly passed ceiling may exceed the suspended run's; the
+      // raise is journaled rather than applied silently.
+      if (prior !== undefined && value > prior) raised.push(`${name} ${prior}->${value}`);
+      (budget as unknown as Record<string, number>)[name] = value;
     }
     for (const [name, value] of Object.entries(budget)) {
       if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
@@ -675,8 +891,9 @@ export class Agent {
     }, budget.maxWallTimeMs);
 
     const turnUsage = emptyUsage();
-    let iterations = 0;
-    let toolCalls = 0;
+    if (openRun) addUsage(turnUsage, openRun.usage);
+    let iterations = openRun?.modelRequests ?? 0;
+    let toolCalls = openRun?.toolCalls ?? 0;
     let status: TurnStatus = 'incomplete';
     let reason: TurnStopReason = 'empty_response';
     let failed = false;
@@ -714,9 +931,10 @@ export class Agent {
           terminal = true;
         }
       }
+      const raiseNote = raised.length > 0 ? `budget raised at resume: ${raised.join(', ')}` : undefined;
       for (const session of runSessions) {
-        if (session.runStatus?.status !== 'running') {
-          this.journalFor(session, (target) => target.setRunStatus('running'));
+        if (session.runStatus?.status !== 'running' || raiseNote) {
+          this.journalFor(session, (target) => target.setRunStatus('running', raiseNote));
         }
       }
 
@@ -735,515 +953,587 @@ export class Agent {
       const failCounts = new Map<string, number>();
       let nudged = false;
       let stopping = false;
-      const userMessage: Message = { role: 'user', content: [{ type: 'text', text: input }] };
-      const inputThreshold = this.compactThreshold();
-      const inputOnlyProjection = this.estimateCurrentRequestTokens([userMessage]);
-      if (!terminal && inputThreshold !== undefined && inputOnlyProjection > inputThreshold) {
-        status = 'incomplete';
-        reason = 'context_window';
-        terminal = true;
-        await this.observe(
-          createRuntimeEvent(telemetryContext, {
-            name: 'context.preflight_failed',
-            level: 'warn',
-            attributes: { projectedTokens: inputOnlyProjection, threshold: inputThreshold, currentTurnOnly: true },
-          }),
-        );
-      } else if (!terminal) {
-        this.messages.push(userMessage);
-        if (!this.persist(userMessage)) {
+      // A resume re-enters the loop at the suspended batch: no new user input,
+      // and no model request until the batch has been settled in order.
+      let resumeBatch = start.kind === 'resume' ? start.batch : undefined;
+      const resumeDecisions = start.kind === 'resume' ? start.decisions : [];
+      if (start.kind === 'input') {
+        const userMessage: Message = { role: 'user', content: [{ type: 'text', text: start.input }] };
+        const inputThreshold = this.compactThreshold();
+        const inputOnlyProjection = this.estimateCurrentRequestTokens([userMessage]);
+        if (!terminal && inputThreshold !== undefined && inputOnlyProjection > inputThreshold) {
           status = 'incomplete';
-          reason = 'persistence';
+          reason = 'context_window';
           terminal = true;
+          await this.observe(
+            createRuntimeEvent(telemetryContext, {
+              name: 'context.preflight_failed',
+              level: 'warn',
+              attributes: { projectedTokens: inputOnlyProjection, threshold: inputThreshold, currentTurnOnly: true },
+            }),
+          );
+        } else if (!terminal) {
+          this.messages.push(userMessage);
+          if (!this.persist(userMessage)) {
+            status = 'incomplete';
+            reason = 'persistence';
+            terminal = true;
+          }
         }
       }
 
       while (!terminal) {
-        if (runController.signal.aborted) {
-          status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
-          reason = deadlineExceeded ? 'wall_time' : 'user_abort';
-          if (deadlineExceeded) {
-            await this.observeBudget(telemetryContext, 'wall_time');
-            yield { type: 'budget_exceeded', reason: 'wall_time' };
+        let batchCalls: BatchCall[];
+        let batchRequestId: string | undefined;
+        if (resumeBatch) {
+          // Apply the recorded decisions, then settle the batch in its original
+          // order. Nothing new is requested from the model until it is settled.
+          batchCalls = resumeBatch.calls;
+          batchRequestId = resumeBatch.requestId;
+          resumeBatch = undefined;
+          const decisionsById = new Map(resumeDecisions.map((decision) => [decision.executionId, decision]));
+          let decisionsPersisted = true;
+          for (const item of batchCalls) {
+            const decision = decisionsById.get(item.executionId);
+            if (!decision || !item.approval) continue;
+            const written = this.journalFor(this._session, (session) => {
+              session.decideToolApproval(item.executionId, decision.decision, {
+                ...(decision.decidedAt ? { decidedAt: decision.decidedAt } : {}),
+                ...(decision.editedArguments !== undefined ? { editedArguments: decision.editedArguments } : {}),
+                ...(decision.reason ? { reason: decision.reason } : {}),
+              });
+              return true;
+            });
+            if (this._session && written !== true) {
+              decisionsPersisted = false;
+              break;
+            }
+            item.approval = {
+              ...item.approval,
+              decision: decision.decision,
+              decidedAt: decision.decidedAt ?? new Date().toISOString(),
+              ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
+              ...(decision.editedArguments !== undefined ? { editedArguments: decision.editedArguments } : {}),
+            };
+            yield {
+              type: 'approval_decided',
+              executionId: item.executionId,
+              call: item.call,
+              decision: decision.decision,
+              ...(decision.reason ? { reason: decision.reason } : {}),
+            };
           }
-          break;
-        }
-
-        for (const note of steering?.() ?? []) {
-          if (Buffer.byteLength(note) > MAX_USER_INPUT_BYTES) {
-            throw new RangeError(`steering input exceeds ${MAX_USER_INPUT_BYTES} UTF-8 bytes`);
-          }
-          const steerMessage: Message = { role: 'user', content: [{ type: 'text', text: `[steering] ${note}` }] };
-          this.messages.push(steerMessage);
-          if (!this.persist(steerMessage)) {
-            status = 'incomplete';
-            reason = 'persistence';
-            terminal = true;
-            break;
-          }
-          yield { type: 'steered', text: note };
-        }
-        if (terminal) break;
-
-        const offloaded = this.offloadOldToolResults();
-        if (offloaded) {
-          // The provider-based projection describes the pre-offload request. Once
-          // history shrinks, rebase to the serialized request instead of pinning
-          // context pressure to a stale high-water mark.
-          this.lastContextTokens = 0;
-          this.lastEstimatedRequestTokens = 0;
-          await this.observe(
-            createRuntimeEvent(telemetryContext, {
-              name: 'context.offloaded',
-              attributes: { count: offloaded.count, savedChars: offloaded.savedChars },
-            }),
-          );
-          yield { type: 'offloaded', ...offloaded };
-        }
-
-        if (this._session) {
-          let rotateForStorage = false;
-          try {
-            rotateForStorage = statSync(this._session.file).size >= SESSION_ROTATE_BYTES;
-          } catch (error) {
-            this.persistDisabled = true;
-            process.stderr.write(`warning: cannot inspect session for rotation — ${String(error)}\n`);
+          if (!decisionsPersisted) {
             status = 'incomplete';
             reason = 'persistence';
             break;
           }
-          if (rotateForStorage) {
-            try {
-              await this.rotateSessionForStorage();
-            } catch (error) {
-              process.stderr.write(`warning: session rotation failed — ${String(error)}\n`);
+        } else {
+          if (runController.signal.aborted) {
+            status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
+            reason = deadlineExceeded ? 'wall_time' : 'user_abort';
+            if (deadlineExceeded) {
+              await this.observeBudget(telemetryContext, 'wall_time');
+              yield { type: 'budget_exceeded', reason: 'wall_time' };
+            }
+            break;
+          }
+
+          for (const note of steering?.() ?? []) {
+            if (Buffer.byteLength(note) > MAX_USER_INPUT_BYTES) {
+              throw new RangeError(`steering input exceeds ${MAX_USER_INPUT_BYTES} UTF-8 bytes`);
+            }
+            const steerMessage: Message = { role: 'user', content: [{ type: 'text', text: `[steering] ${note}` }] };
+            this.messages.push(steerMessage);
+            if (!this.persist(steerMessage)) {
               status = 'incomplete';
               reason = 'persistence';
+              terminal = true;
+              break;
+            }
+            yield { type: 'steered', text: note };
+          }
+          if (terminal) break;
+
+          const offloaded = this.offloadOldToolResults();
+          if (offloaded) {
+            // The provider-based projection describes the pre-offload request. Once
+            // history shrinks, rebase to the serialized request instead of pinning
+            // context pressure to a stale high-water mark.
+            this.lastContextTokens = 0;
+            this.lastEstimatedRequestTokens = 0;
+            await this.observe(
+              createRuntimeEvent(telemetryContext, {
+                name: 'context.offloaded',
+                attributes: { count: offloaded.count, savedChars: offloaded.savedChars },
+              }),
+            );
+            yield { type: 'offloaded', ...offloaded };
+          }
+
+          if (this._session) {
+            let rotateForStorage = false;
+            try {
+              rotateForStorage = statSync(this._session.file).size >= SESSION_ROTATE_BYTES;
+            } catch (error) {
+              this.persistDisabled = true;
+              process.stderr.write(`warning: cannot inspect session for rotation — ${String(error)}\n`);
+              status = 'incomplete';
+              reason = 'persistence';
+              break;
+            }
+            if (rotateForStorage) {
+              try {
+                await this.rotateSessionForStorage();
+              } catch (error) {
+                process.stderr.write(`warning: session rotation failed — ${String(error)}\n`);
+                status = 'incomplete';
+                reason = 'persistence';
+                break;
+              }
+              telemetryContext = this.activeTelemetryContext ?? telemetryContext;
+              if (this._session && !runSessions.some((session) => session.id === this._session!.id)) {
+                runSessions.push(this._session);
+                yield { type: 'session_rotated', sessionFile: this._session.file };
+              }
+            }
+          }
+
+          const threshold = this.compactThreshold();
+          if (threshold !== undefined && this.projectedContextTokens() > threshold) {
+            if (this.options.autoCompact === false) {
+              status = 'incomplete';
+              reason = 'context_window';
+              await this.observe(
+                createRuntimeEvent(telemetryContext, {
+                  name: 'context.preflight_failed',
+                  level: 'warn',
+                  attributes: { projectedTokens: this.projectedContextTokens(), threshold, autoCompact: false },
+                }),
+              );
+              break;
+            }
+            const keepFrom = chooseKeepBoundary(this.messages, this.compactionKeepTokens());
+            const retainedProjection =
+              keepFrom < this.messages.length
+                ? this.estimateCurrentRequestTokens(this.messages.slice(keepFrom))
+                : Number.POSITIVE_INFINITY;
+            if (
+              this.messages.length <= 1 ||
+              keepFrom <= 0 ||
+              retainedProjection + COMPACTION_SUMMARY_INPUT_RESERVE_TOKENS > threshold
+            ) {
+              status = 'incomplete';
+              reason = 'context_window';
+              await this.observe(
+                createRuntimeEvent(telemetryContext, {
+                  name: 'context.preflight_failed',
+                  level: 'warn',
+                  attributes: {
+                    projectedTokens: this.projectedContextTokens(),
+                    retainedTokens: retainedProjection,
+                    threshold,
+                  },
+                }),
+              );
+              break;
+            }
+            // A compaction request without room for the real request is not useful.
+            if (iterations + 1 >= budget.maxModelRequests) {
+              status = 'budget_exceeded';
+              reason = 'model_requests';
+              await this.observeBudget(telemetryContext, 'model_requests');
+              yield { type: 'budget_exceeded', reason: 'model_requests' };
+              break;
+            }
+            let dropped: number;
+            try {
+              dropped = await this.compact(runController.signal, turnUsage, () => iterations++);
+            } catch (error) {
+              if (!runController.signal.aborted && error instanceof CompactionPersistenceError) {
+                status = 'incomplete';
+                reason = 'persistence';
+                break;
+              }
+              if (!runController.signal.aborted) throw error;
+              status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
+              reason = deadlineExceeded ? 'wall_time' : 'user_abort';
+              if (deadlineExceeded) {
+                await this.observeBudget(telemetryContext, 'wall_time');
+                yield { type: 'budget_exceeded', reason: 'wall_time' };
+              }
               break;
             }
             telemetryContext = this.activeTelemetryContext ?? telemetryContext;
             if (this._session && !runSessions.some((session) => session.id === this._session!.id)) {
               runSessions.push(this._session);
-              yield { type: 'session_rotated', sessionFile: this._session.file };
+            }
+            yield { type: 'compacted', dropped, ...(this._session ? { sessionFile: this._session.file } : {}) };
+            if (runController.signal.aborted) {
+              status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
+              reason = deadlineExceeded ? 'wall_time' : 'user_abort';
+              if (deadlineExceeded) {
+                await this.observeBudget(telemetryContext, 'wall_time');
+                yield { type: 'budget_exceeded', reason: 'wall_time' };
+              }
+              break;
+            }
+            // The retained current turn can itself be too large. Never pay for a
+            // request that preflight already knows lacks the configured reserve.
+            const rebuiltProjection = this.projectedContextTokens();
+            if (rebuiltProjection > threshold) {
+              status = 'incomplete';
+              reason = 'context_window';
+              await this.observe(
+                createRuntimeEvent(telemetryContext, {
+                  name: 'context.preflight_failed',
+                  level: 'warn',
+                  attributes: { projectedTokens: rebuiltProjection, threshold, afterCompaction: true },
+                }),
+              );
+              break;
             }
           }
-        }
 
-        const threshold = this.compactThreshold();
-        if (threshold !== undefined && this.projectedContextTokens() > threshold) {
-          if (this.options.autoCompact === false) {
-            status = 'incomplete';
-            reason = 'context_window';
-            await this.observe(
-              createRuntimeEvent(telemetryContext, {
-                name: 'context.preflight_failed',
-                level: 'warn',
-                attributes: { projectedTokens: this.projectedContextTokens(), threshold, autoCompact: false },
-              }),
-            );
+          const priorUsageLimit = usageBudgetReason(turnUsage, budget);
+          if (priorUsageLimit) {
+            status = 'budget_exceeded';
+            reason = priorUsageLimit;
+            await this.observeBudget(telemetryContext, priorUsageLimit);
+            yield {
+              type: 'budget_exceeded',
+              reason: priorUsageLimit as 'input_tokens' | 'output_tokens' | 'total_tokens',
+            };
             break;
           }
-          const keepFrom = chooseKeepBoundary(this.messages, this.compactionKeepTokens());
-          const retainedProjection =
-            keepFrom < this.messages.length
-              ? this.estimateCurrentRequestTokens(this.messages.slice(keepFrom))
-              : Number.POSITIVE_INFINITY;
-          if (
-            this.messages.length <= 1 ||
-            keepFrom <= 0 ||
-            retainedProjection + COMPACTION_SUMMARY_INPUT_RESERVE_TOKENS > threshold
-          ) {
-            status = 'incomplete';
-            reason = 'context_window';
-            await this.observe(
-              createRuntimeEvent(telemetryContext, {
-                name: 'context.preflight_failed',
-                level: 'warn',
-                attributes: {
-                  projectedTokens: this.projectedContextTokens(),
-                  retainedTokens: retainedProjection,
-                  threshold,
-                },
-              }),
-            );
-            break;
-          }
-          // A compaction request without room for the real request is not useful.
-          if (iterations + 1 >= budget.maxModelRequests) {
+          if (iterations >= budget.maxModelRequests) {
             status = 'budget_exceeded';
             reason = 'model_requests';
             await this.observeBudget(telemetryContext, 'model_requests');
             yield { type: 'budget_exceeded', reason: 'model_requests' };
             break;
           }
-          let dropped: number;
-          try {
-            dropped = await this.compact(runController.signal, turnUsage, () => iterations++);
-          } catch (error) {
-            if (!runController.signal.aborted && error instanceof CompactionPersistenceError) {
-              status = 'incomplete';
-              reason = 'persistence';
-              break;
-            }
-            if (!runController.signal.aborted) throw error;
-            status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
-            reason = deadlineExceeded ? 'wall_time' : 'user_abort';
-            if (deadlineExceeded) {
-              await this.observeBudget(telemetryContext, 'wall_time');
-              yield { type: 'budget_exceeded', reason: 'wall_time' };
-            }
-            break;
+
+          const requestEstimate = this.estimateCurrentRequestTokens();
+          const outputLimits = [
+            Math.max(
+              DEFAULT_REQUEST_MAX_TOKENS,
+              this.options.thinkingBudget !== undefined
+                ? this.options.thinkingBudget + THINKING_RESPONSE_RESERVE_TOKENS
+                : 0,
+            ),
+          ];
+          if (budget.maxOutputTokens !== undefined) {
+            outputLimits.push(Math.max(1, budget.maxOutputTokens - turnUsage.outputTokens));
           }
-          telemetryContext = this.activeTelemetryContext ?? telemetryContext;
-          if (this._session && !runSessions.some((session) => session.id === this._session!.id)) {
-            runSessions.push(this._session);
+          if (budget.maxTotalTokens !== undefined) {
+            outputLimits.push(Math.max(1, budget.maxTotalTokens - totalTokens(turnUsage)));
           }
-          yield { type: 'compacted', dropped, ...(this._session ? { sessionFile: this._session.file } : {}) };
-          if (runController.signal.aborted) {
-            status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
-            reason = deadlineExceeded ? 'wall_time' : 'user_abort';
-            if (deadlineExceeded) {
-              await this.observeBudget(telemetryContext, 'wall_time');
-              yield { type: 'budget_exceeded', reason: 'wall_time' };
-            }
-            break;
+          if (this.options.contextWindow !== undefined) {
+            outputLimits.push(
+              Math.max(1, this.options.contextWindow - Math.ceil(this.projectedContextTokens())),
+            );
           }
-          // The retained current turn can itself be too large. Never pay for a
-          // request that preflight already knows lacks the configured reserve.
-          const rebuiltProjection = this.projectedContextTokens();
-          if (rebuiltProjection > threshold) {
+          const requestMaxTokens = Math.min(...outputLimits);
+          const requestThinkingBudget =
+            this.options.thinkingBudget !== undefined && this.options.thinkingBudget < requestMaxTokens
+              ? this.options.thinkingBudget
+              : undefined;
+          let done: { message: AssistantMessage; stopReason: StopReason; usage: Usage } | undefined;
+          const requestId = createTelemetryId('request');
+          const requestJournaled =
+            !this._session ||
+            this.journal((session) => {
+              session.beginModelRequest(this.model, { requestId, messageCount: this.messages.length });
+              return true;
+            }) === true;
+          if (!requestJournaled) {
             status = 'incomplete';
-            reason = 'context_window';
+            reason = 'persistence';
+            break;
+          }
+          iterations++;
+          this.requestCount++;
+          const requestContext: TelemetryContext = { ...telemetryContext, requestId };
+          const requestSpan = createSpanStarted(requestContext, {
+            name: 'model.request',
+            parentSpanId: runSpan.spanId,
+            attributes: { model: this.model, messageCount: this.messages.length },
+          });
+          const requestStartedAt = Date.now();
+          await this.observe(requestSpan);
+          const stream = this.options.client.stream(
+            {
+              model: this.model,
+              system: this.options.systemPrompt,
+              messages: this.messages,
+              tools: this.toolDefinitions(),
+              // RunBudget counts actual provider attempts. Retries are modeled as
+              // separate harness decisions rather than hidden inside one request.
+              maxAttempts: 1,
+              timeoutMs: Math.min(this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, budget.maxWallTimeMs),
+              maxTokens: requestMaxTokens,
+              ...(requestThinkingBudget !== undefined ? { thinkingBudget: requestThinkingBudget } : {}),
+            },
+            runController.signal,
+          );
+          const streamIterator = stream[Symbol.asyncIterator]();
+          let streamEnded = false;
+          let requestLifecycleTerminal = false;
+          try {
+            while (true) {
+              const next = await nextStreamEvent(streamIterator, runController.signal);
+              if (next.done) {
+                streamEnded = true;
+                break;
+              }
+              const event = next.value;
+              if (event.type === 'text_delta') yield { type: 'text', text: event.text };
+              else if (event.type === 'thinking_delta') yield { type: 'thinking', text: event.text };
+              else if (event.type === 'done') done = event;
+            }
+          } catch (error) {
+            releaseStream(streamIterator);
+            if (runController.signal.aborted) {
+              this.journal((session) =>
+                session.markModelRequestOutcomeUnknown(
+                  requestId,
+                  'request was canceled after dispatch before a terminal response was recorded',
+                ),
+              );
+            } else {
+              this.journal((session) => session.failModelRequest(requestId, String(error)));
+            }
+            requestLifecycleTerminal = true;
             await this.observe(
-              createRuntimeEvent(telemetryContext, {
-                name: 'context.preflight_failed',
-                level: 'warn',
-                attributes: { projectedTokens: rebuiltProjection, threshold, afterCompaction: true },
+              createSpanEnded(requestContext, {
+                name: 'model.request',
+                spanId: requestSpan.spanId,
+                parentSpanId: runSpan.spanId,
+                status: runController.signal.aborted ? 'canceled' : 'error',
+                durationMs: Date.now() - requestStartedAt,
+                error: {
+                  type: error instanceof Error ? error.name : 'Error',
+                  message: String(error),
+                  ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
+                },
               }),
             );
-            break;
-          }
-        }
-
-        const priorUsageLimit = usageBudgetReason(turnUsage, budget);
-        if (priorUsageLimit) {
-          status = 'budget_exceeded';
-          reason = priorUsageLimit;
-          await this.observeBudget(telemetryContext, priorUsageLimit);
-          yield {
-            type: 'budget_exceeded',
-            reason: priorUsageLimit as 'input_tokens' | 'output_tokens' | 'total_tokens',
-          };
-          break;
-        }
-        if (iterations >= budget.maxModelRequests) {
-          status = 'budget_exceeded';
-          reason = 'model_requests';
-          await this.observeBudget(telemetryContext, 'model_requests');
-          yield { type: 'budget_exceeded', reason: 'model_requests' };
-          break;
-        }
-
-        const requestEstimate = this.estimateCurrentRequestTokens();
-        const outputLimits = [
-          Math.max(
-            DEFAULT_REQUEST_MAX_TOKENS,
-            this.options.thinkingBudget !== undefined
-              ? this.options.thinkingBudget + THINKING_RESPONSE_RESERVE_TOKENS
-              : 0,
-          ),
-        ];
-        if (budget.maxOutputTokens !== undefined) {
-          outputLimits.push(Math.max(1, budget.maxOutputTokens - turnUsage.outputTokens));
-        }
-        if (budget.maxTotalTokens !== undefined) {
-          outputLimits.push(Math.max(1, budget.maxTotalTokens - totalTokens(turnUsage)));
-        }
-        if (this.options.contextWindow !== undefined) {
-          outputLimits.push(
-            Math.max(1, this.options.contextWindow - Math.ceil(this.projectedContextTokens())),
-          );
-        }
-        const requestMaxTokens = Math.min(...outputLimits);
-        const requestThinkingBudget =
-          this.options.thinkingBudget !== undefined && this.options.thinkingBudget < requestMaxTokens
-            ? this.options.thinkingBudget
-            : undefined;
-        let done: { message: AssistantMessage; stopReason: StopReason; usage: Usage } | undefined;
-        const requestId = createTelemetryId('request');
-        const requestJournaled =
-          !this._session ||
-          this.journal((session) => {
-            session.beginModelRequest(this.model, { requestId, messageCount: this.messages.length });
-            return true;
-          }) === true;
-        if (!requestJournaled) {
-          status = 'incomplete';
-          reason = 'persistence';
-          break;
-        }
-        iterations++;
-        this.requestCount++;
-        const requestContext: TelemetryContext = { ...telemetryContext, requestId };
-        const requestSpan = createSpanStarted(requestContext, {
-          name: 'model.request',
-          parentSpanId: runSpan.spanId,
-          attributes: { model: this.model, messageCount: this.messages.length },
-        });
-        const requestStartedAt = Date.now();
-        await this.observe(requestSpan);
-        const stream = this.options.client.stream(
-          {
-            model: this.model,
-            system: this.options.systemPrompt,
-            messages: this.messages,
-            tools: this.toolDefinitions(),
-            // RunBudget counts actual provider attempts. Retries are modeled as
-            // separate harness decisions rather than hidden inside one request.
-            maxAttempts: 1,
-            timeoutMs: Math.min(this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, budget.maxWallTimeMs),
-            maxTokens: requestMaxTokens,
-            ...(requestThinkingBudget !== undefined ? { thinkingBudget: requestThinkingBudget } : {}),
-          },
-          runController.signal,
-        );
-        const streamIterator = stream[Symbol.asyncIterator]();
-        let streamEnded = false;
-        let requestLifecycleTerminal = false;
-        try {
-          while (true) {
-            const next = await nextStreamEvent(streamIterator, runController.signal);
-            if (next.done) {
-              streamEnded = true;
+            if (runController.signal.aborted) {
+              status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
+              reason = deadlineExceeded ? 'wall_time' : 'user_abort';
+              if (deadlineExceeded) {
+                await this.observeBudget(telemetryContext, 'wall_time');
+                yield { type: 'budget_exceeded', reason: 'wall_time' };
+              }
               break;
             }
-            const event = next.value;
-            if (event.type === 'text_delta') yield { type: 'text', text: event.text };
-            else if (event.type === 'thinking_delta') yield { type: 'thinking', text: event.text };
-            else if (event.type === 'done') done = event;
+            throw error;
+          } finally {
+            if (!streamEnded && !requestLifecycleTerminal) {
+              if (!runController.signal.aborted) {
+                runController.abort(new Error('agent run consumer stopped during provider streaming'));
+              }
+              releaseStream(streamIterator);
+              this.journal((session) =>
+                session.markModelRequestOutcomeUnknown(
+                  requestId,
+                  'request iteration stopped before the provider stream reached a terminal boundary',
+                ),
+              );
+            }
           }
-        } catch (error) {
-          releaseStream(streamIterator);
-          if (runController.signal.aborted) {
-            this.journal((session) =>
-              session.markModelRequestOutcomeUnknown(
-                requestId,
-                'request was canceled after dispatch before a terminal response was recorded',
-              ),
+          if (!done) {
+            this.journal((session) => session.failModelRequest(requestId, 'provider stream produced no complete message'));
+            await this.observe(
+              createSpanEnded(requestContext, {
+                name: 'model.request',
+                spanId: requestSpan.spanId,
+                parentSpanId: runSpan.spanId,
+                status: 'incomplete',
+                durationMs: Date.now() - requestStartedAt,
+              }),
             );
-          } else {
-            this.journal((session) => session.failModelRequest(requestId, String(error)));
+            status = 'incomplete';
+            reason = 'empty_response';
+            break;
           }
-          requestLifecycleTerminal = true;
+          const responseCalls = done.message.content.filter(
+            (block): block is ToolCallBlock => block.type === 'toolCall',
+          );
+          const hasAnswerText = done.message.content.some(
+            (block) => block.type === 'text' && block.text.trim().length > 0,
+          );
+          const responseJournaled =
+            !this._session ||
+            this.journal((session) => {
+              session.completeModelRequest(requestId, { stopReason: done!.stopReason, usage: done!.usage });
+              return true;
+            }) === true;
           await this.observe(
             createSpanEnded(requestContext, {
               name: 'model.request',
               spanId: requestSpan.spanId,
               parentSpanId: runSpan.spanId,
-              status: runController.signal.aborted ? 'canceled' : 'error',
+              status:
+                (done.stopReason === 'end_turn' && hasAnswerText) ||
+                (done.stopReason === 'tool_use' && responseCalls.length > 0)
+                  ? 'ok'
+                  : 'incomplete',
               durationMs: Date.now() - requestStartedAt,
-              error: {
-                type: error instanceof Error ? error.name : 'Error',
-                message: String(error),
-                ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
+              attributes: {
+                stopReason: done.stopReason,
+                inputTokens: inputTokens(done.usage),
+                outputTokens: done.usage.outputTokens,
               },
             }),
           );
-          if (runController.signal.aborted) {
-            status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
-            reason = deadlineExceeded ? 'wall_time' : 'user_abort';
-            if (deadlineExceeded) {
-              await this.observeBudget(telemetryContext, 'wall_time');
-              yield { type: 'budget_exceeded', reason: 'wall_time' };
+          await this.observe(
+            createRuntimeEvent(requestContext, {
+              name: 'model.response',
+              attributes: { stopReason: done.stopReason, outputTokens: done.usage.outputTokens },
+            }),
+          );
+
+          addUsage(turnUsage, done.usage);
+          addUsage(this.usageTotal, done.usage);
+          this.lastContextTokens = totalTokens(done.usage);
+          if (!responseJournaled) {
+            status = 'incomplete';
+            reason = 'persistence';
+            break;
+          }
+          if (done.message.content.length === 0) {
+            this.lastEstimatedRequestTokens = requestEstimate;
+            status = 'incomplete';
+            reason = 'empty_response';
+            break;
+          }
+          this.messages.push(done.message);
+          const responsePersisted = this.persist(done.message);
+          this.lastEstimatedRequestTokens = this.estimateCurrentRequestTokens();
+          yield { type: 'response_done', message: done.message, stopReason: done.stopReason, usage: done.usage };
+          if (!responsePersisted) {
+            status = 'incomplete';
+            reason = 'persistence';
+            break;
+          }
+
+          const calls = responseCalls;
+          if (done.stopReason === 'max_tokens') {
+            const explanation = 'not run: the model response was truncated at its token limit';
+            this.journalSkippedTools(calls, explanation, requestId);
+            const skipped = unexecutedToolResults(calls, explanation);
+            if (skipped) {
+              this.messages.push(skipped);
+              this.persist(skipped);
+            }
+            status = 'incomplete';
+            reason = 'max_tokens';
+            break;
+          }
+          if (done.stopReason === 'other') {
+            const explanation = 'not run: the provider returned an unknown terminal status';
+            this.journalSkippedTools(calls, explanation, requestId);
+            const skipped = unexecutedToolResults(calls, explanation);
+            if (skipped) {
+              this.messages.push(skipped);
+              this.persist(skipped);
+            }
+            status = 'incomplete';
+            reason = 'provider_stop';
+            break;
+          }
+          const responseUsageExceeded = exceededUsageBudgetReason(turnUsage, budget);
+          if (responseUsageExceeded) {
+            const explanation = `not run: ${responseUsageExceeded} budget was exceeded by the completed response`;
+            this.journalSkippedTools(calls, explanation, requestId);
+            const skipped = unexecutedToolResults(calls, explanation);
+            if (skipped) {
+              this.messages.push(skipped);
+              this.persist(skipped);
+            }
+            status = 'budget_exceeded';
+            reason = responseUsageExceeded;
+            await this.observeBudget(telemetryContext, responseUsageExceeded);
+            yield {
+              type: 'budget_exceeded',
+              reason: responseUsageExceeded as 'input_tokens' | 'output_tokens' | 'total_tokens',
+            };
+            break;
+          }
+          if (stopping) {
+            const explanation = 'not run: the flail guard already stopped tool execution';
+            this.journalSkippedTools(calls, explanation, requestId);
+            const skipped = unexecutedToolResults(calls, explanation);
+            if (skipped) {
+              this.messages.push(skipped);
+              this.persist(skipped);
+            }
+            status = 'incomplete';
+            reason = 'flail_stop';
+            break;
+          }
+          if (calls.length === 0) {
+            if (done.stopReason === 'end_turn' && hasAnswerText) {
+              status = 'completed';
+              reason = 'end_turn';
+            } else {
+              status = 'incomplete';
+              reason = done.stopReason === 'tool_use' ? 'provider_stop' : 'empty_response';
             }
             break;
           }
-          throw error;
-        } finally {
-          if (!streamEnded && !requestLifecycleTerminal) {
-            if (!runController.signal.aborted) {
-              runController.abort(new Error('agent run consumer stopped during provider streaming'));
+          if (done.stopReason !== 'tool_use') {
+            const explanation = 'not run: tool calls arrived without a tool-use finish reason';
+            this.journalSkippedTools(calls, explanation, requestId);
+            const skipped = unexecutedToolResults(calls, explanation);
+            if (skipped) {
+              this.messages.push(skipped);
+              this.persist(skipped);
             }
-            releaseStream(streamIterator);
-            this.journal((session) =>
-              session.markModelRequestOutcomeUnknown(
-                requestId,
-                'request iteration stopped before the provider stream reached a terminal boundary',
-              ),
+            status = 'incomplete';
+            reason = 'provider_stop';
+            break;
+          }
+
+          const responseUsageLimit = usageBudgetReason(turnUsage, budget);
+          if (responseUsageLimit) {
+            const explanation = `not run: ${responseUsageLimit} budget was exhausted`;
+            this.journalSkippedTools(calls, explanation, requestId);
+            const skipped = unexecutedToolResults(calls, explanation);
+            if (skipped) {
+              this.messages.push(skipped);
+              this.persist(skipped);
+            }
+            status = 'budget_exceeded';
+            reason = responseUsageLimit;
+            await this.observeBudget(telemetryContext, responseUsageLimit);
+            yield {
+              type: 'budget_exceeded',
+              reason: responseUsageLimit as 'input_tokens' | 'output_tokens' | 'total_tokens',
+            };
+            break;
+          }
+          const planned: BatchCall[] = [];
+          for (const call of calls) {
+            const executionId = createTelemetryId('tool');
+            const journaled = this._session
+              ? this.journal((session) => {
+                  session.planTool(call, { executionId, requestId });
+                  return true;
+                }) === true
+              : true;
+            planned.push({ call, executionId, journaled });
+            await this.observe(
+              createRuntimeEvent({ ...telemetryContext, requestId, toolCallId: call.id, toolExecutionId: executionId }, {
+                name: 'tool.planned',
+                attributes: { toolName: call.name },
+              }),
             );
           }
-        }
-        if (!done) {
-          this.journal((session) => session.failModelRequest(requestId, 'provider stream produced no complete message'));
-          await this.observe(
-            createSpanEnded(requestContext, {
-              name: 'model.request',
-              spanId: requestSpan.spanId,
-              parentSpanId: runSpan.spanId,
-              status: 'incomplete',
-              durationMs: Date.now() - requestStartedAt,
-            }),
-          );
-          status = 'incomplete';
-          reason = 'empty_response';
-          break;
-        }
-        const responseCalls = done.message.content.filter(
-          (block): block is ToolCallBlock => block.type === 'toolCall',
-        );
-        const hasAnswerText = done.message.content.some(
-          (block) => block.type === 'text' && block.text.trim().length > 0,
-        );
-        const responseJournaled =
-          !this._session ||
-          this.journal((session) => {
-            session.completeModelRequest(requestId, { stopReason: done!.stopReason, usage: done!.usage });
-            return true;
-          }) === true;
-        await this.observe(
-          createSpanEnded(requestContext, {
-            name: 'model.request',
-            spanId: requestSpan.spanId,
-            parentSpanId: runSpan.spanId,
-            status:
-              (done.stopReason === 'end_turn' && hasAnswerText) ||
-              (done.stopReason === 'tool_use' && responseCalls.length > 0)
-                ? 'ok'
-                : 'incomplete',
-            durationMs: Date.now() - requestStartedAt,
-            attributes: {
-              stopReason: done.stopReason,
-              inputTokens: inputTokens(done.usage),
-              outputTokens: done.usage.outputTokens,
-            },
-          }),
-        );
-        await this.observe(
-          createRuntimeEvent(requestContext, {
-            name: 'model.response',
-            attributes: { stopReason: done.stopReason, outputTokens: done.usage.outputTokens },
-          }),
-        );
-
-        addUsage(turnUsage, done.usage);
-        addUsage(this.usageTotal, done.usage);
-        this.lastContextTokens = totalTokens(done.usage);
-        if (!responseJournaled) {
-          status = 'incomplete';
-          reason = 'persistence';
-          break;
-        }
-        if (done.message.content.length === 0) {
-          this.lastEstimatedRequestTokens = requestEstimate;
-          status = 'incomplete';
-          reason = 'empty_response';
-          break;
-        }
-        this.messages.push(done.message);
-        const responsePersisted = this.persist(done.message);
-        this.lastEstimatedRequestTokens = this.estimateCurrentRequestTokens();
-        yield { type: 'response_done', message: done.message, stopReason: done.stopReason, usage: done.usage };
-        if (!responsePersisted) {
-          status = 'incomplete';
-          reason = 'persistence';
-          break;
-        }
-
-        const calls = responseCalls;
-        if (done.stopReason === 'max_tokens') {
-          const explanation = 'not run: the model response was truncated at its token limit';
-          this.journalSkippedTools(calls, explanation, requestId);
-          const skipped = unexecutedToolResults(calls, explanation);
-          if (skipped) {
-            this.messages.push(skipped);
-            this.persist(skipped);
-          }
-          status = 'incomplete';
-          reason = 'max_tokens';
-          break;
-        }
-        if (done.stopReason === 'other') {
-          const explanation = 'not run: the provider returned an unknown terminal status';
-          this.journalSkippedTools(calls, explanation, requestId);
-          const skipped = unexecutedToolResults(calls, explanation);
-          if (skipped) {
-            this.messages.push(skipped);
-            this.persist(skipped);
-          }
-          status = 'incomplete';
-          reason = 'provider_stop';
-          break;
-        }
-        const responseUsageExceeded = exceededUsageBudgetReason(turnUsage, budget);
-        if (responseUsageExceeded) {
-          const explanation = `not run: ${responseUsageExceeded} budget was exceeded by the completed response`;
-          this.journalSkippedTools(calls, explanation, requestId);
-          const skipped = unexecutedToolResults(calls, explanation);
-          if (skipped) {
-            this.messages.push(skipped);
-            this.persist(skipped);
-          }
-          status = 'budget_exceeded';
-          reason = responseUsageExceeded;
-          await this.observeBudget(telemetryContext, responseUsageExceeded);
-          yield {
-            type: 'budget_exceeded',
-            reason: responseUsageExceeded as 'input_tokens' | 'output_tokens' | 'total_tokens',
-          };
-          break;
-        }
-        if (stopping) {
-          const explanation = 'not run: the flail guard already stopped tool execution';
-          this.journalSkippedTools(calls, explanation, requestId);
-          const skipped = unexecutedToolResults(calls, explanation);
-          if (skipped) {
-            this.messages.push(skipped);
-            this.persist(skipped);
-          }
-          status = 'incomplete';
-          reason = 'flail_stop';
-          break;
-        }
-        if (calls.length === 0) {
-          if (done.stopReason === 'end_turn' && hasAnswerText) {
-            status = 'completed';
-            reason = 'end_turn';
-          } else {
-            status = 'incomplete';
-            reason = done.stopReason === 'tool_use' ? 'provider_stop' : 'empty_response';
-          }
-          break;
-        }
-        if (done.stopReason !== 'tool_use') {
-          const explanation = 'not run: tool calls arrived without a tool-use finish reason';
-          this.journalSkippedTools(calls, explanation, requestId);
-          const skipped = unexecutedToolResults(calls, explanation);
-          if (skipped) {
-            this.messages.push(skipped);
-            this.persist(skipped);
-          }
-          status = 'incomplete';
-          reason = 'provider_stop';
-          break;
-        }
-
-        const responseUsageLimit = usageBudgetReason(turnUsage, budget);
-        if (responseUsageLimit) {
-          const explanation = `not run: ${responseUsageLimit} budget was exhausted`;
-          this.journalSkippedTools(calls, explanation, requestId);
-          const skipped = unexecutedToolResults(calls, explanation);
-          if (skipped) {
-            this.messages.push(skipped);
-            this.persist(skipped);
-          }
-          status = 'budget_exceeded';
-          reason = responseUsageLimit;
-          await this.observeBudget(telemetryContext, responseUsageLimit);
-          yield {
-            type: 'budget_exceeded',
-            reason: responseUsageLimit as 'input_tokens' | 'output_tokens' | 'total_tokens',
-          };
-          break;
+          batchCalls = planned;
+          batchRequestId = requestId;
         }
 
         const results: ToolResultBlock[] = [];
@@ -1263,24 +1553,16 @@ export class Agent {
           }
           return undefined;
         };
-        const plannedCalls: { call: ToolCallBlock; executionId: string; journaled: boolean }[] = [];
-        for (const call of calls) {
-          const executionId = createTelemetryId('tool');
-          const journaled = this._session
-            ? this.journal((session) => {
-                session.planTool(call, { executionId, requestId });
-                return true;
-              }) === true
-            : true;
-          plannedCalls.push({ call, executionId, journaled });
-          await this.observe(
-            createRuntimeEvent({ ...telemetryContext, requestId, toolCallId: call.id, toolExecutionId: executionId }, {
-              name: 'tool.planned',
-              attributes: { toolName: call.name },
-            }),
-          );
-        }
-        for (const { call, executionId, journaled } of plannedCalls) {
+        let suspendedThisBatch = false;
+        for (let batchIndex = 0; batchIndex < batchCalls.length; batchIndex++) {
+          const item = batchCalls[batchIndex]!;
+          const { call, executionId, journaled } = item;
+          // Produced before a suspension, or reconstructed from the journal on
+          // resume. Never dispatch twice for one planned call.
+          if (item.settled) {
+            results.push(item.settled);
+            continue;
+          }
           if (guardStoppedThisBatch) {
             const explanation = 'not run: the flail guard stopped the remaining tool batch';
             if (journaled && this._session) {
@@ -1332,13 +1614,32 @@ export class Agent {
             });
             continue;
           }
+          if (item.approval?.decision === 'rejected') {
+            const explanation = `not run: a human reviewer rejected this tool call${item.approval.reason ? `: ${item.approval.reason}` : ''}`;
+            await this.observe(
+              createRuntimeEvent(
+                { ...telemetryContext, ...(batchRequestId ? { requestId: batchRequestId } : {}), toolCallId: call.id, toolExecutionId: executionId },
+                {
+                  name: 'policy.decision',
+                  level: 'warn',
+                  attributes: { toolName: call.name, decision: 'deny', reason: 'approval_rejected' },
+                },
+              ),
+            );
+            results.push(toolResultBlock(call, explanation, true));
+            continue;
+          }
           const tool = this.toolsByName.get(call.name);
+          // An edit replaces the arguments for dispatch only: the planned row
+          // keeps the model's originals, and the decision row keeps the edit.
+          const edited = item.approval?.decision === 'edited' ? item.approval.editedArguments : undefined;
+          const effectiveArguments = edited ?? call.arguments;
           let rejectedBeforeDispatch: string | undefined;
           if (!tool) {
             rejectedBeforeDispatch = `unknown tool "${call.name}"`;
           } else {
             try {
-              validateToolArguments(tool, call.arguments);
+              validateToolArguments(tool, effectiveArguments);
             } catch (error) {
               rejectedBeforeDispatch = error instanceof Error ? error.message : String(error);
             }
@@ -1350,7 +1651,12 @@ export class Agent {
             }
             await this.observe(
               createRuntimeEvent(
-                { ...telemetryContext, requestId, toolCallId: call.id, toolExecutionId: executionId },
+                {
+                  ...telemetryContext,
+                  ...(batchRequestId ? { requestId: batchRequestId } : {}),
+                  toolCallId: call.id,
+                  toolExecutionId: executionId,
+                },
                 {
                   name: 'policy.decision',
                   level: 'warn',
@@ -1386,6 +1692,58 @@ export class Agent {
             }
             continue;
           }
+          // The batch runs in order until the first gated call with no recorded
+          // decision. That call and every later gated one are journaled as
+          // awaiting approval; later ungated calls stay planned, so side-effect
+          // order is preserved exactly across the suspension (ADR 0011).
+          if (item.approval?.decision === undefined && requiresApproval(this.toolPolicy, call.name)) {
+            const pendingApprovals: PendingApproval[] = [];
+            let approvalPersisted = true;
+            for (const rest of batchCalls.slice(batchIndex)) {
+              if (rest.settled || !rest.journaled) continue;
+              if (rest.approval?.decision !== undefined) continue;
+              if (!requiresApproval(this.toolPolicy, rest.call.name)) continue;
+              if (!rest.approval) {
+                const requestedAt = new Date().toISOString();
+                const written = this.journalFor(this._session, (session) => {
+                  session.requestToolApproval(rest.executionId);
+                  return true;
+                });
+                if (this._session && written !== true) {
+                  approvalPersisted = false;
+                  break;
+                }
+                rest.approval = { requestedAt };
+              }
+              pendingApprovals.push({ executionId: rest.executionId, call: rest.call });
+              await this.observe(
+                createRuntimeEvent(
+                  {
+                    ...telemetryContext,
+                    ...(batchRequestId ? { requestId: batchRequestId } : {}),
+                    toolCallId: rest.call.id,
+                    toolExecutionId: rest.executionId,
+                  },
+                  {
+                    name: 'policy.decision',
+                    level: 'warn',
+                    attributes: { toolName: rest.call.name, decision: 'defer', reason: 'approval_required' },
+                  },
+                ),
+              );
+            }
+            // An approval that cannot be durably recorded must not suspend: a
+            // resume would never see it. Fail closed instead, leaving the
+            // remaining calls unstarted.
+            if (!approvalPersisted) {
+              status = 'incomplete';
+              reason = 'persistence';
+              break;
+            }
+            suspendedThisBatch = true;
+            yield { type: 'approval_required', executions: pendingApprovals };
+            break;
+          }
           if (this._session) {
             const started = this.journal((session) => {
               session.startTool(executionId);
@@ -1403,9 +1761,10 @@ export class Agent {
             }
           }
           toolCalls++;
+          const dispatchCall: ToolCallBlock = edited ? { ...call, arguments: edited } : call;
           const toolContext: TelemetryContext = {
             ...telemetryContext,
-            requestId,
+            ...(batchRequestId ? { requestId: batchRequestId } : {}),
             toolCallId: call.id,
             toolExecutionId: executionId,
           };
@@ -1419,10 +1778,10 @@ export class Agent {
           // Dispatch before yielding the public start event. If the consumer
           // returns from the async iterator at that yield, the durable `started`
           // row truthfully means a side effect may already be in flight.
-          const executionPromise = this.executeCall(call, runController.signal);
+          const executionPromise = this.executeCall(dispatchCall, runController.signal);
           let resumedAfterToolStart = false;
           try {
-            yield { type: 'tool_start', call };
+            yield { type: 'tool_start', call: dispatchCall };
             resumedAfterToolStart = true;
           } finally {
             if (!resumedAfterToolStart) {
@@ -1466,10 +1825,10 @@ export class Agent {
               attributes: { toolName: call.name, isError: result.isError === true },
             }),
           );
-          yield { type: 'tool_end', call, result };
+          yield { type: 'tool_end', call: dispatchCall, result };
           if (result.isError && !runController.signal.aborted) {
             consecutiveFailures++;
-            const key = `${call.name}:${JSON.stringify(call.arguments)}`;
+            const key = `${call.name}:${JSON.stringify(dispatchCall.arguments)}`;
             const repeats = (failCounts.get(key) ?? 0) + 1;
             failCounts.set(key, repeats);
             if (repeats > repeatMax) repeatMax = repeats;
@@ -1478,11 +1837,17 @@ export class Agent {
             failCounts.clear();
             nudged = false;
           }
+          // The model must not be told its own arguments ran when a human
+          // changed them. The note sits beside the tool's own output rather
+          // than inside it, so the output budget still applies to the tool.
+          const editNote = edited
+            ? `[approval] a human reviewer edited these arguments before execution; it ran with: ${truncateMiddle(JSON.stringify(edited), 1_024)}`
+            : undefined;
           results.push({
             type: 'toolResult',
             toolCallId: call.id,
             toolName: call.name,
-            content: result.content,
+            content: editNote ? [{ type: 'text', text: editNote }, ...result.content] : result.content,
             ...(result.isError ? { isError: true } : {}),
           });
           const decision = evaluateFlail();
@@ -1494,6 +1859,23 @@ export class Agent {
             yield { type: 'flail_nudge', consecutiveFailures };
           }
         }
+        if (suspendedThisBatch) {
+          // The transcript deliberately still ends at the assistant tool_use
+          // message: writing partial results would either fabricate outcomes for
+          // undecided calls or leave a message the provider rejects. Results
+          // produced so far are retained for an in-process resume.
+          for (let index = 0; index < results.length; index++) {
+            const item = batchCalls[index];
+            if (item) item.settled = results[index];
+          }
+          this.suspendedBatch = { ...(batchRequestId ? { requestId: batchRequestId } : {}), calls: batchCalls };
+          status = 'suspended';
+          reason = 'awaiting_approval';
+          terminal = true;
+          break;
+        }
+        this.suspendedBatch = undefined;
+        this.suspendedAtOpen = false;
         const content: UserBlock[] = [...results];
         if (toolBudgetHit) {
           status = 'budget_exceeded';
@@ -1547,9 +1929,12 @@ export class Agent {
       }
       if (!failed) {
         let terminalPersisted = true;
+        // A suspended run records its ceilings so the resume continues under them
+        // instead of silently inheriting whatever defaults the next process has.
+        const terminalBudget: RunBudgetSnapshot | undefined = status === 'suspended' ? { ...budget } : undefined;
         for (const session of runSessions) {
           const written = this.journalFor(session, (target) => {
-            target.setRunStatus(status, reason);
+            target.setRunStatus(status, reason, terminalBudget ? { budget: terminalBudget } : {});
             return true;
           });
           if (written !== true) terminalPersisted = false;

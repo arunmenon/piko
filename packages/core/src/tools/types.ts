@@ -37,6 +37,25 @@ export interface ToolExecutionPolicy {
    */
   readonly allowAbsolutePaths?: boolean;
   readonly bash?: BashExecutionPolicy;
+  /**
+   * Tool names gated behind a recorded human decision, or `"*"` for every tool
+   * (ADR 0011). Default none, which preserves current behavior exactly.
+   *
+   * Provenance is restricted: this may only be set from user config and CLI
+   * flags. Project content loaded by `--trust-project` and tool extensions must
+   * never reach it — 0006's rule that project instructions cannot touch tool
+   * policy extends to this field. Gating is per tool name; argument patterns are
+   * an explicit non-goal.
+   */
+  readonly approval?: readonly string[] | '*';
+}
+
+/** Whether a policy gates this tool name behind a human decision. */
+export function requiresApproval(policy: ToolExecutionPolicy | undefined, toolName: string): boolean {
+  const approval = policy?.approval;
+  if (approval === undefined) return false;
+  if (approval === '*') return true;
+  return approval.includes(toolName);
 }
 
 /** Build the default, workspace-confined policy for an agent/tool context. */

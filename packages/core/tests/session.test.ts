@@ -145,21 +145,21 @@ test('open rejects corrupt or schema-invalid rows anywhere except a partial JSON
   );
   assert.throws(
     () => Session.open(corruptMiddle.file),
-    (error: unknown) => error instanceof SessionCorruptionError && error.lineNumber === 2,
+    (error: unknown) => error instanceof SessionCorruptionError && error.lineNumber === 3,
   );
 
   const invalidTail = Session.create('/some/project', 'test-model', dir);
   appendFileSync(invalidTail.file, '{"t":"usage","usage":{"inputTokens":1}}\n', 'utf8');
   assert.throws(
     () => Session.open(invalidTail.file),
-    (error: unknown) => error instanceof SessionCorruptionError && error.lineNumber === 2,
+    (error: unknown) => error instanceof SessionCorruptionError && error.lineNumber === 3,
   );
 
   const completeCorruptTail = Session.create('/some/project', 'test-model', dir);
   appendFileSync(completeCorruptTail.file, '{not-json}\n', 'utf8');
   assert.throws(
     () => Session.open(completeCorruptTail.file),
-    (error: unknown) => error instanceof SessionCorruptionError && error.lineNumber === 2,
+    (error: unknown) => error instanceof SessionCorruptionError && error.lineNumber === 3,
   );
 });
 
@@ -344,6 +344,7 @@ test('model, compaction, and terminal run lifecycle rows survive replay', () => 
   assert.deepEqual(
     reopened.lifecycleEntries.map((entry) => entry.t),
     [
+      'journal_schema',
       'model_request_started',
       'model_request_failed',
       'compaction_started',

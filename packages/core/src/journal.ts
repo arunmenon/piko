@@ -1,4 +1,4 @@
-import type { Message, ToolCallBlock, Usage } from '@pi/ai';
+import { addUsage, emptyUsage, type Message, type ToolCallBlock, type Usage } from '@pi/ai';
 
 /** Rows written by piko 0.1. Kept verbatim so existing transcripts remain readable. */
 export type LegacySessionEntry =
@@ -6,8 +6,47 @@ export type LegacySessionEntry =
   | { t: 'msg'; message: Message }
   | { t: 'usage'; usage: Usage };
 
-export type RunStatus = 'running' | 'completed' | 'incomplete' | 'budget_exceeded' | 'canceled' | 'failed';
+export type RunStatus =
+  | 'running'
+  | 'completed'
+  | 'incomplete'
+  | 'budget_exceeded'
+  | 'canceled'
+  | 'failed'
+  | 'suspended';
 export type SessionLineageRelation = 'branch' | 'compaction' | 'continuation';
+
+/**
+ * Journal schema generation, written once per session as a `journal_schema` row.
+ * Sessions created before the marker existed are read as generation 1; a file
+ * declaring a newer generation is refused rather than half-understood.
+ *
+ * 1 — v0.2 lifecycle rows (model request, tool, compaction, run status, lineage).
+ * 2 — adds tool approval rows and the suspended run status (ADR 0011).
+ */
+export const JOURNAL_SCHEMA_VERSION = 2;
+export const LEGACY_JOURNAL_SCHEMA_VERSION = 1;
+
+/** Run budget ceilings captured on a terminal row so a resume can continue under them. */
+export interface RunBudgetSnapshot {
+  maxModelRequests?: number;
+  maxToolCalls?: number;
+  maxWallTimeMs?: number;
+  maxToolOutputBytes?: number;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  maxTotalTokens?: number;
+}
+
+const runBudgetSnapshotFields = [
+  'maxModelRequests',
+  'maxToolCalls',
+  'maxWallTimeMs',
+  'maxToolOutputBytes',
+  'maxInputTokens',
+  'maxOutputTokens',
+  'maxTotalTokens',
+] as const;
 
 export interface SessionLineage {
   parentSessionId: string;
@@ -68,12 +107,27 @@ export interface ModelRequestState {
   reason?: string;
 }
 
+export type ApprovalDecision = 'approved' | 'edited' | 'rejected';
+
 export type ToolLifecycleEntry =
   | (LifecycleBase & {
       t: 'tool_planned';
       executionId: string;
       requestId?: string;
       call: ToolCallBlock;
+    })
+  /** A gated call is deferred pending a recorded human decision (ADR 0011). */
+  | (LifecycleBase & { t: 'tool_approval_requested'; executionId: string })
+  | (LifecycleBase & {
+      t: 'tool_approval_decided';
+      executionId: string;
+      decision: ApprovalDecision;
+      /** When the human decided, which is not the append time when a decision
+       *  is collected by one invocation and applied by the next. */
+      decidedAt: string;
+      /** Replacement arguments for an `edited` decision; the planned row keeps the original. */
+      editedArguments?: Record<string, unknown>;
+      reason?: string;
     })
   | (LifecycleBase & { t: 'tool_started'; executionId: string })
   | (LifecycleBase & { t: 'tool_skipped'; executionId: string; reason: string })
@@ -101,13 +155,36 @@ export type LifecycleEntry =
   | ModelRequestEntry
   | ToolLifecycleEntry
   | CompactionEntry
-  | (LifecycleBase & { t: 'run_status'; status: RunStatus; reason?: string })
+  | (LifecycleBase & {
+      t: 'run_status';
+      status: RunStatus;
+      reason?: string;
+      /** Ceilings in force for the run, recorded so a resumed run continues under them. */
+      budget?: RunBudgetSnapshot;
+    })
+  | (LifecycleBase & { t: 'journal_schema'; schema: number })
   | (LifecycleBase & { t: 'session_ready' })
   | (LifecycleBase & { t: 'session_lineage' } & SessionLineage);
 
 export type SessionEntry = LegacySessionEntry | LifecycleEntry;
 
-export type ToolExecutionStatus = 'planned' | 'started' | 'skipped' | 'completed' | 'failed' | 'outcome_unknown';
+export type ToolExecutionStatus =
+  | 'planned'
+  | 'awaiting_approval'
+  | 'started'
+  | 'skipped'
+  | 'completed'
+  | 'failed'
+  | 'outcome_unknown';
+
+/** Approval trail for one gated execution. Present once approval was requested. */
+export interface ToolApprovalState {
+  requestedAt: string;
+  decision?: ApprovalDecision;
+  decidedAt?: string;
+  reason?: string;
+  editedArguments?: Record<string, unknown>;
+}
 
 export interface ToolExecutionState {
   executionId: string;
@@ -119,6 +196,7 @@ export interface ToolExecutionState {
   endedAt?: string;
   error?: string;
   reason?: string;
+  approval?: ToolApprovalState;
 }
 
 const runStatuses = new Set<RunStatus>([
@@ -128,7 +206,9 @@ const runStatuses = new Set<RunStatus>([
   'budget_exceeded',
   'canceled',
   'failed',
+  'suspended',
 ]);
+const approvalDecisions = new Set<ApprovalDecision>(['approved', 'edited', 'rejected']);
 const lineageRelations = new Set<SessionLineageRelation>(['branch', 'compaction', 'continuation']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -168,6 +248,20 @@ function requireBoolean(value: unknown, path: string): boolean {
 function optionalBoolean(value: unknown, path: string): boolean | undefined {
   if (value === undefined) return undefined;
   return requireBoolean(value, path);
+}
+
+function requirePositiveInteger(value: unknown, path: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) <= 0) {
+    throw new TypeError(`${path} must be a positive integer`);
+  }
+  return value as number;
+}
+
+function validateRunBudgetSnapshot(value: unknown, path: string): void {
+  const budget = requireRecord(value, path);
+  for (const field of runBudgetSnapshotFields) {
+    if (budget[field] !== undefined) requirePositiveInteger(budget[field], `${path}.${field}`);
+  }
 }
 
 function requireNonNegativeInteger(value: unknown, path: string): number {
@@ -310,7 +404,22 @@ export function validateSessionEntry(value: unknown): asserts value is SessionEn
       return;
     case 'tool_started':
     case 'tool_completed':
+    case 'tool_approval_requested':
       requireString(entry['executionId'], `${type}.executionId`);
+      return;
+    case 'tool_approval_decided':
+      requireString(entry['executionId'], `${type}.executionId`);
+      if (!approvalDecisions.has(entry['decision'] as ApprovalDecision)) {
+        throw new TypeError(`${type}.decision is unsupported`);
+      }
+      requireTimestamp(entry['decidedAt'], `${type}.decidedAt`);
+      if (entry['editedArguments'] !== undefined) {
+        requireRecord(entry['editedArguments'], `${type}.editedArguments`);
+      }
+      if (entry['decision'] !== 'edited' && entry['editedArguments'] !== undefined) {
+        throw new TypeError(`${type}.editedArguments is only valid for an edited decision`);
+      }
+      optionalString(entry['reason'], `${type}.reason`);
       return;
     case 'tool_skipped':
       requireString(entry['executionId'], `${type}.executionId`);
@@ -344,6 +453,10 @@ export function validateSessionEntry(value: unknown): asserts value is SessionEn
     case 'run_status':
       if (!runStatuses.has(entry['status'] as RunStatus)) throw new TypeError(`${type}.status is unsupported`);
       optionalString(entry['reason'], `${type}.reason`);
+      if (entry['budget'] !== undefined) validateRunBudgetSnapshot(entry['budget'], `${type}.budget`);
+      return;
+    case 'journal_schema':
+      requirePositiveInteger(entry['schema'], `${type}.schema`);
       return;
     case 'session_ready':
       return;
@@ -390,6 +503,8 @@ export function reduceToolExecutions(entries: readonly SessionEntry[]): Map<stri
       continue;
     }
     if (
+      entry.t !== 'tool_approval_requested' &&
+      entry.t !== 'tool_approval_decided' &&
       entry.t !== 'tool_started' &&
       entry.t !== 'tool_skipped' &&
       entry.t !== 'tool_completed' &&
@@ -400,6 +515,37 @@ export function reduceToolExecutions(entries: readonly SessionEntry[]): Map<stri
     }
     const state = states.get(entry.executionId);
     if (!state) invalidTransition(`${entry.t} references unknown tool execution ${entry.executionId}`);
+    if (entry.t === 'tool_approval_requested') {
+      if (state.status !== 'planned') {
+        invalidTransition(`${entry.executionId} cannot request approval from ${state.status}`);
+      }
+      state.status = 'awaiting_approval';
+      state.approval = { requestedAt: entry.at };
+      continue;
+    }
+    if (entry.t === 'tool_approval_decided') {
+      if (state.status !== 'awaiting_approval' || !state.approval) {
+        invalidTransition(`${entry.executionId} cannot be decided from ${state.status}`);
+      }
+      state.approval = {
+        ...state.approval,
+        decision: entry.decision,
+        decidedAt: entry.decidedAt,
+        ...(entry.reason !== undefined ? { reason: entry.reason } : {}),
+        ...(entry.editedArguments !== undefined ? { editedArguments: entry.editedArguments } : {}),
+      };
+      // A rejection is terminal by itself: nothing ran and nothing will. An
+      // approval returns the execution to `planned`, which is exactly what it
+      // is — cleared for dispatch, not yet started (ADR 0011 decision 4).
+      if (entry.decision === 'rejected') {
+        state.status = 'skipped';
+        state.endedAt = entry.at;
+        state.reason = entry.reason ?? 'rejected by a human reviewer';
+      } else {
+        state.status = 'planned';
+      }
+      continue;
+    }
     if (entry.t === 'tool_started') {
       if (state.status !== 'planned') invalidTransition(`${entry.executionId} cannot start from ${state.status}`);
       state.status = 'started';
@@ -476,8 +622,17 @@ export function validateLifecycle(entries: readonly SessionEntry[]): void {
   const compactions = new Map<string, 'started' | 'completed' | 'failed'>();
   let lineageSeen = false;
   let readySeen = false;
+  let schemaSeen = false;
   for (const entry of entries) {
-    if (entry.t === 'compaction_started') {
+    if (entry.t === 'journal_schema') {
+      if (schemaSeen) invalidTransition('a session can have only one journal schema marker');
+      schemaSeen = true;
+      if (entry.schema > JOURNAL_SCHEMA_VERSION) {
+        throw new TypeError(
+          `journal schema ${entry.schema} is newer than the supported version ${JOURNAL_SCHEMA_VERSION}; upgrade piko to read this session`,
+        );
+      }
+    } else if (entry.t === 'compaction_started') {
       if (compactions.has(entry.compactionId)) invalidTransition(`duplicate compaction ${entry.compactionId}`);
       compactions.set(entry.compactionId, 'started');
     } else if (entry.t === 'compaction_completed' || entry.t === 'compaction_failed') {
@@ -493,4 +648,50 @@ export function validateLifecycle(entries: readonly SessionEntry[]): void {
       readySeen = true;
     }
   }
+}
+
+/** Declared journal generation; sessions written before the marker are generation 1. */
+export function journalSchemaVersion(entries: readonly SessionEntry[]): number {
+  for (const entry of entries) {
+    if (entry.t === 'journal_schema') return entry.schema;
+  }
+  return LEGACY_JOURNAL_SCHEMA_VERSION;
+}
+
+/** Budget accounting for the run segment that is still open, or ended suspended. */
+export interface OpenRunState {
+  usage: Usage;
+  modelRequests: number;
+  toolCalls: number;
+  /** Ceilings recorded on the segment's terminal row, when it has one. */
+  budget?: RunBudgetSnapshot;
+}
+
+/**
+ * Reduce every lifecycle row belonging to the newest run segment. A resumed turn
+ * seeds its counters from this, so 0009's bounded-per-input property holds across
+ * a suspension instead of restarting at zero.
+ *
+ * A segment starts at a `running` marker that follows a terminal status (or the
+ * start of the file). `running` after `suspended` continues the same segment, so
+ * a run cannot buy fresh budget by suspending repeatedly.
+ */
+export function reduceOpenRun(entries: readonly SessionEntry[]): OpenRunState {
+  let start = 0;
+  let afterTerminal = true;
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index]!;
+    if (entry.t !== 'run_status') continue;
+    if (entry.status === 'running' && afterTerminal) start = index + 1;
+    afterTerminal = entry.status !== 'running' && entry.status !== 'suspended';
+  }
+  const state: OpenRunState = { usage: emptyUsage(), modelRequests: 0, toolCalls: 0 };
+  for (let index = start; index < entries.length; index++) {
+    const entry = entries[index]!;
+    if (entry.t === 'model_request_started') state.modelRequests++;
+    else if (entry.t === 'model_request_completed' && entry.usage) addUsage(state.usage, entry.usage);
+    else if (entry.t === 'tool_started') state.toolCalls++;
+    else if (entry.t === 'run_status' && entry.budget) state.budget = structuredClone(entry.budget);
+  }
+  return state;
 }

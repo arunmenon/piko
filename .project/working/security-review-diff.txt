@@ -1,0 +1,3073 @@
+diff --git a/README.md b/README.md
+index 543f2fe..b798c10 100644
+--- a/README.md
++++ b/README.md
+@@ -53,6 +53,15 @@ industry harnesses.
+   reconstructing linked-session economics. A versioned write-ahead lifecycle journal records
+   model requests, tool planned/started/completed/failed/unknown states, compaction lineage, and
+   terminal run status. Only a corrupt partial tail is ignored; invalid middle rows fail closed.
++- **Approvals that survive process loss**: `--require-approval <names|*>` gates tools behind a
++  recorded human decision. The batch runs in order until the first gated call, journals the rest,
++  and the turn ends `suspended` (exit 4) without another model request. The decision is a journal
++  row, not process state, so a suspended run can be approved, edited, or rejected minutes or days
++  later — after a crash or a reboot — by resuming the session. Gating is per tool name; the policy
++  comes only from CLI flags and `~/.config/pi/config.json`, never from project files or extensions.
++  A resumed run continues the suspended run's token, tool-call, and model-request accounting under
++  the ceilings recorded on its terminal row: raising one needs an explicit flag and is journaled.
++  Only the wall-time deadline restarts, because waiting for a human is not the run's own compute.
+ - **Prompt-cache conscious**: stable prefix ordering with Anthropic cache breakpoints; normal
+   turns append. Explicit microcompaction rewrites only eligible old tool-result blocks, while full
+   compaction starts a lineage-linked session and preserves the prior transcript.
+@@ -90,6 +99,14 @@ node packages/cli/dist/main.js -p "review these files" --max-turns 20
+ # versioned JSONL automation stream; incomplete/capped runs exit nonzero
+ node packages/cli/dist/main.js --json "review these files"
+ 
++# gate a tool behind a human decision: the run suspends at the first gated call and exits 4
++node packages/cli/dist/main.js -p --require-approval write,bash "apply the migration"
++
++# decide later — in this process, or days later after a crash — and the run continues
++node packages/cli/dist/main.js -p -c --approve all
++node packages/cli/dist/main.js -p -c --reject tool_8f31 --reason "not on a Friday"
++node packages/cli/dist/main.js -p -c --edit tool_8f31 --args '{"path":"safe.txt","content":"…"}'
++
+ # extended thinking on Anthropic models
+ node packages/cli/dist/main.js --thinking 8192 "untangle this race condition"
+ 
+@@ -106,6 +123,7 @@ Config file (`~/.config/pi/config.json`, optional):
+ ```json
+ {
+   "defaultProfile": "kimi",
++  "approval": ["bash", "write"],
+   "profiles": {
+     "kimi": { "provider": "openai", "baseUrl": "https://api.moonshot.ai/v1", "model": "kimi-k3", "apiKeyEnv": "MOONSHOT_API_KEY" }
+   },
+@@ -113,6 +131,23 @@ Config file (`~/.config/pi/config.json`, optional):
+ }
+ ```
+ 
++`approval` gates those tools behind a human decision for every profile; a profile may set its own
++`approval` (a list of tool names or `"*"`) to override it. This file and the `--require-approval`
++flag are its only sources.
++
++Headless exit codes are semantic and fail closed — success must be proven by a terminal status:
++
++| Code | Meaning |
++| ---- | ------- |
++| 0 | completed turn |
++| 1 | error (bad flags, setup failure, provider error) |
++| 2 | budget exceeded (`--max-turns`, tool calls, wall time, tokens) |
++| 3 | incomplete or unknown terminal state |
++| 4 | suspended awaiting tool approval; resume with `--approve`/`--reject`/`--edit` |
++| 130 | canceled by the user |
++
++A parent process spawning children must treat exit 4 as "forward the decision", not as failure.
++
+ ## Sandboxing
+ 
+ By default, piko exposes only workspace-confined file tools. Parent traversal, absolute paths,
+@@ -142,8 +177,12 @@ trusted-environment capability.
+ Piko is an experimental, pre-1.0 framework. Its current local evidence includes unit, integration,
+ fault-injection, packaging, and prompt-budget checks, plus an eval runner that writes versioned
+ per-trial artifacts. It has not had an independent security audit, does not yet provide an OS
+-sandbox or persistent approval policy, and has no published representative industry benchmark.
+-APIs and journal schemas should be treated as unstable until a compatibility policy is published.
++sandbox, and has no published representative industry benchmark. Approval gating is per tool name
++only: no argument-pattern matching, no session-scoped "always allow", and a rejected call is not a
++sandbox — containment still does that work.
++APIs are unstable until a compatibility policy is published. The journal now carries an explicit
++schema generation: sessions written before the marker are read as generation 1, and a file
++declaring a newer generation is refused rather than half-understood.
+ Workspace packages are intentionally marked private and must not be published until the owner
+ chooses a license and release policy.
+ See the [evaluation methodology](docs/evaluation.md) for pass criteria, artifact contents, and the
+diff --git a/ROADMAP.md b/ROADMAP.md
+index 62d644c..1eb5271 100644
+--- a/ROADMAP.md
++++ b/ROADMAP.md
+@@ -24,7 +24,7 @@ Package manifests remain at `0.1.0`; this heading describes the pending change s
+ - [x] Runtime validation and byte ceilings for tool extensions; duplicate names rejected.
+ - [x] Atomic CLI model/profile switch that rebuilds provider and context-window state.
+ - [x] Linked-session audit and per-request model attribution.
+-- [ ] Persistent approve/edit/reject workflow that can suspend and survive process loss.
++- [x] Persistent approve/edit/reject workflow that can suspend and survive process loss.
+ - [ ] Container or microVM `ToolExecutor` adapter with filesystem and egress policy.
+ - [ ] Stable bidirectional RPC/SDK surface beyond one-shot JSONL output.
+ - [ ] Provider capability registry and native OpenAI Responses adapter.
+diff --git a/eval/result.ts b/eval/result.ts
+index 903f6c7..35deed2 100644
+--- a/eval/result.ts
++++ b/eval/result.ts
+@@ -91,7 +91,7 @@ function incompleteMarker(stderr: string, usage: UsageSummary | undefined): stri
+   if (usage?.status && usage.status !== 'completed') {
+     return `usage reported status ${usage.status}${usage.reason ? `: ${usage.reason}` : ''}`;
+   }
+-  const match = stderr.match(/^run (incomplete|budget_exceeded|failed|canceled):\s*(.*)$/m);
++  const match = stderr.match(/^run (incomplete|budget_exceeded|failed|canceled|suspended):\s*(.*)$/m);
+   return match ? `${match[1]}${match[2] ? `: ${match[2]}` : ''}` : undefined;
+ }
+ 
+diff --git a/packages/ai/src/config.ts b/packages/ai/src/config.ts
+index a2d604b..a3701bf 100644
+--- a/packages/ai/src/config.ts
++++ b/packages/ai/src/config.ts
+@@ -2,6 +2,9 @@ import { readFileSync } from 'node:fs';
+ import { homedir } from 'node:os';
+ import { join } from 'node:path';
+ 
++/** Tool names gated behind a human decision, or "*" for every tool (ADR 0011). */
++export type ApprovalPolicy = readonly string[] | '*';
++
+ export interface Profile {
+   name: string;
+   provider: 'anthropic' | 'openai';
+@@ -10,6 +13,8 @@ export interface Profile {
+   baseUrl?: string;
+   /** context window in tokens (defaults to a per-model-family table) */
+   contextWindow?: number;
++  /** approval gating from the profile, falling back to the top-level setting */
++  approval?: ApprovalPolicy;
+ }
+ 
+ interface ProfileConfig {
+@@ -19,12 +24,15 @@ interface ProfileConfig {
+   /** env var holding the API key; the key itself never lives in the config file */
+   apiKeyEnv?: string;
+   contextWindow?: number;
++  approval?: ApprovalPolicy;
+ }
+ 
+ export interface PiConfig {
+   defaultProfile?: string;
+   profiles?: Record<string, ProfileConfig>;
+   extensions?: string[];
++  /** default approval gating for every profile; user config and CLI flags are its only sources */
++  approval?: ApprovalPolicy;
+ }
+ 
+ function isRecord(value: unknown): value is Record<string, unknown> {
+@@ -37,11 +45,22 @@ function optionalString(value: unknown, path: string): string | undefined {
+   return value;
+ }
+ 
++function optionalApproval(value: unknown, path: string): ApprovalPolicy | undefined {
++  if (value === undefined) return undefined;
++  if (value === '*') return '*';
++  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || item.length === 0)) {
++    throw new TypeError(`${path} must be "*" or an array of tool names`);
++  }
++  return [...(value as string[])];
++}
++
+ export function validateConfig(value: unknown): PiConfig {
+   if (!isRecord(value)) throw new TypeError('config must be an object');
+   const config: PiConfig = {};
+   const defaultProfile = optionalString(value['defaultProfile'], 'defaultProfile');
+   if (defaultProfile) config.defaultProfile = defaultProfile;
++  const approval = optionalApproval(value['approval'], 'approval');
++  if (approval !== undefined) config.approval = approval;
+   if (value['extensions'] !== undefined) {
+     if (!Array.isArray(value['extensions']) || value['extensions'].some((item) => typeof item !== 'string' || !item)) {
+       throw new TypeError('extensions must be an array of non-empty strings');
+@@ -61,7 +80,9 @@ export function validateConfig(value: unknown): PiConfig {
+       if (contextWindow !== undefined && (!Number.isSafeInteger(contextWindow) || (contextWindow as number) <= 0)) {
+         throw new TypeError(`profiles.${name}.contextWindow must be a positive integer`);
+       }
++      const profileApproval = optionalApproval(raw['approval'], `profiles.${name}.approval`);
+       profiles[name] = {
++        ...(profileApproval !== undefined ? { approval: profileApproval } : {}),
+         ...(provider ? { provider } : {}),
+         ...(optionalString(raw['model'], `profiles.${name}.model`) ? { model: raw['model'] as string } : {}),
+         ...(optionalString(raw['baseUrl'], `profiles.${name}.baseUrl`) ? { baseUrl: raw['baseUrl'] as string } : {}),
+@@ -130,6 +151,9 @@ export function resolveProfile(
+   if (!apiKey && !baseUrl) {
+     throw new Error(`no API key for profile "${name}": set ${apiKeyEnv}`);
+   }
++  // Profile gating overrides the top-level default; neither can be reached by
++  // project content or extensions.
++  const approval = merged.approval ?? config.approval;
+   return {
+     name,
+     provider,
+@@ -137,5 +161,6 @@ export function resolveProfile(
+     apiKey,
+     ...(baseUrl ? { baseUrl } : {}),
+     ...(merged.contextWindow ? { contextWindow: merged.contextWindow } : {}),
++    ...(approval !== undefined ? { approval } : {}),
+   };
+ }
+diff --git a/packages/ai/tests/config.test.ts b/packages/ai/tests/config.test.ts
+index 4b9c6ce..75db523 100644
+--- a/packages/ai/tests/config.test.ts
++++ b/packages/ai/tests/config.test.ts
+@@ -1,6 +1,6 @@
+ import assert from 'node:assert/strict';
+ import { test } from 'node:test';
+-import { validateConfig } from '../src/config.js';
++import { resolveProfile, validateConfig } from '../src/config.js';
+ 
+ test('validateConfig accepts typed profiles and extensions', () => {
+   assert.deepEqual(
+@@ -27,3 +27,28 @@ test('validateConfig rejects malformed provider and budget fields', () => {
+   assert.throws(() => validateConfig({ profiles: { bad: { provider: 'mystery' } } }), /provider/);
+   assert.throws(() => validateConfig({ profiles: { bad: { contextWindow: -1 } } }), /contextWindow/);
+ });
++
++test('approval gating is read from user config, per profile or as a default', () => {
++  const config = validateConfig({
++    approval: ['bash'],
++    profiles: {
++      strict: { provider: 'anthropic', model: 'm', apiKeyEnv: 'CFG_KEY', approval: '*' },
++      lenient: { provider: 'anthropic', model: 'm', apiKeyEnv: 'CFG_KEY' },
++    },
++  });
++  assert.deepEqual(config.approval, ['bash']);
++  process.env['CFG_KEY'] = 'test-key';
++  try {
++    assert.equal(resolveProfile(config, 'strict').approval, '*');
++    assert.deepEqual(resolveProfile(config, 'lenient').approval, ['bash'], 'the top-level setting is the default');
++    assert.equal(resolveProfile(validateConfig({ profiles: config.profiles }), 'lenient').approval, undefined);
++  } finally {
++    delete process.env['CFG_KEY'];
++  }
++});
++
++test('validateConfig rejects an approval policy that is neither "*" nor a list of tool names', () => {
++  assert.throws(() => validateConfig({ approval: 'bash' }), /must be "\*" or an array/);
++  assert.throws(() => validateConfig({ approval: ['bash', ''] }), /must be "\*" or an array/);
++  assert.throws(() => validateConfig({ profiles: { p: { approval: 7 } } }), /profiles\.p\.approval/);
++});
+diff --git a/packages/cli/src/args.ts b/packages/cli/src/args.ts
+index 72ac3c6..3ba4cba 100644
+--- a/packages/cli/src/args.ts
++++ b/packages/cli/src/args.ts
+@@ -1,3 +1,11 @@
++/** A decision supplied on the command line for one suspended execution. */
++export interface ApprovalFlag {
++  executionId: string;
++  decision: 'approved' | 'edited' | 'rejected';
++  editedArguments?: Record<string, unknown>;
++  reason?: string;
++}
++
+ export interface CliArgs {
+   print: boolean;
+   json: boolean;
+@@ -14,6 +22,12 @@ export interface CliArgs {
+   maxTotalTokens?: number;
+   trustProject: boolean;
+   allowHostBash: boolean;
++  /** tool names gated behind a human decision, or '*' for all (ADR 0011) */
++  requireApproval?: readonly string[] | '*';
++  /** decisions applied to a suspended session when it is reopened */
++  approvals: ApprovalFlag[];
++  /** --approve all: every pending approval in the reopened session */
++  approveAll: boolean;
+   thinking?: number;
+   autoCompact: boolean;
+   flailGuard: boolean;
+@@ -36,12 +50,22 @@ export function parseArgs(argv: string[]): CliArgs {
+     offload: true,
+     trustProject: false,
+     allowHostBash: false,
++    approvals: [],
++    approveAll: false,
+     extensions: [],
+     usage: false,
+     help: false,
+     prompt: '',
+   };
+   const positional: string[] = [];
++  const gatedTools = new Set<string>();
++  let gateEveryTool = false;
++  let sawApprovalGate = false;
++  const lastDecision = (flag: string): ApprovalFlag => {
++    const decision = args.approvals[args.approvals.length - 1];
++    if (!decision) throw new Error(`${flag} must follow --reject or --edit`);
++    return decision;
++  };
+   const positiveInteger = (flag: string, raw: string): number => {
+     const value = Number(raw);
+     if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${flag} requires an integer >= 1`);
+@@ -135,6 +159,47 @@ export function parseArgs(argv: string[]): CliArgs {
+       case '--allow-host-bash':
+         args.allowHostBash = true;
+         break;
++      case '--require-approval': {
++        // Repeatable and comma-separated; "*" anywhere gates every tool.
++        sawApprovalGate = true;
++        for (const name of next().split(',')) {
++          const trimmed = name.trim();
++          if (trimmed.length === 0) throw new Error('--require-approval requires tool names or "*"');
++          if (trimmed === '*') gateEveryTool = true;
++          else gatedTools.add(trimmed);
++        }
++        break;
++      }
++      case '--approve': {
++        const value = next();
++        if (value === 'all') args.approveAll = true;
++        else args.approvals.push({ executionId: value, decision: 'approved' });
++        break;
++      }
++      case '--reject':
++        args.approvals.push({ executionId: next(), decision: 'rejected' });
++        break;
++      case '--edit':
++        args.approvals.push({ executionId: next(), decision: 'edited' });
++        break;
++      case '--args': {
++        const decision = lastDecision('--args');
++        if (decision.decision !== 'edited') throw new Error('--args must follow --edit');
++        let parsed: unknown;
++        try {
++          parsed = JSON.parse(next()) as unknown;
++        } catch (error) {
++          throw new Error(`--args requires a JSON object: ${error instanceof Error ? error.message : String(error)}`);
++        }
++        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
++          throw new Error('--args requires a JSON object');
++        }
++        decision.editedArguments = parsed as Record<string, unknown>;
++        break;
++      }
++      case '--reason':
++        lastDecision('--reason').reason = next();
++        break;
+       case '--audit': {
+         const peek = argv[i + 1];
+         args.audit = peek !== undefined && !peek.startsWith('-') ? argv[++i]! : 'latest';
+@@ -156,6 +221,22 @@ export function parseArgs(argv: string[]): CliArgs {
+         positional.push(arg);
+     }
+   }
++  if (sawApprovalGate) args.requireApproval = gateEveryTool ? '*' : [...gatedTools];
++  for (const decision of args.approvals) {
++    if (decision.decision === 'edited' && decision.editedArguments === undefined) {
++      throw new Error(`--edit ${decision.executionId} requires --args '<json>'`);
++    }
++  }
++  if (args.approveAll && args.approvals.length > 0) {
++    throw new Error('--approve all cannot be combined with per-execution decisions');
++  }
++  const decided = new Set<string>();
++  for (const decision of args.approvals) {
++    if (decided.has(decision.executionId)) {
++      throw new Error(`more than one decision for execution ${decision.executionId}`);
++    }
++    decided.add(decision.executionId);
++  }
+   args.prompt = positional.join(' ');
+   return args;
+ }
+@@ -184,6 +265,13 @@ options:
+   --no-offload         keep old bulky tool outputs inline instead of offloading to disk
+   --trust-project      load repository AGENTS.md, skill index, and prompt templates
+   --allow-host-bash    expose unsandboxed host bash (dangerous; environment is sanitized)
++  --require-approval <names|*>  gate these tools behind a human decision; repeatable and
++                       comma-separated. The turn suspends at the first gated call (exit 4)
++                       and survives process loss; only this flag and ~/.config/pi/config.json
++                       can set it. Gating is per tool name, not per argument.
++  --approve <id|all>   approve a suspended execution when reopening the session (with -c/--session)
++  --reject <id>        reject one, with an optional following --reason "<text>"
++  --edit <id> --args '<json>'  run one with replacement arguments (validated, and noted to the model)
+   --audit [id|path]    print a per-request token-usage audit (default: latest here)
+   --telemetry <path>   append redacted versioned runtime spans/events as owner-only JSONL
+   --ext <path>         load a compiled JavaScript extension module (repeatable)
+diff --git a/packages/cli/src/index.ts b/packages/cli/src/index.ts
+index 34d3f66..bccebe4 100644
+--- a/packages/cli/src/index.ts
++++ b/packages/cli/src/index.ts
+@@ -1,4 +1,5 @@
+ export * from './args.js';
++export * from './approvals.js';
+ export * from './templates.js';
+ export * from './extensions.js';
+ export * from './render.js';
+diff --git a/packages/cli/src/main.ts b/packages/cli/src/main.ts
+index 3bb1ab4..6a55c2e 100644
+--- a/packages/cli/src/main.ts
++++ b/packages/cli/src/main.ts
+@@ -30,10 +30,19 @@ import {
+   tryLockSession,
+   validateToolSet,
+   type AgentEvent,
++  type ApprovalDecisionInput,
+   type Observer,
++  type PendingApproval,
+   type RunBudget,
+   type Tool,
+ } from '@pi/core';
++import {
++  APPROVAL_PROMPT,
++  describePendingApproval,
++  parseApprovalReply,
++  parseEditedArguments,
++  resolveDecisionFlags,
++} from './approvals.js';
+ import { HELP, parseArgs, type CliArgs } from './args.js';
+ import { loadConfiguredExtensions } from './extensions.js';
+ import { interpolate, loadTemplates, type PromptTemplate } from './templates.js';
+@@ -59,6 +68,8 @@ interface Setup {
+   budget: Partial<RunBudget>;
+   systemPrompt: string;
+   allowHostBash: boolean;
++  /** gated tool names; only CLI flags and user config can reach this */
++  approval?: readonly string[] | '*';
+   observer?: Observer;
+   thinkingBudget?: number;
+   contextWindow: number;
+@@ -106,7 +117,11 @@ function buildAgent(setup: Omit<Setup, 'agent'>, cwd: string, model: string): Ag
+     tools: setup.tools,
+     cwd,
+     session: setup.session,
+-    toolPolicy: { workspaceRoot: cwd, bash: { allowHostExecution: setup.allowHostBash } },
++    toolPolicy: {
++      workspaceRoot: cwd,
++      bash: { allowHostExecution: setup.allowHostBash },
++      ...(setup.approval !== undefined ? { approval: setup.approval } : {}),
++    },
+     ...(setup.observer ? { observer: setup.observer } : {}),
+     contextWindow: setup.contextWindow,
+     autoCompact: setup.autoCompact,
+@@ -155,6 +170,7 @@ async function setup(args: CliArgs): Promise<Setup> {
+     { source: 'configured tools' },
+   );
+   const session = openSession(args, cwd, profile.model);
++  const approval = args.requireApproval ?? profile.approval;
+   const envWindow = Number(process.env['PI_CONTEXT_WINDOW']);
+   const partial: Omit<Setup, 'agent'> = {
+     config,
+@@ -170,6 +186,9 @@ async function setup(args: CliArgs): Promise<Setup> {
+     offload: args.offload,
+     systemPrompt: buildSystemPrompt({ cwd, agentsMd, skills, bashAvailable: args.allowHostBash }),
+     allowHostBash: args.allowHostBash,
++    // Provenance is restricted to the flag and the user config file. Project
++    // content loaded by --trust-project and extensions never reach this field.
++    ...(approval !== undefined ? { approval } : {}),
+     ...(args.telemetry
+       ? {
+           observer: new SafeObserver({
+@@ -216,9 +235,20 @@ function printUsageSummary(
+  * Headless mode is the sub-agent story: progress goes to stderr, only the final
+  * reply goes to stdout, so `pi -p "..."` composes cleanly inside bash tool calls.
+  */
++/** Pending approvals are the actionable part of a suspended run: always show them. */
++function reportPendingApprovals(agent: Agent): void {
++  const pending = agent.pendingApprovals;
++  if (pending.length === 0) return;
++  process.stderr.write(
++    `${pending.length} tool call${pending.length === 1 ? '' : 's'} awaiting approval; decide with --approve/--reject/--edit on a resume:\n`,
++  );
++  for (const item of pending) process.stderr.write(`  ${describePendingApproval(item)}\n`);
++}
++
+ async function headless(args: CliArgs): Promise<number> {
++  const decisionFlags = args.approveAll || args.approvals.length > 0;
+   let prompt = args.prompt;
+-  if (!prompt && !process.stdin.isTTY) {
++  if (!prompt && !decisionFlags && !process.stdin.isTTY) {
+     const chunks: Buffer[] = [];
+     let bytes = 0;
+     for await (const chunk of process.stdin) {
+@@ -231,12 +261,30 @@ async function headless(args: CliArgs): Promise<number> {
+     }
+     prompt = Buffer.concat(chunks).toString('utf8').trim();
+   }
+-  if (!prompt) {
++  if (!prompt && !decisionFlags) {
+     if (args.json) throw new JsonRunFailure('no prompt: pass one as an argument or on stdin');
+     process.stderr.write('no prompt: pass one as an argument or on stdin\n');
+     return 1;
+   }
+   const { agent, session } = await setup(args);
++  // A session with undecided approvals cannot accept new input: its transcript
++  // still ends at the assistant tool_use whose results are pending.
++  if (agent.suspended && !decisionFlags) {
++    if (args.json) {
++      throw new JsonRunFailure(
++        'session is suspended awaiting tool approval; resume with --approve/--reject/--edit',
++        (agent.session ?? session).id,
++      );
++    }
++    reportPendingApprovals(agent);
++    return 4;
++  }
++  if (!agent.suspended && decisionFlags) {
++    const message = 'no suspended tool approvals in this session';
++    if (args.json) throw new JsonRunFailure(message, (agent.session ?? session).id);
++    process.stderr.write(`${message}\n`);
++    return 1;
++  }
+ 
+   // first Ctrl+C interrupts the turn (state stays well-formed), second force-quits
+   const controller = new AbortController();
+@@ -249,8 +297,14 @@ async function headless(args: CliArgs): Promise<number> {
+ 
+   let finalText = '';
+   let terminal: Extract<AgentEvent, { type: 'turn_done' }> | undefined;
++  const turn = decisionFlags
++    ? agent.resume(
++        resolveDecisionFlags(args.approvals, args.approveAll, agent.pendingApprovals),
++        controller.signal,
++      )
++    : agent.run(prompt, controller.signal);
+   try {
+-    for await (const event of agent.run(prompt, controller.signal)) {
++    for await (const event of turn) {
+       if (args.json) {
+         process.stdout.write(`${JSON.stringify({ v: 1, sessionId: (agent.session ?? session).id, event })}\n`);
+       }
+@@ -279,6 +333,8 @@ async function headless(args: CliArgs): Promise<number> {
+         process.stderr.write(dim(`offloaded ${event.count} old tool outputs\n`));
+       } else if (event.type === 'budget_exceeded') {
+         process.stderr.write(`budget exceeded: ${event.reason}\n`);
++      } else if (event.type === 'approval_decided') {
++        process.stderr.write(dim(`approval ${event.decision}: ${oneLine(event.call.name, 64)}\n`));
+       }
+     }
+   } catch (error) {
+@@ -296,7 +352,15 @@ async function headless(args: CliArgs): Promise<number> {
+     process.stderr.write(
+       `run ${terminal.status}: ${terminal.reason} after ${terminal.iterations} model request(s) and ${terminal.toolCalls} tool call(s)\n`,
+     );
+-    exitCode = terminal.status === 'canceled' ? 130 : terminal.status === 'budget_exceeded' ? 2 : 3;
++    if (terminal.status === 'suspended') reportPendingApprovals(agent);
++    exitCode =
++      terminal.status === 'canceled'
++        ? 130
++        : terminal.status === 'budget_exceeded'
++          ? 2
++          : terminal.status === 'suspended'
++            ? 4
++            : 3;
+   }
+   // Keep this typed record last on stderr. Legacy benchmark panes may combine
+   // stdout/stderr, so emitting it after model text prevents echoed JSON from
+@@ -377,49 +441,160 @@ function handleEvent(event: AgentEvent, state: ReplState): void {
+         ),
+       );
+       break;
++    case 'approval_required':
++      ensureNewline();
++      process.stdout.write(
++        red(`[✋ ${event.executions.length} tool call${event.executions.length === 1 ? '' : 's'} need approval]\n`),
++      );
++      break;
++    case 'approval_decided':
++      ensureNewline();
++      process.stdout.write(dim(`[approval ${event.decision}: ${oneLine(event.call.name, 64)}]\n`));
++      break;
+     case 'response_done':
+       ensureNewline();
+       break;
+   }
+ }
+ 
++/**
++ * Collect one decision per pending approval from a live terminal. Anything other
++ * than an explicit answer re-asks; the caller stops the turn if the human quits.
++ */
++/** Promise-shaped readline question that resolves undefined if stdin closes first. */
++function ask(rl: ReturnType<typeof createInterface>, query: string): Promise<string | undefined> {
++  return new Promise((resolve) => {
++    let settled = false;
++    const onClose = () => {
++      if (settled) return;
++      settled = true;
++      resolve(undefined);
++    };
++    rl.once('close', onClose);
++    rl.question(query, (answer) => {
++      settled = true;
++      rl.removeListener('close', onClose);
++      resolve(answer);
++    });
++  });
++}
++
++async function promptForDecisions(
++  rl: ReturnType<typeof createInterface>,
++  pending: readonly PendingApproval[],
++): Promise<ApprovalDecisionInput[] | undefined> {
++  const decisions: ApprovalDecisionInput[] = [];
++  for (const item of pending) {
++    process.stdout.write(`\n${bold('approval required')} ${dim(oneLine(item.executionId, 128))}\n`);
++    process.stdout.write(`  ${bold(oneLine(item.call.name, 64))} ${dim(summarizeArgs(item.call.arguments))}\n`);
++    process.stdout.write(`  ${dim(oneLine(JSON.stringify(item.call.arguments), 2_000))}\n`);
++    for (;;) {
++      const answer = await ask(rl, `${cyan(APPROVAL_PROMPT)} `);
++      if (answer === undefined) return undefined; // stdin closed mid-question
++      const reply = parseApprovalReply(answer);
++      if (reply.kind === 'invalid') {
++        process.stdout.write(red(`${reply.message}\n`));
++        continue;
++      }
++      if (reply.kind === 'approve') {
++        decisions.push({ executionId: item.executionId, decision: 'approved' });
++        break;
++      }
++      if (reply.kind === 'reject') {
++        decisions.push({
++          executionId: item.executionId,
++          decision: 'rejected',
++          ...(reply.reason ? { reason: reply.reason } : {}),
++        });
++        break;
++      }
++      const raw = await ask(rl, `${cyan('replacement arguments (JSON):')} `);
++      if (raw === undefined) return undefined;
++      try {
++        decisions.push({
++          executionId: item.executionId,
++          decision: 'edited',
++          editedArguments: parseEditedArguments(raw),
++        });
++      } catch (error) {
++        process.stdout.write(red(`${String(error instanceof Error ? error.message : error)}\n`));
++        continue;
++      }
++      break;
++    }
++  }
++  return decisions;
++}
++
+ interface ReplTurnResult {
+   exitCode: number;
+   persistenceFailure: boolean;
++  suspended: boolean;
+ }
+ 
+-async function runInput(agent: Agent, input: string, state: ReplState): Promise<ReplTurnResult> {
+-  state.running = new AbortController();
+-  let exitCode = 1;
+-  let persistenceFailure = false;
+-  try {
+-    const drainSteering = () => state.steering.splice(0);
+-    for await (const event of agent.run(input, state.running.signal, drainSteering)) {
+-      handleEvent(event, state);
+-      if (event.type === 'turn_done') {
+-        persistenceFailure = event.reason === 'persistence';
+-        exitCode =
+-          event.status === 'completed'
+-            ? 0
+-            : event.status === 'canceled'
+-              ? 130
+-              : event.status === 'budget_exceeded'
+-                ? 2
+-                : 3;
++type TurnRequest = { input: string } | { decisions: ApprovalDecisionInput[] };
++
++/**
++ * Run one turn, then keep going while approvals can be collected: the process
++ * never has to exit for a decision, but each suspension is still a real durable
++ * stop that a crash here would preserve.
++ */
++async function runInput(
++  agent: Agent,
++  request: TurnRequest,
++  state: ReplState,
++  collectDecisions?: (pending: readonly PendingApproval[]) => Promise<ApprovalDecisionInput[] | undefined>,
++): Promise<ReplTurnResult> {
++  let next: TurnRequest | undefined = request;
++  let result: ReplTurnResult = { exitCode: 1, persistenceFailure: false, suspended: false };
++  while (next) {
++    const current: TurnRequest = next;
++    next = undefined;
++    state.running = new AbortController();
++    let exitCode = 1;
++    let persistenceFailure = false;
++    let suspended = false;
++    try {
++      const drainSteering = () => state.steering.splice(0);
++      const turn =
++        'input' in current
++          ? agent.run(current.input, state.running.signal, drainSteering)
++          : agent.resume(current.decisions, state.running.signal, drainSteering);
++      for await (const event of turn) {
++        handleEvent(event, state);
++        if (event.type === 'turn_done') {
++          persistenceFailure = event.reason === 'persistence';
++          suspended = event.status === 'suspended';
++          exitCode =
++            event.status === 'completed'
++              ? 0
++              : event.status === 'canceled'
++                ? 130
++                : event.status === 'budget_exceeded'
++                  ? 2
++                  : event.status === 'suspended'
++                    ? 4
++                    : 3;
++        }
+       }
++    } catch (error) {
++      const text = String(error instanceof Error ? error.message : error);
++      process.stdout.write(`\n${red(text)}\n`);
++      if (/context|too long|maximum.*length/i.test(text)) {
++        process.stdout.write(dim('the conversation may have outgrown the model context, try /compact\n'));
++      }
++    } finally {
++      state.running = undefined;
++      // a note typed during the final response would otherwise leak into the next turn
++      state.steering.length = 0;
+     }
+-  } catch (error) {
+-    const text = String(error instanceof Error ? error.message : error);
+-    process.stdout.write(`\n${red(text)}\n`);
+-    if (/context|too long|maximum.*length/i.test(text)) {
+-      process.stdout.write(dim('the conversation may have outgrown the model context, try /compact\n'));
++    result = { exitCode, persistenceFailure, suspended };
++    if (suspended && collectDecisions) {
++      const decisions = await collectDecisions(agent.pendingApprovals);
++      if (decisions) next = { decisions };
+     }
+-  } finally {
+-    state.running = undefined;
+-    // a note typed during the final response would otherwise leak into the next turn
+-    state.steering.length = 0;
+   }
+-  return { exitCode, persistenceFailure };
++  return result;
+ }
+ 
+ interface SlashResult {
+@@ -496,6 +671,20 @@ async function repl(args: CliArgs): Promise<number> {
+   );
+ 
+   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: `\n${cyan('pi>')} ` });
++  // Inline decisions need a live human at the other end. Scripted stdin is a
++  // batch: it reports the suspension and exits 4 rather than inventing answers.
++  const collectDecisions = process.stdin.isTTY
++    ? (pending: readonly PendingApproval[]) => promptForDecisions(rl, pending)
++    : undefined;
++  const reportSuspension = (suspendedAgent: Agent): void => {
++    process.stdout.write(red('[suspended: tool approvals are pending]\n'));
++    for (const item of suspendedAgent.pendingApprovals) {
++      process.stdout.write(dim(`  ${describePendingApproval(item)}\n`));
++    }
++    process.stdout.write(
++      dim('resume with: pi -c --approve <id|all> | --reject <id> --reason "…" | --edit <id> --args \'<json>\'\n'),
++    );
++  };
+   let sigintArmed = false;
+   rl.on('SIGINT', () => {
+     if (state.running) {
+@@ -666,7 +855,8 @@ async function repl(args: CliArgs): Promise<number> {
+         input = line;
+       }
+       if (input) {
+-        const turn = await runInput(agent, input, state);
++        const turn = await runInput(agent, { input }, state, collectDecisions);
++        if (turn.suspended) reportSuspension(agent);
+         if (scripted && turn.exitCode !== 0 && exitCode === 0) exitCode = turn.exitCode;
+         // auto-compaction may have moved the agent to a fresh session file
+         if (agent.session && agent.session !== session) session = agent.session;
+@@ -682,6 +872,13 @@ async function repl(args: CliArgs): Promise<number> {
+       return false;
+     };
+ 
++    const onTurnFailure = (error: unknown): void => {
++      exitCode = 1;
++      pending.length = 0;
++      process.stdout.write(`\n${red(String(error instanceof Error ? error.message : error))}\n`);
++      rl.close();
++    };
++
+     const drainQueue = async (first: string): Promise<void> => {
+       processing = true;
+       let completed = false;
+@@ -720,15 +917,44 @@ async function repl(args: CliArgs): Promise<number> {
+         }
+         return;
+       }
+-      void drainQueue(rawLine).catch((error: unknown) => {
+-        exitCode = 1;
+-        pending.length = 0;
+-        process.stdout.write(`\n${red(String(error instanceof Error ? error.message : error))}\n`);
+-        rl.close();
+-      });
++      void drainQueue(rawLine).catch(onTurnFailure);
+     });
+ 
+-    rl.prompt();
++    // A session opened with pending approvals must settle them before it can take
++    // new input: its transcript still ends at the assistant tool_use.
++    processing = true;
++    const startupDecisions = args.approveAll || args.approvals.length > 0;
++    const start = async (): Promise<void> => {
++      try {
++        if (agent.suspended) {
++          const decisions = startupDecisions
++            ? resolveDecisionFlags(args.approvals, args.approveAll, agent.pendingApprovals)
++            : await collectDecisions?.(agent.pendingApprovals);
++          if (decisions) {
++            const turn = await runInput(agent, { decisions }, state, collectDecisions);
++            if (turn.suspended) reportSuspension(agent);
++            if (agent.session && agent.session !== session) session = agent.session;
++            if (scripted && turn.exitCode !== 0 && exitCode === 0) exitCode = turn.exitCode;
++          } else {
++            reportSuspension(agent);
++            if (exitCode === 0) exitCode = 4;
++          }
++        } else if (startupDecisions) {
++          process.stdout.write(red('no suspended tool approvals in this session\n'));
++          if (exitCode === 0) exitCode = 1;
++        }
++      } finally {
++        processing = false;
++      }
++      const queued = pending.shift();
++      if (queued !== undefined) {
++        void drainQueue(queued).catch(onTurnFailure);
++        return;
++      }
++      if (eof) finish();
++      else rl.prompt();
++    };
++    void start().catch(onTurnFailure);
+   });
+ }
+ 
+diff --git a/packages/core/src/agent.ts b/packages/core/src/agent.ts
+index 8726eae..c499601 100644
+--- a/packages/core/src/agent.ts
++++ b/packages/core/src/agent.ts
+@@ -19,10 +19,14 @@ import {
+   Session,
+   releaseSessionLock,
+   usageAcrossSessionLineageDetailed,
++  type ApprovalDecision,
++  type RunBudgetSnapshot,
++  type ToolApprovalState,
+   type ToolExecutionState,
+ } from './session.js';
+ import {
+   defaultToolExecutionPolicy,
++  requiresApproval,
+   type Tool,
+   type ToolContext,
+   type ToolExecutionPolicy,
+@@ -79,9 +83,10 @@ export interface RunBudget {
+   maxTotalTokens?: number;
+ }
+ 
+-export type TurnStatus = 'completed' | 'incomplete' | 'budget_exceeded' | 'canceled';
++export type TurnStatus = 'completed' | 'incomplete' | 'budget_exceeded' | 'canceled' | 'suspended';
+ export type TurnStopReason =
+   | 'end_turn'
++  | 'awaiting_approval'
+   | 'max_tokens'
+   | 'provider_stop'
+   | 'empty_response'
+@@ -102,6 +107,44 @@ interface ToolCallExecution {
+   outcomeUnknown?: boolean;
+ }
+ 
++/** One gated call presented to a human for approval. */
++export interface PendingApproval {
++  executionId: string;
++  call: ToolCallBlock;
++}
++
++/** A human decision applied when a suspended session is resumed. */
++export interface ApprovalDecisionInput {
++  executionId: string;
++  decision: ApprovalDecision;
++  /** Required for `edited`; validated against the tool schema before anything is journaled. */
++  editedArguments?: Record<string, unknown>;
++  /** Human explanation, carried into the tool result the model sees. */
++  reason?: string;
++  /** When the human decided, if that predates this process. */
++  decidedAt?: string;
++}
++
++/** One entry of the tool batch produced by a single assistant response. */
++interface BatchCall {
++  call: ToolCallBlock;
++  executionId: string;
++  journaled: boolean;
++  /** Result already produced — executed before a suspension, or reconstructed on resume. */
++  settled?: ToolResultBlock;
++  approval?: ToolApprovalState;
++}
++
++/** The batch a suspended turn stopped inside, retained for an in-process resume. */
++interface SuspendedBatch {
++  requestId?: string;
++  calls: BatchCall[];
++}
++
++type TurnStart =
++  | { kind: 'input'; input: string }
++  | { kind: 'resume'; batch: SuspendedBatch; decisions: ApprovalDecisionInput[] };
++
+ class CompactionPersistenceError extends Error {
+   constructor(message: string, options?: ErrorOptions) {
+     super(message, options);
+@@ -130,6 +173,33 @@ export function chooseKeepBoundary(messages: Message[], keepTokens = KEEP_RECENT
+   return earliestFittingBoundary ?? latestBoundary;
+ }
+ 
++function toolResultBlock(call: ToolCallBlock, text: string, isError = false): ToolResultBlock {
++  return {
++    type: 'toolResult',
++    toolCallId: call.id,
++    toolName: call.name,
++    content: [{ type: 'text', text }],
++    ...(isError ? { isError: true } : {}),
++  };
++}
++
++/** What the model is told about a call whose result payload never reached the transcript. */
++function interruptedResultText(state?: ToolExecutionState): string {
++  if (state?.approval?.decision === 'rejected') {
++    return `not run: a human reviewer rejected this tool call${state.approval.reason ? `: ${state.approval.reason}` : ''}`;
++  }
++  if (state?.status === 'planned' || state?.status === 'awaiting_approval' || state?.status === 'skipped') {
++    return 'interrupted: this tool call was durably recorded as not started; it did not run';
++  }
++  if (state?.status === 'completed') {
++    return 'interrupted: this tool call completed, but its result payload was not recorded; do not repeat it without reconciliation';
++  }
++  if (state?.status === 'failed') {
++    return `interrupted: this tool call finished with an error before its result payload was recorded${state.error ? `: ${state.error}` : ''}`;
++  }
++  return 'interrupted: the prior process ended before recording this tool result; the outcome is unknown and the call must not be repeated without reconciliation';
++}
++
+ /** If the transcript ends in an assistant message with tool calls but no results,
+  *  produce a user message of synthesized error results (both APIs reject the gap). */
+ export function synthesizeInterruptedResults(
+@@ -143,27 +213,7 @@ export function synthesizeInterruptedResults(
+   const stateByCallId = new Map(executions.map((state) => [state.call.id, state]));
+   return {
+     role: 'user',
+-    content: calls.map(
+-      (call): ToolResultBlock => {
+-        const state = stateByCallId.get(call.id);
+-        let text =
+-          'interrupted: the prior process ended before recording this tool result; the outcome is unknown and the call must not be repeated without reconciliation';
+-        if (state?.status === 'planned' || state?.status === 'skipped') {
+-          text = 'interrupted: this tool call was durably recorded as not started; it did not run';
+-        } else if (state?.status === 'completed') {
+-          text = 'interrupted: this tool call completed, but its result payload was not recorded; do not repeat it without reconciliation';
+-        } else if (state?.status === 'failed') {
+-          text = `interrupted: this tool call finished with an error before its result payload was recorded${state.error ? `: ${state.error}` : ''}`;
+-        }
+-        return {
+-          type: 'toolResult',
+-          toolCallId: call.id,
+-          toolName: call.name,
+-          content: [{ type: 'text', text }],
+-          isError: true,
+-        };
+-      },
+-    ),
++    content: calls.map((call): ToolResultBlock => toolResultBlock(call, interruptedResultText(stateByCallId.get(call.id)), true)),
+   };
+ }
+ 
+@@ -179,6 +229,14 @@ export type AgentEvent =
+   | { type: 'flail_stop'; consecutiveFailures: number }
+   | { type: 'offloaded'; count: number; savedChars: number }
+   | { type: 'steered'; text: string }
++  | { type: 'approval_required'; executions: PendingApproval[] }
++  | {
++      type: 'approval_decided';
++      executionId: string;
++      call: ToolCallBlock;
++      decision: ApprovalDecision;
++      reason?: string;
++    }
+   | {
+       type: 'budget_exceeded';
+       reason: 'model_requests' | 'tool_calls' | 'wall_time' | 'input_tokens' | 'output_tokens' | 'total_tokens';
+@@ -339,6 +397,8 @@ export class Agent {
+   private readonly toolPolicy: ToolExecutionPolicy;
+   private readonly toolsByName: Map<string, Tool>;
+   private running = false;
++  /** Set when a turn stops at an approval gate; retains results already produced. */
++  private suspendedBatch?: SuspendedBatch;
+   private activeTelemetryContext?: TelemetryContext;
+   private activeRunSignal?: AbortSignal;
+   private observerDisabled = false;
+@@ -368,14 +428,28 @@ export class Agent {
+       try {
+         this._session.markInterruptedModelRequestsOutcomeUnknown();
+         this._session.markInterruptedCompactionsFailed();
++        // A batch that stopped at an approval gate is not an interrupted batch:
++        // its unstarted calls are waiting for a decision, not lost. Crash repair
++        // must leave them for the resume flow (ADR 0011 decision 4).
++        const suspended = this._session.suspendedToolExecutions;
++        this.suspendedAtOpen = suspended.length > 0;
++        const suspendedRequests = new Set(suspended.map((state) => state.requestId));
+         for (const pending of this._session.pendingToolExecutions) {
+-          if (pending.status === 'planned') {
+-            this._session.skipTool(pending.executionId, 'prior process ended before tool execution started');
+-          }
++          if (pending.status !== 'planned') continue;
++          if (pending.approval || suspendedRequests.has(pending.requestId)) continue;
++          this._session.skipTool(pending.executionId, 'prior process ended before tool execution started');
+         }
++        // A started call still has an unknown outcome whether or not the batch
++        // later suspended — 0007 is unchanged by approvals.
+         this._session.markInterruptedToolsOutcomeUnknown();
+-        if (this._session.runStatus?.status === 'running') {
+-          this._session.setRunStatus('incomplete', 'prior process stopped before recording a terminal run status');
++        const priorStatus = this._session.runStatus?.status;
++        if (priorStatus === 'running' || (priorStatus === 'suspended' && !this.suspendedAtOpen)) {
++          this._session.setRunStatus(
++            this.suspendedAtOpen ? 'suspended' : 'incomplete',
++            this.suspendedAtOpen
++              ? 'prior process stopped while tool approvals were pending'
++              : 'prior process stopped before recording a terminal run status',
++          );
+         }
+         recoveredExecutions = this._session.toolExecutions;
+       } catch (error) {
+@@ -385,13 +459,18 @@ export class Agent {
+     }
+     // A session that ended after an assistant tool call still needs synthetic
+     // result blocks for provider validity, but never claims an uncertain call did not run.
+-    const repair = synthesizeInterruptedResults(this.messages, recoveredExecutions);
++    // Pending approvals are the exception: those calls get real results once the
++    // decisions are applied, so the transcript stays open until then.
++    const repair = this.suspendedAtOpen ? undefined : synthesizeInterruptedResults(this.messages, recoveredExecutions);
+     if (repair) {
+       this.messages.push(repair);
+       this.persist(repair);
+     }
+   }
+ 
++  /** True when this agent opened a session whose last batch stopped at an approval gate. */
++  private suspendedAtOpen = false;
++
+   get workingDirectory(): string {
+     return this.cwd;
+   }
+@@ -511,6 +590,116 @@ export class Agent {
+     }
+   }
+ 
++  /** Undecided gated calls, in batch order, for a surface that will collect decisions. */
++  get pendingApprovals(): PendingApproval[] {
++    if (this.suspendedBatch) {
++      return this.suspendedBatch.calls
++        .filter((item) => item.approval !== undefined && item.approval.decision === undefined)
++        .map((item) => ({ executionId: item.executionId, call: structuredClone(item.call) }));
++    }
++    return (this._session?.awaitingApprovalExecutions ?? []).map((state) => ({
++      executionId: state.executionId,
++      call: structuredClone(state.call),
++    }));
++  }
++
++  /** True when the loaded session (or the last turn) stopped at an approval gate. */
++  get suspended(): boolean {
++    return this.suspendedBatch !== undefined || this.suspendedAtOpen;
++  }
++
++  /**
++   * The batch a suspended turn stopped inside. Same-process suspension keeps the
++   * results of the calls that already ran; a reopened session can only reconstruct
++   * them from the journal, which records that they ran but not what they returned.
++   */
++  private pendingBatch(): SuspendedBatch {
++    if (this.suspendedBatch) return this.suspendedBatch;
++    const session = this._session;
++    const last = this.messages[this.messages.length - 1];
++    const calls =
++      last?.role === 'assistant'
++        ? last.content.filter((block): block is ToolCallBlock => block.type === 'toolCall')
++        : [];
++    if (!session || calls.length === 0 || session.suspendedToolExecutions.length === 0) {
++      throw new Error('no suspended tool batch to resume');
++    }
++    const byCallId = new Map(session.toolExecutions.map((state) => [state.call.id, state]));
++    const items = calls.map((call): BatchCall => {
++      const state = byCallId.get(call.id);
++      if (!state) {
++        return {
++          call,
++          executionId: `unrecorded-${call.id}`,
++          journaled: false,
++          settled: toolResultBlock(
++            call,
++            'interrupted: this tool call has no lifecycle record; its outcome is unknown and it must not be repeated without reconciliation',
++            true,
++          ),
++        };
++      }
++      const item: BatchCall = {
++        call: state.call,
++        executionId: state.executionId,
++        journaled: true,
++        ...(state.approval ? { approval: state.approval } : {}),
++      };
++      if (state.status !== 'planned' && state.status !== 'awaiting_approval') {
++        item.settled = toolResultBlock(state.call, interruptedResultText(state), true);
++      }
++      return item;
++    });
++    const requestId = items.map((item) => byCallId.get(item.call.id)?.requestId).find((id) => id !== undefined);
++    return { ...(requestId ? { requestId } : {}), calls: items };
++  }
++
++  /** Validate every decision before any of them is journaled: a bad edit must change nothing. */
++  private prepareDecisions(
++    batch: SuspendedBatch,
++    decisions: readonly ApprovalDecisionInput[],
++  ): ApprovalDecisionInput[] {
++    const byExecutionId = new Map(batch.calls.map((item) => [item.executionId, item]));
++    const seen = new Set<string>();
++    for (const decision of decisions) {
++      const item = byExecutionId.get(decision.executionId);
++      if (!item?.approval || item.approval.decision !== undefined) {
++        throw new Error(`no undecided approval for execution ${decision.executionId}`);
++      }
++      if (seen.has(decision.executionId)) throw new Error(`duplicate decision for execution ${decision.executionId}`);
++      seen.add(decision.executionId);
++      if (decision.decision === 'edited') {
++        const edited = decision.editedArguments;
++        if (edited === undefined || typeof edited !== 'object' || Array.isArray(edited)) {
++          throw new Error(`an edited decision for execution ${decision.executionId} requires replacement arguments`);
++        }
++        const tool = this.toolsByName.get(item.call.name);
++        if (!tool) throw new Error(`cannot edit arguments for unknown tool "${item.call.name}"`);
++        validateToolArguments(tool, edited);
++      } else if (decision.editedArguments !== undefined) {
++        throw new Error('editedArguments is only valid for an edited decision');
++      }
++    }
++    return [...decisions];
++  }
++
++  /**
++   * Apply human decisions to a suspended batch and continue the turn: approved
++   * calls dispatch, edited calls dispatch with the replacement arguments and
++   * visible provenance, rejected calls become an error result carrying the human
++   * reason. Undecided gated calls suspend the turn again, in batch order.
++   */
++  async *resume(
++    decisions: readonly ApprovalDecisionInput[] = [],
++    signal?: AbortSignal,
++    steering?: () => string[],
++  ): AsyncGenerator<AgentEvent, void, void> {
++    if (this.running) throw new Error('agent is already running');
++    const batch = this.pendingBatch();
++    const prepared = this.prepareDecisions(batch, decisions);
++    yield* this.turn({ kind: 'resume', batch, decisions: prepared }, signal, steering);
++  }
++
+   private async runObserverOperation(action: () => void | Promise<void>): Promise<void> {
+     if (this.observerDisabled) return;
+     let pending: Promise<void>;
+@@ -604,10 +793,25 @@ export class Agent {
+     steering?: () => string[],
+   ): AsyncGenerator<AgentEvent, void, void> {
+     if (this.running) throw new Error('agent is already running');
++    // The transcript ends at an assistant tool_use whose results are still
++    // pending: new input here would ask the provider to accept a gap, and would
++    // strand a durable decision nobody is waiting on.
++    if (this.suspended) {
++      throw new Error('tool approvals are pending; apply decisions with resume() before sending new input');
++    }
+     const inputBytes = Buffer.byteLength(input);
+     if (inputBytes > MAX_USER_INPUT_BYTES) {
+       throw new RangeError(`user input exceeds ${MAX_USER_INPUT_BYTES} UTF-8 bytes`);
+     }
++    yield* this.turn({ kind: 'input', input }, signal, steering);
++  }
++
++  private async *turn(
++    start: TurnStart,
++    signal?: AbortSignal,
++    steering?: () => string[],
++  ): AsyncGenerator<AgentEvent, void, void> {
++    if (this.running) throw new Error('agent is already running');
+     if (
+       this.options.contextWindow !== undefined &&
+       (!Number.isSafeInteger(this.options.contextWindow) || this.options.contextWindow <= 0)
+@@ -632,6 +836,9 @@ export class Agent {
+     }
+     this.running = true;
+ 
++    // A resumed turn continues the suspended run's accounting and ceilings, so a
++    // suspension cannot be used to buy a second full budget (ADR 0011 decision 5).
++    const openRun = start.kind === 'resume' ? this._session?.openRun : undefined;
+     const budget: RunBudget = {
+       maxModelRequests: this.options.maxIterations ?? 40,
+       maxToolCalls: DEFAULT_MAX_TOOL_CALLS,
+@@ -641,10 +848,19 @@ export class Agent {
+         Math.max(1_024, Math.floor((this.options.contextWindow ?? 128_000) * 0.4)),
+       ),
+     };
++    for (const [name, value] of Object.entries(openRun?.budget ?? {})) {
++      if (value !== undefined) (budget as unknown as Record<string, number>)[name] = value;
++    }
+     // Optional config objects are commonly assembled with spreads that retain
+     // `undefined` values. Never let those erase mandatory safety defaults.
++    const raised: string[] = [];
+     for (const [name, value] of Object.entries(this.options.budget ?? {})) {
+-      if (value !== undefined) (budget as unknown as Record<string, number>)[name] = value;
++      if (value === undefined) continue;
++      const prior = (openRun?.budget as Record<string, number | undefined> | undefined)?.[name];
++      // Only an explicitly passed ceiling may exceed the suspended run's; the
++      // raise is journaled rather than applied silently.
++      if (prior !== undefined && value > prior) raised.push(`${name} ${prior}->${value}`);
++      (budget as unknown as Record<string, number>)[name] = value;
+     }
+     for (const [name, value] of Object.entries(budget)) {
+       if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
+@@ -675,8 +891,9 @@ export class Agent {
+     }, budget.maxWallTimeMs);
+ 
+     const turnUsage = emptyUsage();
+-    let iterations = 0;
+-    let toolCalls = 0;
++    if (openRun) addUsage(turnUsage, openRun.usage);
++    let iterations = openRun?.modelRequests ?? 0;
++    let toolCalls = openRun?.toolCalls ?? 0;
+     let status: TurnStatus = 'incomplete';
+     let reason: TurnStopReason = 'empty_response';
+     let failed = false;
+@@ -714,9 +931,10 @@ export class Agent {
+           terminal = true;
+         }
+       }
++      const raiseNote = raised.length > 0 ? `budget raised at resume: ${raised.join(', ')}` : undefined;
+       for (const session of runSessions) {
+-        if (session.runStatus?.status !== 'running') {
+-          this.journalFor(session, (target) => target.setRunStatus('running'));
++        if (session.runStatus?.status !== 'running' || raiseNote) {
++          this.journalFor(session, (target) => target.setRunStatus('running', raiseNote));
+         }
+       }
+ 
+@@ -735,515 +953,587 @@ export class Agent {
+       const failCounts = new Map<string, number>();
+       let nudged = false;
+       let stopping = false;
+-      const userMessage: Message = { role: 'user', content: [{ type: 'text', text: input }] };
+-      const inputThreshold = this.compactThreshold();
+-      const inputOnlyProjection = this.estimateCurrentRequestTokens([userMessage]);
+-      if (!terminal && inputThreshold !== undefined && inputOnlyProjection > inputThreshold) {
+-        status = 'incomplete';
+-        reason = 'context_window';
+-        terminal = true;
+-        await this.observe(
+-          createRuntimeEvent(telemetryContext, {
+-            name: 'context.preflight_failed',
+-            level: 'warn',
+-            attributes: { projectedTokens: inputOnlyProjection, threshold: inputThreshold, currentTurnOnly: true },
+-          }),
+-        );
+-      } else if (!terminal) {
+-        this.messages.push(userMessage);
+-        if (!this.persist(userMessage)) {
++      // A resume re-enters the loop at the suspended batch: no new user input,
++      // and no model request until the batch has been settled in order.
++      let resumeBatch = start.kind === 'resume' ? start.batch : undefined;
++      const resumeDecisions = start.kind === 'resume' ? start.decisions : [];
++      if (start.kind === 'input') {
++        const userMessage: Message = { role: 'user', content: [{ type: 'text', text: start.input }] };
++        const inputThreshold = this.compactThreshold();
++        const inputOnlyProjection = this.estimateCurrentRequestTokens([userMessage]);
++        if (!terminal && inputThreshold !== undefined && inputOnlyProjection > inputThreshold) {
+           status = 'incomplete';
+-          reason = 'persistence';
++          reason = 'context_window';
+           terminal = true;
++          await this.observe(
++            createRuntimeEvent(telemetryContext, {
++              name: 'context.preflight_failed',
++              level: 'warn',
++              attributes: { projectedTokens: inputOnlyProjection, threshold: inputThreshold, currentTurnOnly: true },
++            }),
++          );
++        } else if (!terminal) {
++          this.messages.push(userMessage);
++          if (!this.persist(userMessage)) {
++            status = 'incomplete';
++            reason = 'persistence';
++            terminal = true;
++          }
+         }
+       }
+ 
+       while (!terminal) {
+-        if (runController.signal.aborted) {
+-          status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
+-          reason = deadlineExceeded ? 'wall_time' : 'user_abort';
+-          if (deadlineExceeded) {
+-            await this.observeBudget(telemetryContext, 'wall_time');
+-            yield { type: 'budget_exceeded', reason: 'wall_time' };
+-          }
+-          break;
+-        }
+-
+-        for (const note of steering?.() ?? []) {
+-          if (Buffer.byteLength(note) > MAX_USER_INPUT_BYTES) {
+-            throw new RangeError(`steering input exceeds ${MAX_USER_INPUT_BYTES} UTF-8 bytes`);
++        let batchCalls: BatchCall[];
++        let batchRequestId: string | undefined;
++        if (resumeBatch) {
++          // Apply the recorded decisions, then settle the batch in its original
++          // order. Nothing new is requested from the model until it is settled.
++          batchCalls = resumeBatch.calls;
++          batchRequestId = resumeBatch.requestId;
++          resumeBatch = undefined;
++          const decisionsById = new Map(resumeDecisions.map((decision) => [decision.executionId, decision]));
++          let decisionsPersisted = true;
++          for (const item of batchCalls) {
++            const decision = decisionsById.get(item.executionId);
++            if (!decision || !item.approval) continue;
++            const written = this.journalFor(this._session, (session) => {
++              session.decideToolApproval(item.executionId, decision.decision, {
++                ...(decision.decidedAt ? { decidedAt: decision.decidedAt } : {}),
++                ...(decision.editedArguments !== undefined ? { editedArguments: decision.editedArguments } : {}),
++                ...(decision.reason ? { reason: decision.reason } : {}),
++              });
++              return true;
++            });
++            if (this._session && written !== true) {
++              decisionsPersisted = false;
++              break;
++            }
++            item.approval = {
++              ...item.approval,
++              decision: decision.decision,
++              decidedAt: decision.decidedAt ?? new Date().toISOString(),
++              ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
++              ...(decision.editedArguments !== undefined ? { editedArguments: decision.editedArguments } : {}),
++            };
++            yield {
++              type: 'approval_decided',
++              executionId: item.executionId,
++              call: item.call,
++              decision: decision.decision,
++              ...(decision.reason ? { reason: decision.reason } : {}),
++            };
+           }
+-          const steerMessage: Message = { role: 'user', content: [{ type: 'text', text: `[steering] ${note}` }] };
+-          this.messages.push(steerMessage);
+-          if (!this.persist(steerMessage)) {
++          if (!decisionsPersisted) {
+             status = 'incomplete';
+             reason = 'persistence';
+-            terminal = true;
+             break;
+           }
+-          yield { type: 'steered', text: note };
+-        }
+-        if (terminal) break;
+-
+-        const offloaded = this.offloadOldToolResults();
+-        if (offloaded) {
+-          // The provider-based projection describes the pre-offload request. Once
+-          // history shrinks, rebase to the serialized request instead of pinning
+-          // context pressure to a stale high-water mark.
+-          this.lastContextTokens = 0;
+-          this.lastEstimatedRequestTokens = 0;
+-          await this.observe(
+-            createRuntimeEvent(telemetryContext, {
+-              name: 'context.offloaded',
+-              attributes: { count: offloaded.count, savedChars: offloaded.savedChars },
+-            }),
+-          );
+-          yield { type: 'offloaded', ...offloaded };
+-        }
+-
+-        if (this._session) {
+-          let rotateForStorage = false;
+-          try {
+-            rotateForStorage = statSync(this._session.file).size >= SESSION_ROTATE_BYTES;
+-          } catch (error) {
+-            this.persistDisabled = true;
+-            process.stderr.write(`warning: cannot inspect session for rotation — ${String(error)}\n`);
+-            status = 'incomplete';
+-            reason = 'persistence';
++        } else {
++          if (runController.signal.aborted) {
++            status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
++            reason = deadlineExceeded ? 'wall_time' : 'user_abort';
++            if (deadlineExceeded) {
++              await this.observeBudget(telemetryContext, 'wall_time');
++              yield { type: 'budget_exceeded', reason: 'wall_time' };
++            }
+             break;
+           }
+-          if (rotateForStorage) {
++
++          for (const note of steering?.() ?? []) {
++            if (Buffer.byteLength(note) > MAX_USER_INPUT_BYTES) {
++              throw new RangeError(`steering input exceeds ${MAX_USER_INPUT_BYTES} UTF-8 bytes`);
++            }
++            const steerMessage: Message = { role: 'user', content: [{ type: 'text', text: `[steering] ${note}` }] };
++            this.messages.push(steerMessage);
++            if (!this.persist(steerMessage)) {
++              status = 'incomplete';
++              reason = 'persistence';
++              terminal = true;
++              break;
++            }
++            yield { type: 'steered', text: note };
++          }
++          if (terminal) break;
++
++          const offloaded = this.offloadOldToolResults();
++          if (offloaded) {
++            // The provider-based projection describes the pre-offload request. Once
++            // history shrinks, rebase to the serialized request instead of pinning
++            // context pressure to a stale high-water mark.
++            this.lastContextTokens = 0;
++            this.lastEstimatedRequestTokens = 0;
++            await this.observe(
++              createRuntimeEvent(telemetryContext, {
++                name: 'context.offloaded',
++                attributes: { count: offloaded.count, savedChars: offloaded.savedChars },
++              }),
++            );
++            yield { type: 'offloaded', ...offloaded };
++          }
++
++          if (this._session) {
++            let rotateForStorage = false;
+             try {
+-              await this.rotateSessionForStorage();
++              rotateForStorage = statSync(this._session.file).size >= SESSION_ROTATE_BYTES;
+             } catch (error) {
+-              process.stderr.write(`warning: session rotation failed — ${String(error)}\n`);
++              this.persistDisabled = true;
++              process.stderr.write(`warning: cannot inspect session for rotation — ${String(error)}\n`);
+               status = 'incomplete';
+               reason = 'persistence';
+               break;
+             }
++            if (rotateForStorage) {
++              try {
++                await this.rotateSessionForStorage();
++              } catch (error) {
++                process.stderr.write(`warning: session rotation failed — ${String(error)}\n`);
++                status = 'incomplete';
++                reason = 'persistence';
++                break;
++              }
++              telemetryContext = this.activeTelemetryContext ?? telemetryContext;
++              if (this._session && !runSessions.some((session) => session.id === this._session!.id)) {
++                runSessions.push(this._session);
++                yield { type: 'session_rotated', sessionFile: this._session.file };
++              }
++            }
++          }
++
++          const threshold = this.compactThreshold();
++          if (threshold !== undefined && this.projectedContextTokens() > threshold) {
++            if (this.options.autoCompact === false) {
++              status = 'incomplete';
++              reason = 'context_window';
++              await this.observe(
++                createRuntimeEvent(telemetryContext, {
++                  name: 'context.preflight_failed',
++                  level: 'warn',
++                  attributes: { projectedTokens: this.projectedContextTokens(), threshold, autoCompact: false },
++                }),
++              );
++              break;
++            }
++            const keepFrom = chooseKeepBoundary(this.messages, this.compactionKeepTokens());
++            const retainedProjection =
++              keepFrom < this.messages.length
++                ? this.estimateCurrentRequestTokens(this.messages.slice(keepFrom))
++                : Number.POSITIVE_INFINITY;
++            if (
++              this.messages.length <= 1 ||
++              keepFrom <= 0 ||
++              retainedProjection + COMPACTION_SUMMARY_INPUT_RESERVE_TOKENS > threshold
++            ) {
++              status = 'incomplete';
++              reason = 'context_window';
++              await this.observe(
++                createRuntimeEvent(telemetryContext, {
++                  name: 'context.preflight_failed',
++                  level: 'warn',
++                  attributes: {
++                    projectedTokens: this.projectedContextTokens(),
++                    retainedTokens: retainedProjection,
++                    threshold,
++                  },
++                }),
++              );
++              break;
++            }
++            // A compaction request without room for the real request is not useful.
++            if (iterations + 1 >= budget.maxModelRequests) {
++              status = 'budget_exceeded';
++              reason = 'model_requests';
++              await this.observeBudget(telemetryContext, 'model_requests');
++              yield { type: 'budget_exceeded', reason: 'model_requests' };
++              break;
++            }
++            let dropped: number;
++            try {
++              dropped = await this.compact(runController.signal, turnUsage, () => iterations++);
++            } catch (error) {
++              if (!runController.signal.aborted && error instanceof CompactionPersistenceError) {
++                status = 'incomplete';
++                reason = 'persistence';
++                break;
++              }
++              if (!runController.signal.aborted) throw error;
++              status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
++              reason = deadlineExceeded ? 'wall_time' : 'user_abort';
++              if (deadlineExceeded) {
++                await this.observeBudget(telemetryContext, 'wall_time');
++                yield { type: 'budget_exceeded', reason: 'wall_time' };
++              }
++              break;
++            }
+             telemetryContext = this.activeTelemetryContext ?? telemetryContext;
+             if (this._session && !runSessions.some((session) => session.id === this._session!.id)) {
+               runSessions.push(this._session);
+-              yield { type: 'session_rotated', sessionFile: this._session.file };
++            }
++            yield { type: 'compacted', dropped, ...(this._session ? { sessionFile: this._session.file } : {}) };
++            if (runController.signal.aborted) {
++              status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
++              reason = deadlineExceeded ? 'wall_time' : 'user_abort';
++              if (deadlineExceeded) {
++                await this.observeBudget(telemetryContext, 'wall_time');
++                yield { type: 'budget_exceeded', reason: 'wall_time' };
++              }
++              break;
++            }
++            // The retained current turn can itself be too large. Never pay for a
++            // request that preflight already knows lacks the configured reserve.
++            const rebuiltProjection = this.projectedContextTokens();
++            if (rebuiltProjection > threshold) {
++              status = 'incomplete';
++              reason = 'context_window';
++              await this.observe(
++                createRuntimeEvent(telemetryContext, {
++                  name: 'context.preflight_failed',
++                  level: 'warn',
++                  attributes: { projectedTokens: rebuiltProjection, threshold, afterCompaction: true },
++                }),
++              );
++              break;
+             }
+           }
+-        }
+ 
+-        const threshold = this.compactThreshold();
+-        if (threshold !== undefined && this.projectedContextTokens() > threshold) {
+-          if (this.options.autoCompact === false) {
+-            status = 'incomplete';
+-            reason = 'context_window';
+-            await this.observe(
+-              createRuntimeEvent(telemetryContext, {
+-                name: 'context.preflight_failed',
+-                level: 'warn',
+-                attributes: { projectedTokens: this.projectedContextTokens(), threshold, autoCompact: false },
+-              }),
+-            );
+-            break;
+-          }
+-          const keepFrom = chooseKeepBoundary(this.messages, this.compactionKeepTokens());
+-          const retainedProjection =
+-            keepFrom < this.messages.length
+-              ? this.estimateCurrentRequestTokens(this.messages.slice(keepFrom))
+-              : Number.POSITIVE_INFINITY;
+-          if (
+-            this.messages.length <= 1 ||
+-            keepFrom <= 0 ||
+-            retainedProjection + COMPACTION_SUMMARY_INPUT_RESERVE_TOKENS > threshold
+-          ) {
+-            status = 'incomplete';
+-            reason = 'context_window';
+-            await this.observe(
+-              createRuntimeEvent(telemetryContext, {
+-                name: 'context.preflight_failed',
+-                level: 'warn',
+-                attributes: {
+-                  projectedTokens: this.projectedContextTokens(),
+-                  retainedTokens: retainedProjection,
+-                  threshold,
+-                },
+-              }),
+-            );
++          const priorUsageLimit = usageBudgetReason(turnUsage, budget);
++          if (priorUsageLimit) {
++            status = 'budget_exceeded';
++            reason = priorUsageLimit;
++            await this.observeBudget(telemetryContext, priorUsageLimit);
++            yield {
++              type: 'budget_exceeded',
++              reason: priorUsageLimit as 'input_tokens' | 'output_tokens' | 'total_tokens',
++            };
+             break;
+           }
+-          // A compaction request without room for the real request is not useful.
+-          if (iterations + 1 >= budget.maxModelRequests) {
++          if (iterations >= budget.maxModelRequests) {
+             status = 'budget_exceeded';
+             reason = 'model_requests';
+             await this.observeBudget(telemetryContext, 'model_requests');
+             yield { type: 'budget_exceeded', reason: 'model_requests' };
+             break;
+           }
+-          let dropped: number;
+-          try {
+-            dropped = await this.compact(runController.signal, turnUsage, () => iterations++);
+-          } catch (error) {
+-            if (!runController.signal.aborted && error instanceof CompactionPersistenceError) {
+-              status = 'incomplete';
+-              reason = 'persistence';
+-              break;
+-            }
+-            if (!runController.signal.aborted) throw error;
+-            status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
+-            reason = deadlineExceeded ? 'wall_time' : 'user_abort';
+-            if (deadlineExceeded) {
+-              await this.observeBudget(telemetryContext, 'wall_time');
+-              yield { type: 'budget_exceeded', reason: 'wall_time' };
+-            }
+-            break;
++
++          const requestEstimate = this.estimateCurrentRequestTokens();
++          const outputLimits = [
++            Math.max(
++              DEFAULT_REQUEST_MAX_TOKENS,
++              this.options.thinkingBudget !== undefined
++                ? this.options.thinkingBudget + THINKING_RESPONSE_RESERVE_TOKENS
++                : 0,
++            ),
++          ];
++          if (budget.maxOutputTokens !== undefined) {
++            outputLimits.push(Math.max(1, budget.maxOutputTokens - turnUsage.outputTokens));
+           }
+-          telemetryContext = this.activeTelemetryContext ?? telemetryContext;
+-          if (this._session && !runSessions.some((session) => session.id === this._session!.id)) {
+-            runSessions.push(this._session);
++          if (budget.maxTotalTokens !== undefined) {
++            outputLimits.push(Math.max(1, budget.maxTotalTokens - totalTokens(turnUsage)));
+           }
+-          yield { type: 'compacted', dropped, ...(this._session ? { sessionFile: this._session.file } : {}) };
+-          if (runController.signal.aborted) {
+-            status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
+-            reason = deadlineExceeded ? 'wall_time' : 'user_abort';
+-            if (deadlineExceeded) {
+-              await this.observeBudget(telemetryContext, 'wall_time');
+-              yield { type: 'budget_exceeded', reason: 'wall_time' };
+-            }
+-            break;
++          if (this.options.contextWindow !== undefined) {
++            outputLimits.push(
++              Math.max(1, this.options.contextWindow - Math.ceil(this.projectedContextTokens())),
++            );
+           }
+-          // The retained current turn can itself be too large. Never pay for a
+-          // request that preflight already knows lacks the configured reserve.
+-          const rebuiltProjection = this.projectedContextTokens();
+-          if (rebuiltProjection > threshold) {
++          const requestMaxTokens = Math.min(...outputLimits);
++          const requestThinkingBudget =
++            this.options.thinkingBudget !== undefined && this.options.thinkingBudget < requestMaxTokens
++              ? this.options.thinkingBudget
++              : undefined;
++          let done: { message: AssistantMessage; stopReason: StopReason; usage: Usage } | undefined;
++          const requestId = createTelemetryId('request');
++          const requestJournaled =
++            !this._session ||
++            this.journal((session) => {
++              session.beginModelRequest(this.model, { requestId, messageCount: this.messages.length });
++              return true;
++            }) === true;
++          if (!requestJournaled) {
+             status = 'incomplete';
+-            reason = 'context_window';
+-            await this.observe(
+-              createRuntimeEvent(telemetryContext, {
+-                name: 'context.preflight_failed',
+-                level: 'warn',
+-                attributes: { projectedTokens: rebuiltProjection, threshold, afterCompaction: true },
+-              }),
+-            );
++            reason = 'persistence';
+             break;
+           }
+-        }
+-
+-        const priorUsageLimit = usageBudgetReason(turnUsage, budget);
+-        if (priorUsageLimit) {
+-          status = 'budget_exceeded';
+-          reason = priorUsageLimit;
+-          await this.observeBudget(telemetryContext, priorUsageLimit);
+-          yield {
+-            type: 'budget_exceeded',
+-            reason: priorUsageLimit as 'input_tokens' | 'output_tokens' | 'total_tokens',
+-          };
+-          break;
+-        }
+-        if (iterations >= budget.maxModelRequests) {
+-          status = 'budget_exceeded';
+-          reason = 'model_requests';
+-          await this.observeBudget(telemetryContext, 'model_requests');
+-          yield { type: 'budget_exceeded', reason: 'model_requests' };
+-          break;
+-        }
+-
+-        const requestEstimate = this.estimateCurrentRequestTokens();
+-        const outputLimits = [
+-          Math.max(
+-            DEFAULT_REQUEST_MAX_TOKENS,
+-            this.options.thinkingBudget !== undefined
+-              ? this.options.thinkingBudget + THINKING_RESPONSE_RESERVE_TOKENS
+-              : 0,
+-          ),
+-        ];
+-        if (budget.maxOutputTokens !== undefined) {
+-          outputLimits.push(Math.max(1, budget.maxOutputTokens - turnUsage.outputTokens));
+-        }
+-        if (budget.maxTotalTokens !== undefined) {
+-          outputLimits.push(Math.max(1, budget.maxTotalTokens - totalTokens(turnUsage)));
+-        }
+-        if (this.options.contextWindow !== undefined) {
+-          outputLimits.push(
+-            Math.max(1, this.options.contextWindow - Math.ceil(this.projectedContextTokens())),
++          iterations++;
++          this.requestCount++;
++          const requestContext: TelemetryContext = { ...telemetryContext, requestId };
++          const requestSpan = createSpanStarted(requestContext, {
++            name: 'model.request',
++            parentSpanId: runSpan.spanId,
++            attributes: { model: this.model, messageCount: this.messages.length },
++          });
++          const requestStartedAt = Date.now();
++          await this.observe(requestSpan);
++          const stream = this.options.client.stream(
++            {
++              model: this.model,
++              system: this.options.systemPrompt,
++              messages: this.messages,
++              tools: this.toolDefinitions(),
++              // RunBudget counts actual provider attempts. Retries are modeled as
++              // separate harness decisions rather than hidden inside one request.
++              maxAttempts: 1,
++              timeoutMs: Math.min(this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, budget.maxWallTimeMs),
++              maxTokens: requestMaxTokens,
++              ...(requestThinkingBudget !== undefined ? { thinkingBudget: requestThinkingBudget } : {}),
++            },
++            runController.signal,
+           );
+-        }
+-        const requestMaxTokens = Math.min(...outputLimits);
+-        const requestThinkingBudget =
+-          this.options.thinkingBudget !== undefined && this.options.thinkingBudget < requestMaxTokens
+-            ? this.options.thinkingBudget
+-            : undefined;
+-        let done: { message: AssistantMessage; stopReason: StopReason; usage: Usage } | undefined;
+-        const requestId = createTelemetryId('request');
+-        const requestJournaled =
+-          !this._session ||
+-          this.journal((session) => {
+-            session.beginModelRequest(this.model, { requestId, messageCount: this.messages.length });
+-            return true;
+-          }) === true;
+-        if (!requestJournaled) {
+-          status = 'incomplete';
+-          reason = 'persistence';
+-          break;
+-        }
+-        iterations++;
+-        this.requestCount++;
+-        const requestContext: TelemetryContext = { ...telemetryContext, requestId };
+-        const requestSpan = createSpanStarted(requestContext, {
+-          name: 'model.request',
+-          parentSpanId: runSpan.spanId,
+-          attributes: { model: this.model, messageCount: this.messages.length },
+-        });
+-        const requestStartedAt = Date.now();
+-        await this.observe(requestSpan);
+-        const stream = this.options.client.stream(
+-          {
+-            model: this.model,
+-            system: this.options.systemPrompt,
+-            messages: this.messages,
+-            tools: this.toolDefinitions(),
+-            // RunBudget counts actual provider attempts. Retries are modeled as
+-            // separate harness decisions rather than hidden inside one request.
+-            maxAttempts: 1,
+-            timeoutMs: Math.min(this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, budget.maxWallTimeMs),
+-            maxTokens: requestMaxTokens,
+-            ...(requestThinkingBudget !== undefined ? { thinkingBudget: requestThinkingBudget } : {}),
+-          },
+-          runController.signal,
+-        );
+-        const streamIterator = stream[Symbol.asyncIterator]();
+-        let streamEnded = false;
+-        let requestLifecycleTerminal = false;
+-        try {
+-          while (true) {
+-            const next = await nextStreamEvent(streamIterator, runController.signal);
+-            if (next.done) {
+-              streamEnded = true;
++          const streamIterator = stream[Symbol.asyncIterator]();
++          let streamEnded = false;
++          let requestLifecycleTerminal = false;
++          try {
++            while (true) {
++              const next = await nextStreamEvent(streamIterator, runController.signal);
++              if (next.done) {
++                streamEnded = true;
++                break;
++              }
++              const event = next.value;
++              if (event.type === 'text_delta') yield { type: 'text', text: event.text };
++              else if (event.type === 'thinking_delta') yield { type: 'thinking', text: event.text };
++              else if (event.type === 'done') done = event;
++            }
++          } catch (error) {
++            releaseStream(streamIterator);
++            if (runController.signal.aborted) {
++              this.journal((session) =>
++                session.markModelRequestOutcomeUnknown(
++                  requestId,
++                  'request was canceled after dispatch before a terminal response was recorded',
++                ),
++              );
++            } else {
++              this.journal((session) => session.failModelRequest(requestId, String(error)));
++            }
++            requestLifecycleTerminal = true;
++            await this.observe(
++              createSpanEnded(requestContext, {
++                name: 'model.request',
++                spanId: requestSpan.spanId,
++                parentSpanId: runSpan.spanId,
++                status: runController.signal.aborted ? 'canceled' : 'error',
++                durationMs: Date.now() - requestStartedAt,
++                error: {
++                  type: error instanceof Error ? error.name : 'Error',
++                  message: String(error),
++                  ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
++                },
++              }),
++            );
++            if (runController.signal.aborted) {
++              status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
++              reason = deadlineExceeded ? 'wall_time' : 'user_abort';
++              if (deadlineExceeded) {
++                await this.observeBudget(telemetryContext, 'wall_time');
++                yield { type: 'budget_exceeded', reason: 'wall_time' };
++              }
+               break;
+             }
+-            const event = next.value;
+-            if (event.type === 'text_delta') yield { type: 'text', text: event.text };
+-            else if (event.type === 'thinking_delta') yield { type: 'thinking', text: event.text };
+-            else if (event.type === 'done') done = event;
++            throw error;
++          } finally {
++            if (!streamEnded && !requestLifecycleTerminal) {
++              if (!runController.signal.aborted) {
++                runController.abort(new Error('agent run consumer stopped during provider streaming'));
++              }
++              releaseStream(streamIterator);
++              this.journal((session) =>
++                session.markModelRequestOutcomeUnknown(
++                  requestId,
++                  'request iteration stopped before the provider stream reached a terminal boundary',
++                ),
++              );
++            }
+           }
+-        } catch (error) {
+-          releaseStream(streamIterator);
+-          if (runController.signal.aborted) {
+-            this.journal((session) =>
+-              session.markModelRequestOutcomeUnknown(
+-                requestId,
+-                'request was canceled after dispatch before a terminal response was recorded',
+-              ),
++          if (!done) {
++            this.journal((session) => session.failModelRequest(requestId, 'provider stream produced no complete message'));
++            await this.observe(
++              createSpanEnded(requestContext, {
++                name: 'model.request',
++                spanId: requestSpan.spanId,
++                parentSpanId: runSpan.spanId,
++                status: 'incomplete',
++                durationMs: Date.now() - requestStartedAt,
++              }),
+             );
+-          } else {
+-            this.journal((session) => session.failModelRequest(requestId, String(error)));
++            status = 'incomplete';
++            reason = 'empty_response';
++            break;
+           }
+-          requestLifecycleTerminal = true;
++          const responseCalls = done.message.content.filter(
++            (block): block is ToolCallBlock => block.type === 'toolCall',
++          );
++          const hasAnswerText = done.message.content.some(
++            (block) => block.type === 'text' && block.text.trim().length > 0,
++          );
++          const responseJournaled =
++            !this._session ||
++            this.journal((session) => {
++              session.completeModelRequest(requestId, { stopReason: done!.stopReason, usage: done!.usage });
++              return true;
++            }) === true;
+           await this.observe(
+             createSpanEnded(requestContext, {
+               name: 'model.request',
+               spanId: requestSpan.spanId,
+               parentSpanId: runSpan.spanId,
+-              status: runController.signal.aborted ? 'canceled' : 'error',
++              status:
++                (done.stopReason === 'end_turn' && hasAnswerText) ||
++                (done.stopReason === 'tool_use' && responseCalls.length > 0)
++                  ? 'ok'
++                  : 'incomplete',
+               durationMs: Date.now() - requestStartedAt,
+-              error: {
+-                type: error instanceof Error ? error.name : 'Error',
+-                message: String(error),
+-                ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
++              attributes: {
++                stopReason: done.stopReason,
++                inputTokens: inputTokens(done.usage),
++                outputTokens: done.usage.outputTokens,
+               },
+             }),
+           );
+-          if (runController.signal.aborted) {
+-            status = deadlineExceeded ? 'budget_exceeded' : 'canceled';
+-            reason = deadlineExceeded ? 'wall_time' : 'user_abort';
+-            if (deadlineExceeded) {
+-              await this.observeBudget(telemetryContext, 'wall_time');
+-              yield { type: 'budget_exceeded', reason: 'wall_time' };
+-            }
+-            break;
+-          }
+-          throw error;
+-        } finally {
+-          if (!streamEnded && !requestLifecycleTerminal) {
+-            if (!runController.signal.aborted) {
+-              runController.abort(new Error('agent run consumer stopped during provider streaming'));
+-            }
+-            releaseStream(streamIterator);
+-            this.journal((session) =>
+-              session.markModelRequestOutcomeUnknown(
+-                requestId,
+-                'request iteration stopped before the provider stream reached a terminal boundary',
+-              ),
+-            );
+-          }
+-        }
+-        if (!done) {
+-          this.journal((session) => session.failModelRequest(requestId, 'provider stream produced no complete message'));
+           await this.observe(
+-            createSpanEnded(requestContext, {
+-              name: 'model.request',
+-              spanId: requestSpan.spanId,
+-              parentSpanId: runSpan.spanId,
+-              status: 'incomplete',
+-              durationMs: Date.now() - requestStartedAt,
++            createRuntimeEvent(requestContext, {
++              name: 'model.response',
++              attributes: { stopReason: done.stopReason, outputTokens: done.usage.outputTokens },
+             }),
+           );
+-          status = 'incomplete';
+-          reason = 'empty_response';
+-          break;
+-        }
+-        const responseCalls = done.message.content.filter(
+-          (block): block is ToolCallBlock => block.type === 'toolCall',
+-        );
+-        const hasAnswerText = done.message.content.some(
+-          (block) => block.type === 'text' && block.text.trim().length > 0,
+-        );
+-        const responseJournaled =
+-          !this._session ||
+-          this.journal((session) => {
+-            session.completeModelRequest(requestId, { stopReason: done!.stopReason, usage: done!.usage });
+-            return true;
+-          }) === true;
+-        await this.observe(
+-          createSpanEnded(requestContext, {
+-            name: 'model.request',
+-            spanId: requestSpan.spanId,
+-            parentSpanId: runSpan.spanId,
+-            status:
+-              (done.stopReason === 'end_turn' && hasAnswerText) ||
+-              (done.stopReason === 'tool_use' && responseCalls.length > 0)
+-                ? 'ok'
+-                : 'incomplete',
+-            durationMs: Date.now() - requestStartedAt,
+-            attributes: {
+-              stopReason: done.stopReason,
+-              inputTokens: inputTokens(done.usage),
+-              outputTokens: done.usage.outputTokens,
+-            },
+-          }),
+-        );
+-        await this.observe(
+-          createRuntimeEvent(requestContext, {
+-            name: 'model.response',
+-            attributes: { stopReason: done.stopReason, outputTokens: done.usage.outputTokens },
+-          }),
+-        );
+ 
+-        addUsage(turnUsage, done.usage);
+-        addUsage(this.usageTotal, done.usage);
+-        this.lastContextTokens = totalTokens(done.usage);
+-        if (!responseJournaled) {
+-          status = 'incomplete';
+-          reason = 'persistence';
+-          break;
+-        }
+-        if (done.message.content.length === 0) {
+-          this.lastEstimatedRequestTokens = requestEstimate;
+-          status = 'incomplete';
+-          reason = 'empty_response';
+-          break;
+-        }
+-        this.messages.push(done.message);
+-        const responsePersisted = this.persist(done.message);
+-        this.lastEstimatedRequestTokens = this.estimateCurrentRequestTokens();
+-        yield { type: 'response_done', message: done.message, stopReason: done.stopReason, usage: done.usage };
+-        if (!responsePersisted) {
+-          status = 'incomplete';
+-          reason = 'persistence';
+-          break;
+-        }
+-
+-        const calls = responseCalls;
+-        if (done.stopReason === 'max_tokens') {
+-          const explanation = 'not run: the model response was truncated at its token limit';
+-          this.journalSkippedTools(calls, explanation, requestId);
+-          const skipped = unexecutedToolResults(calls, explanation);
+-          if (skipped) {
+-            this.messages.push(skipped);
+-            this.persist(skipped);
++          addUsage(turnUsage, done.usage);
++          addUsage(this.usageTotal, done.usage);
++          this.lastContextTokens = totalTokens(done.usage);
++          if (!responseJournaled) {
++            status = 'incomplete';
++            reason = 'persistence';
++            break;
+           }
+-          status = 'incomplete';
+-          reason = 'max_tokens';
+-          break;
+-        }
+-        if (done.stopReason === 'other') {
+-          const explanation = 'not run: the provider returned an unknown terminal status';
+-          this.journalSkippedTools(calls, explanation, requestId);
+-          const skipped = unexecutedToolResults(calls, explanation);
+-          if (skipped) {
+-            this.messages.push(skipped);
+-            this.persist(skipped);
++          if (done.message.content.length === 0) {
++            this.lastEstimatedRequestTokens = requestEstimate;
++            status = 'incomplete';
++            reason = 'empty_response';
++            break;
+           }
+-          status = 'incomplete';
+-          reason = 'provider_stop';
+-          break;
+-        }
+-        const responseUsageExceeded = exceededUsageBudgetReason(turnUsage, budget);
+-        if (responseUsageExceeded) {
+-          const explanation = `not run: ${responseUsageExceeded} budget was exceeded by the completed response`;
+-          this.journalSkippedTools(calls, explanation, requestId);
+-          const skipped = unexecutedToolResults(calls, explanation);
+-          if (skipped) {
+-            this.messages.push(skipped);
+-            this.persist(skipped);
++          this.messages.push(done.message);
++          const responsePersisted = this.persist(done.message);
++          this.lastEstimatedRequestTokens = this.estimateCurrentRequestTokens();
++          yield { type: 'response_done', message: done.message, stopReason: done.stopReason, usage: done.usage };
++          if (!responsePersisted) {
++            status = 'incomplete';
++            reason = 'persistence';
++            break;
+           }
+-          status = 'budget_exceeded';
+-          reason = responseUsageExceeded;
+-          await this.observeBudget(telemetryContext, responseUsageExceeded);
+-          yield {
+-            type: 'budget_exceeded',
+-            reason: responseUsageExceeded as 'input_tokens' | 'output_tokens' | 'total_tokens',
+-          };
+-          break;
+-        }
+-        if (stopping) {
+-          const explanation = 'not run: the flail guard already stopped tool execution';
+-          this.journalSkippedTools(calls, explanation, requestId);
+-          const skipped = unexecutedToolResults(calls, explanation);
+-          if (skipped) {
+-            this.messages.push(skipped);
+-            this.persist(skipped);
++
++          const calls = responseCalls;
++          if (done.stopReason === 'max_tokens') {
++            const explanation = 'not run: the model response was truncated at its token limit';
++            this.journalSkippedTools(calls, explanation, requestId);
++            const skipped = unexecutedToolResults(calls, explanation);
++            if (skipped) {
++              this.messages.push(skipped);
++              this.persist(skipped);
++            }
++            status = 'incomplete';
++            reason = 'max_tokens';
++            break;
+           }
+-          status = 'incomplete';
+-          reason = 'flail_stop';
+-          break;
+-        }
+-        if (calls.length === 0) {
+-          if (done.stopReason === 'end_turn' && hasAnswerText) {
+-            status = 'completed';
+-            reason = 'end_turn';
+-          } else {
++          if (done.stopReason === 'other') {
++            const explanation = 'not run: the provider returned an unknown terminal status';
++            this.journalSkippedTools(calls, explanation, requestId);
++            const skipped = unexecutedToolResults(calls, explanation);
++            if (skipped) {
++              this.messages.push(skipped);
++              this.persist(skipped);
++            }
+             status = 'incomplete';
+-            reason = done.stopReason === 'tool_use' ? 'provider_stop' : 'empty_response';
++            reason = 'provider_stop';
++            break;
+           }
+-          break;
+-        }
+-        if (done.stopReason !== 'tool_use') {
+-          const explanation = 'not run: tool calls arrived without a tool-use finish reason';
+-          this.journalSkippedTools(calls, explanation, requestId);
+-          const skipped = unexecutedToolResults(calls, explanation);
+-          if (skipped) {
+-            this.messages.push(skipped);
+-            this.persist(skipped);
++          const responseUsageExceeded = exceededUsageBudgetReason(turnUsage, budget);
++          if (responseUsageExceeded) {
++            const explanation = `not run: ${responseUsageExceeded} budget was exceeded by the completed response`;
++            this.journalSkippedTools(calls, explanation, requestId);
++            const skipped = unexecutedToolResults(calls, explanation);
++            if (skipped) {
++              this.messages.push(skipped);
++              this.persist(skipped);
++            }
++            status = 'budget_exceeded';
++            reason = responseUsageExceeded;
++            await this.observeBudget(telemetryContext, responseUsageExceeded);
++            yield {
++              type: 'budget_exceeded',
++              reason: responseUsageExceeded as 'input_tokens' | 'output_tokens' | 'total_tokens',
++            };
++            break;
++          }
++          if (stopping) {
++            const explanation = 'not run: the flail guard already stopped tool execution';
++            this.journalSkippedTools(calls, explanation, requestId);
++            const skipped = unexecutedToolResults(calls, explanation);
++            if (skipped) {
++              this.messages.push(skipped);
++              this.persist(skipped);
++            }
++            status = 'incomplete';
++            reason = 'flail_stop';
++            break;
++          }
++          if (calls.length === 0) {
++            if (done.stopReason === 'end_turn' && hasAnswerText) {
++              status = 'completed';
++              reason = 'end_turn';
++            } else {
++              status = 'incomplete';
++              reason = done.stopReason === 'tool_use' ? 'provider_stop' : 'empty_response';
++            }
++            break;
++          }
++          if (done.stopReason !== 'tool_use') {
++            const explanation = 'not run: tool calls arrived without a tool-use finish reason';
++            this.journalSkippedTools(calls, explanation, requestId);
++            const skipped = unexecutedToolResults(calls, explanation);
++            if (skipped) {
++              this.messages.push(skipped);
++              this.persist(skipped);
++            }
++            status = 'incomplete';
++            reason = 'provider_stop';
++            break;
+           }
+-          status = 'incomplete';
+-          reason = 'provider_stop';
+-          break;
+-        }
+ 
+-        const responseUsageLimit = usageBudgetReason(turnUsage, budget);
+-        if (responseUsageLimit) {
+-          const explanation = `not run: ${responseUsageLimit} budget was exhausted`;
+-          this.journalSkippedTools(calls, explanation, requestId);
+-          const skipped = unexecutedToolResults(calls, explanation);
+-          if (skipped) {
+-            this.messages.push(skipped);
+-            this.persist(skipped);
++          const responseUsageLimit = usageBudgetReason(turnUsage, budget);
++          if (responseUsageLimit) {
++            const explanation = `not run: ${responseUsageLimit} budget was exhausted`;
++            this.journalSkippedTools(calls, explanation, requestId);
++            const skipped = unexecutedToolResults(calls, explanation);
++            if (skipped) {
++              this.messages.push(skipped);
++              this.persist(skipped);
++            }
++            status = 'budget_exceeded';
++            reason = responseUsageLimit;
++            await this.observeBudget(telemetryContext, responseUsageLimit);
++            yield {
++              type: 'budget_exceeded',
++              reason: responseUsageLimit as 'input_tokens' | 'output_tokens' | 'total_tokens',
++            };
++            break;
+           }
+-          status = 'budget_exceeded';
+-          reason = responseUsageLimit;
+-          await this.observeBudget(telemetryContext, responseUsageLimit);
+-          yield {
+-            type: 'budget_exceeded',
+-            reason: responseUsageLimit as 'input_tokens' | 'output_tokens' | 'total_tokens',
+-          };
+-          break;
++          const planned: BatchCall[] = [];
++          for (const call of calls) {
++            const executionId = createTelemetryId('tool');
++            const journaled = this._session
++              ? this.journal((session) => {
++                  session.planTool(call, { executionId, requestId });
++                  return true;
++                }) === true
++              : true;
++            planned.push({ call, executionId, journaled });
++            await this.observe(
++              createRuntimeEvent({ ...telemetryContext, requestId, toolCallId: call.id, toolExecutionId: executionId }, {
++                name: 'tool.planned',
++                attributes: { toolName: call.name },
++              }),
++            );
++          }
++          batchCalls = planned;
++          batchRequestId = requestId;
+         }
+ 
+         const results: ToolResultBlock[] = [];
+@@ -1263,24 +1553,16 @@ export class Agent {
+           }
+           return undefined;
+         };
+-        const plannedCalls: { call: ToolCallBlock; executionId: string; journaled: boolean }[] = [];
+-        for (const call of calls) {
+-          const executionId = createTelemetryId('tool');
+-          const journaled = this._session
+-            ? this.journal((session) => {
+-                session.planTool(call, { executionId, requestId });
+-                return true;
+-              }) === true
+-            : true;
+-          plannedCalls.push({ call, executionId, journaled });
+-          await this.observe(
+-            createRuntimeEvent({ ...telemetryContext, requestId, toolCallId: call.id, toolExecutionId: executionId }, {
+-              name: 'tool.planned',
+-              attributes: { toolName: call.name },
+-            }),
+-          );
+-        }
+-        for (const { call, executionId, journaled } of plannedCalls) {
++        let suspendedThisBatch = false;
++        for (let batchIndex = 0; batchIndex < batchCalls.length; batchIndex++) {
++          const item = batchCalls[batchIndex]!;
++          const { call, executionId, journaled } = item;
++          // Produced before a suspension, or reconstructed from the journal on
++          // resume. Never dispatch twice for one planned call.
++          if (item.settled) {
++            results.push(item.settled);
++            continue;
++          }
+           if (guardStoppedThisBatch) {
+             const explanation = 'not run: the flail guard stopped the remaining tool batch';
+             if (journaled && this._session) {
+@@ -1332,13 +1614,32 @@ export class Agent {
+             });
+             continue;
+           }
++          if (item.approval?.decision === 'rejected') {
++            const explanation = `not run: a human reviewer rejected this tool call${item.approval.reason ? `: ${item.approval.reason}` : ''}`;
++            await this.observe(
++              createRuntimeEvent(
++                { ...telemetryContext, ...(batchRequestId ? { requestId: batchRequestId } : {}), toolCallId: call.id, toolExecutionId: executionId },
++                {
++                  name: 'policy.decision',
++                  level: 'warn',
++                  attributes: { toolName: call.name, decision: 'deny', reason: 'approval_rejected' },
++                },
++              ),
++            );
++            results.push(toolResultBlock(call, explanation, true));
++            continue;
++          }
+           const tool = this.toolsByName.get(call.name);
++          // An edit replaces the arguments for dispatch only: the planned row
++          // keeps the model's originals, and the decision row keeps the edit.
++          const edited = item.approval?.decision === 'edited' ? item.approval.editedArguments : undefined;
++          const effectiveArguments = edited ?? call.arguments;
+           let rejectedBeforeDispatch: string | undefined;
+           if (!tool) {
+             rejectedBeforeDispatch = `unknown tool "${call.name}"`;
+           } else {
+             try {
+-              validateToolArguments(tool, call.arguments);
++              validateToolArguments(tool, effectiveArguments);
+             } catch (error) {
+               rejectedBeforeDispatch = error instanceof Error ? error.message : String(error);
+             }
+@@ -1350,7 +1651,12 @@ export class Agent {
+             }
+             await this.observe(
+               createRuntimeEvent(
+-                { ...telemetryContext, requestId, toolCallId: call.id, toolExecutionId: executionId },
++                {
++                  ...telemetryContext,
++                  ...(batchRequestId ? { requestId: batchRequestId } : {}),
++                  toolCallId: call.id,
++                  toolExecutionId: executionId,
++                },
+                 {
+                   name: 'policy.decision',
+                   level: 'warn',
+@@ -1386,6 +1692,58 @@ export class Agent {
+             }
+             continue;
+           }
++          // The batch runs in order until the first gated call with no recorded
++          // decision. That call and every later gated one are journaled as
++          // awaiting approval; later ungated calls stay planned, so side-effect
++          // order is preserved exactly across the suspension (ADR 0011).
++          if (item.approval?.decision === undefined && requiresApproval(this.toolPolicy, call.name)) {
++            const pendingApprovals: PendingApproval[] = [];
++            let approvalPersisted = true;
++            for (const rest of batchCalls.slice(batchIndex)) {
++              if (rest.settled || !rest.journaled) continue;
++              if (rest.approval?.decision !== undefined) continue;
++              if (!requiresApproval(this.toolPolicy, rest.call.name)) continue;
++              if (!rest.approval) {
++                const requestedAt = new Date().toISOString();
++                const written = this.journalFor(this._session, (session) => {
++                  session.requestToolApproval(rest.executionId);
++                  return true;
++                });
++                if (this._session && written !== true) {
++                  approvalPersisted = false;
++                  break;
++                }
++                rest.approval = { requestedAt };
++              }
++              pendingApprovals.push({ executionId: rest.executionId, call: rest.call });
++              await this.observe(
++                createRuntimeEvent(
++                  {
++                    ...telemetryContext,
++                    ...(batchRequestId ? { requestId: batchRequestId } : {}),
++                    toolCallId: rest.call.id,
++                    toolExecutionId: rest.executionId,
++                  },
++                  {
++                    name: 'policy.decision',
++                    level: 'warn',
++                    attributes: { toolName: rest.call.name, decision: 'defer', reason: 'approval_required' },
++                  },
++                ),
++              );
++            }
++            // An approval that cannot be durably recorded must not suspend: a
++            // resume would never see it. Fail closed instead, leaving the
++            // remaining calls unstarted.
++            if (!approvalPersisted) {
++              status = 'incomplete';
++              reason = 'persistence';
++              break;
++            }
++            suspendedThisBatch = true;
++            yield { type: 'approval_required', executions: pendingApprovals };
++            break;
++          }
+           if (this._session) {
+             const started = this.journal((session) => {
+               session.startTool(executionId);
+@@ -1403,9 +1761,10 @@ export class Agent {
+             }
+           }
+           toolCalls++;
++          const dispatchCall: ToolCallBlock = edited ? { ...call, arguments: edited } : call;
+           const toolContext: TelemetryContext = {
+             ...telemetryContext,
+-            requestId,
++            ...(batchRequestId ? { requestId: batchRequestId } : {}),
+             toolCallId: call.id,
+             toolExecutionId: executionId,
+           };
+@@ -1419,10 +1778,10 @@ export class Agent {
+           // Dispatch before yielding the public start event. If the consumer
+           // returns from the async iterator at that yield, the durable `started`
+           // row truthfully means a side effect may already be in flight.
+-          const executionPromise = this.executeCall(call, runController.signal);
++          const executionPromise = this.executeCall(dispatchCall, runController.signal);
+           let resumedAfterToolStart = false;
+           try {
+-            yield { type: 'tool_start', call };
++            yield { type: 'tool_start', call: dispatchCall };
+             resumedAfterToolStart = true;
+           } finally {
+             if (!resumedAfterToolStart) {
+@@ -1466,10 +1825,10 @@ export class Agent {
+               attributes: { toolName: call.name, isError: result.isError === true },
+             }),
+           );
+-          yield { type: 'tool_end', call, result };
++          yield { type: 'tool_end', call: dispatchCall, result };
+           if (result.isError && !runController.signal.aborted) {
+             consecutiveFailures++;
+-            const key = `${call.name}:${JSON.stringify(call.arguments)}`;
++            const key = `${call.name}:${JSON.stringify(dispatchCall.arguments)}`;
+             const repeats = (failCounts.get(key) ?? 0) + 1;
+             failCounts.set(key, repeats);
+             if (repeats > repeatMax) repeatMax = repeats;
+@@ -1478,11 +1837,17 @@ export class Agent {
+             failCounts.clear();
+             nudged = false;
+           }
++          // The model must not be told its own arguments ran when a human
++          // changed them. The note sits beside the tool's own output rather
++          // than inside it, so the output budget still applies to the tool.
++          const editNote = edited
++            ? `[approval] a human reviewer edited these arguments before execution; it ran with: ${truncateMiddle(JSON.stringify(edited), 1_024)}`
++            : undefined;
+           results.push({
+             type: 'toolResult',
+             toolCallId: call.id,
+             toolName: call.name,
+-            content: result.content,
++            content: editNote ? [{ type: 'text', text: editNote }, ...result.content] : result.content,
+             ...(result.isError ? { isError: true } : {}),
+           });
+           const decision = evaluateFlail();
+@@ -1494,6 +1859,23 @@ export class Agent {
+             yield { type: 'flail_nudge', consecutiveFailures };
+           }
+         }
++        if (suspendedThisBatch) {
++          // The transcript deliberately still ends at the assistant tool_use
++          // message: writing partial results would either fabricate outcomes for
++          // undecided calls or leave a message the provider rejects. Results
++          // produced so far are retained for an in-process resume.
++          for (let index = 0; index < results.length; index++) {
++            const item = batchCalls[index];
++            if (item) item.settled = results[index];
++          }
++          this.suspendedBatch = { ...(batchRequestId ? { requestId: batchRequestId } : {}), calls: batchCalls };
++          status = 'suspended';
++          reason = 'awaiting_approval';
++          terminal = true;
++          break;
++        }
++        this.suspendedBatch = undefined;
++        this.suspendedAtOpen = false;
+         const content: UserBlock[] = [...results];
+         if (toolBudgetHit) {
+           status = 'budget_exceeded';
+@@ -1547,9 +1929,12 @@ export class Agent {
+       }
+       if (!failed) {
+         let terminalPersisted = true;
++        // A suspended run records its ceilings so the resume continues under them
++        // instead of silently inheriting whatever defaults the next process has.
++        const terminalBudget: RunBudgetSnapshot | undefined = status === 'suspended' ? { ...budget } : undefined;
+         for (const session of runSessions) {
+           const written = this.journalFor(session, (target) => {
+-            target.setRunStatus(status, reason);
++            target.setRunStatus(status, reason, terminalBudget ? { budget: terminalBudget } : {});
+             return true;
+           });
+           if (written !== true) terminalPersisted = false;
+diff --git a/packages/core/src/journal.ts b/packages/core/src/journal.ts
+index 81cf858..d0732b5 100644
+--- a/packages/core/src/journal.ts
++++ b/packages/core/src/journal.ts
+@@ -1,4 +1,4 @@
+-import type { Message, ToolCallBlock, Usage } from '@pi/ai';
++import { addUsage, emptyUsage, type Message, type ToolCallBlock, type Usage } from '@pi/ai';
+ 
+ /** Rows written by piko 0.1. Kept verbatim so existing transcripts remain readable. */
+ export type LegacySessionEntry =
+@@ -6,9 +6,48 @@ export type LegacySessionEntry =
+   | { t: 'msg'; message: Message }
+   | { t: 'usage'; usage: Usage };
+ 
+-export type RunStatus = 'running' | 'completed' | 'incomplete' | 'budget_exceeded' | 'canceled' | 'failed';
++export type RunStatus =
++  | 'running'
++  | 'completed'
++  | 'incomplete'
++  | 'budget_exceeded'
++  | 'canceled'
++  | 'failed'
++  | 'suspended';
+ export type SessionLineageRelation = 'branch' | 'compaction' | 'continuation';
+ 
++/**
++ * Journal schema generation, written once per session as a `journal_schema` row.
++ * Sessions created before the marker existed are read as generation 1; a file
++ * declaring a newer generation is refused rather than half-understood.
++ *
++ * 1 — v0.2 lifecycle rows (model request, tool, compaction, run status, lineage).
++ * 2 — adds tool approval rows and the suspended run status (ADR 0011).
++ */
++export const JOURNAL_SCHEMA_VERSION = 2;
++export const LEGACY_JOURNAL_SCHEMA_VERSION = 1;
++
++/** Run budget ceilings captured on a terminal row so a resume can continue under them. */
++export interface RunBudgetSnapshot {
++  maxModelRequests?: number;
++  maxToolCalls?: number;
++  maxWallTimeMs?: number;
++  maxToolOutputBytes?: number;
++  maxInputTokens?: number;
++  maxOutputTokens?: number;
++  maxTotalTokens?: number;
++}
++
++const runBudgetSnapshotFields = [
++  'maxModelRequests',
++  'maxToolCalls',
++  'maxWallTimeMs',
++  'maxToolOutputBytes',
++  'maxInputTokens',
++  'maxOutputTokens',
++  'maxTotalTokens',
++] as const;
++
+ export interface SessionLineage {
+   parentSessionId: string;
+   relation: SessionLineageRelation;
+@@ -68,6 +107,8 @@ export interface ModelRequestState {
+   reason?: string;
+ }
+ 
++export type ApprovalDecision = 'approved' | 'edited' | 'rejected';
++
+ export type ToolLifecycleEntry =
+   | (LifecycleBase & {
+       t: 'tool_planned';
+@@ -75,6 +116,19 @@ export type ToolLifecycleEntry =
+       requestId?: string;
+       call: ToolCallBlock;
+     })
++  /** A gated call is deferred pending a recorded human decision (ADR 0011). */
++  | (LifecycleBase & { t: 'tool_approval_requested'; executionId: string })
++  | (LifecycleBase & {
++      t: 'tool_approval_decided';
++      executionId: string;
++      decision: ApprovalDecision;
++      /** When the human decided, which is not the append time when a decision
++       *  is collected by one invocation and applied by the next. */
++      decidedAt: string;
++      /** Replacement arguments for an `edited` decision; the planned row keeps the original. */
++      editedArguments?: Record<string, unknown>;
++      reason?: string;
++    })
+   | (LifecycleBase & { t: 'tool_started'; executionId: string })
+   | (LifecycleBase & { t: 'tool_skipped'; executionId: string; reason: string })
+   | (LifecycleBase & { t: 'tool_completed'; executionId: string })
+@@ -101,13 +155,36 @@ export type LifecycleEntry =
+   | ModelRequestEntry
+   | ToolLifecycleEntry
+   | CompactionEntry
+-  | (LifecycleBase & { t: 'run_status'; status: RunStatus; reason?: string })
++  | (LifecycleBase & {
++      t: 'run_status';
++      status: RunStatus;
++      reason?: string;
++      /** Ceilings in force for the run, recorded so a resumed run continues under them. */
++      budget?: RunBudgetSnapshot;
++    })
++  | (LifecycleBase & { t: 'journal_schema'; schema: number })
+   | (LifecycleBase & { t: 'session_ready' })
+   | (LifecycleBase & { t: 'session_lineage' } & SessionLineage);
+ 
+ export type SessionEntry = LegacySessionEntry | LifecycleEntry;
+ 
+-export type ToolExecutionStatus = 'planned' | 'started' | 'skipped' | 'completed' | 'failed' | 'outcome_unknown';
++export type ToolExecutionStatus =
++  | 'planned'
++  | 'awaiting_approval'
++  | 'started'
++  | 'skipped'
++  | 'completed'
++  | 'failed'
++  | 'outcome_unknown';
++
++/** Approval trail for one gated execution. Present once approval was requested. */
++export interface ToolApprovalState {
++  requestedAt: string;
++  decision?: ApprovalDecision;
++  decidedAt?: string;
++  reason?: string;
++  editedArguments?: Record<string, unknown>;
++}
+ 
+ export interface ToolExecutionState {
+   executionId: string;
+@@ -119,6 +196,7 @@ export interface ToolExecutionState {
+   endedAt?: string;
+   error?: string;
+   reason?: string;
++  approval?: ToolApprovalState;
+ }
+ 
+ const runStatuses = new Set<RunStatus>([
+@@ -128,7 +206,9 @@ const runStatuses = new Set<RunStatus>([
+   'budget_exceeded',
+   'canceled',
+   'failed',
++  'suspended',
+ ]);
++const approvalDecisions = new Set<ApprovalDecision>(['approved', 'edited', 'rejected']);
+ const lineageRelations = new Set<SessionLineageRelation>(['branch', 'compaction', 'continuation']);
+ 
+ function isRecord(value: unknown): value is Record<string, unknown> {
+@@ -170,6 +250,20 @@ function optionalBoolean(value: unknown, path: string): boolean | undefined {
+   return requireBoolean(value, path);
+ }
+ 
++function requirePositiveInteger(value: unknown, path: string): number {
++  if (!Number.isSafeInteger(value) || (value as number) <= 0) {
++    throw new TypeError(`${path} must be a positive integer`);
++  }
++  return value as number;
++}
++
++function validateRunBudgetSnapshot(value: unknown, path: string): void {
++  const budget = requireRecord(value, path);
++  for (const field of runBudgetSnapshotFields) {
++    if (budget[field] !== undefined) requirePositiveInteger(budget[field], `${path}.${field}`);
++  }
++}
++
+ function requireNonNegativeInteger(value: unknown, path: string): number {
+   if (!Number.isInteger(value) || (value as number) < 0) {
+     throw new TypeError(`${path} must be a non-negative integer`);
+@@ -310,8 +404,23 @@ export function validateSessionEntry(value: unknown): asserts value is SessionEn
+       return;
+     case 'tool_started':
+     case 'tool_completed':
++    case 'tool_approval_requested':
+       requireString(entry['executionId'], `${type}.executionId`);
+       return;
++    case 'tool_approval_decided':
++      requireString(entry['executionId'], `${type}.executionId`);
++      if (!approvalDecisions.has(entry['decision'] as ApprovalDecision)) {
++        throw new TypeError(`${type}.decision is unsupported`);
++      }
++      requireTimestamp(entry['decidedAt'], `${type}.decidedAt`);
++      if (entry['editedArguments'] !== undefined) {
++        requireRecord(entry['editedArguments'], `${type}.editedArguments`);
++      }
++      if (entry['decision'] !== 'edited' && entry['editedArguments'] !== undefined) {
++        throw new TypeError(`${type}.editedArguments is only valid for an edited decision`);
++      }
++      optionalString(entry['reason'], `${type}.reason`);
++      return;
+     case 'tool_skipped':
+       requireString(entry['executionId'], `${type}.executionId`);
+       requireString(entry['reason'], `${type}.reason`);
+@@ -344,6 +453,10 @@ export function validateSessionEntry(value: unknown): asserts value is SessionEn
+     case 'run_status':
+       if (!runStatuses.has(entry['status'] as RunStatus)) throw new TypeError(`${type}.status is unsupported`);
+       optionalString(entry['reason'], `${type}.reason`);
++      if (entry['budget'] !== undefined) validateRunBudgetSnapshot(entry['budget'], `${type}.budget`);
++      return;
++    case 'journal_schema':
++      requirePositiveInteger(entry['schema'], `${type}.schema`);
+       return;
+     case 'session_ready':
+       return;
+@@ -390,6 +503,8 @@ export function reduceToolExecutions(entries: readonly SessionEntry[]): Map<stri
+       continue;
+     }
+     if (
++      entry.t !== 'tool_approval_requested' &&
++      entry.t !== 'tool_approval_decided' &&
+       entry.t !== 'tool_started' &&
+       entry.t !== 'tool_skipped' &&
+       entry.t !== 'tool_completed' &&
+@@ -400,6 +515,37 @@ export function reduceToolExecutions(entries: readonly SessionEntry[]): Map<stri
+     }
+     const state = states.get(entry.executionId);
+     if (!state) invalidTransition(`${entry.t} references unknown tool execution ${entry.executionId}`);
++    if (entry.t === 'tool_approval_requested') {
++      if (state.status !== 'planned') {
++        invalidTransition(`${entry.executionId} cannot request approval from ${state.status}`);
++      }
++      state.status = 'awaiting_approval';
++      state.approval = { requestedAt: entry.at };
++      continue;
++    }
++    if (entry.t === 'tool_approval_decided') {
++      if (state.status !== 'awaiting_approval' || !state.approval) {
++        invalidTransition(`${entry.executionId} cannot be decided from ${state.status}`);
++      }
++      state.approval = {
++        ...state.approval,
++        decision: entry.decision,
++        decidedAt: entry.decidedAt,
++        ...(entry.reason !== undefined ? { reason: entry.reason } : {}),
++        ...(entry.editedArguments !== undefined ? { editedArguments: entry.editedArguments } : {}),
++      };
++      // A rejection is terminal by itself: nothing ran and nothing will. An
++      // approval returns the execution to `planned`, which is exactly what it
++      // is — cleared for dispatch, not yet started (ADR 0011 decision 4).
++      if (entry.decision === 'rejected') {
++        state.status = 'skipped';
++        state.endedAt = entry.at;
++        state.reason = entry.reason ?? 'rejected by a human reviewer';
++      } else {
++        state.status = 'planned';
++      }
++      continue;
++    }
+     if (entry.t === 'tool_started') {
+       if (state.status !== 'planned') invalidTransition(`${entry.executionId} cannot start from ${state.status}`);
+       state.status = 'started';
+@@ -476,8 +622,17 @@ export function validateLifecycle(entries: readonly SessionEntry[]): void {
+   const compactions = new Map<string, 'started' | 'completed' | 'failed'>();
+   let lineageSeen = false;
+   let readySeen = false;
++  let schemaSeen = false;
+   for (const entry of entries) {
+-    if (entry.t === 'compaction_started') {
++    if (entry.t === 'journal_schema') {
++      if (schemaSeen) invalidTransition('a session can have only one journal schema marker');
++      schemaSeen = true;
++      if (entry.schema > JOURNAL_SCHEMA_VERSION) {
++        throw new TypeError(
++          `journal schema ${entry.schema} is newer than the supported version ${JOURNAL_SCHEMA_VERSION}; upgrade piko to read this session`,
++        );
++      }
++    } else if (entry.t === 'compaction_started') {
+       if (compactions.has(entry.compactionId)) invalidTransition(`duplicate compaction ${entry.compactionId}`);
+       compactions.set(entry.compactionId, 'started');
+     } else if (entry.t === 'compaction_completed' || entry.t === 'compaction_failed') {
+@@ -494,3 +649,49 @@ export function validateLifecycle(entries: readonly SessionEntry[]): void {
+     }
+   }
+ }
++
++/** Declared journal generation; sessions written before the marker are generation 1. */
++export function journalSchemaVersion(entries: readonly SessionEntry[]): number {
++  for (const entry of entries) {
++    if (entry.t === 'journal_schema') return entry.schema;
++  }
++  return LEGACY_JOURNAL_SCHEMA_VERSION;
++}
++
++/** Budget accounting for the run segment that is still open, or ended suspended. */
++export interface OpenRunState {
++  usage: Usage;
++  modelRequests: number;
++  toolCalls: number;
++  /** Ceilings recorded on the segment's terminal row, when it has one. */
++  budget?: RunBudgetSnapshot;
++}
++
++/**
++ * Reduce every lifecycle row belonging to the newest run segment. A resumed turn
++ * seeds its counters from this, so 0009's bounded-per-input property holds across
++ * a suspension instead of restarting at zero.
++ *
++ * A segment starts at a `running` marker that follows a terminal status (or the
++ * start of the file). `running` after `suspended` continues the same segment, so
++ * a run cannot buy fresh budget by suspending repeatedly.
++ */
++export function reduceOpenRun(entries: readonly SessionEntry[]): OpenRunState {
++  let start = 0;
++  let afterTerminal = true;
++  for (let index = 0; index < entries.length; index++) {
++    const entry = entries[index]!;
++    if (entry.t !== 'run_status') continue;
++    if (entry.status === 'running' && afterTerminal) start = index + 1;
++    afterTerminal = entry.status !== 'running' && entry.status !== 'suspended';
++  }
++  const state: OpenRunState = { usage: emptyUsage(), modelRequests: 0, toolCalls: 0 };
++  for (let index = start; index < entries.length; index++) {
++    const entry = entries[index]!;
++    if (entry.t === 'model_request_started') state.modelRequests++;
++    else if (entry.t === 'model_request_completed' && entry.usage) addUsage(state.usage, entry.usage);
++    else if (entry.t === 'tool_started') state.toolCalls++;
++    else if (entry.t === 'run_status' && entry.budget) state.budget = structuredClone(entry.budget);
++  }
++  return state;
++}
+diff --git a/packages/core/src/session.ts b/packages/core/src/session.ts
+index dc69931..a1242b3 100644
+--- a/packages/core/src/session.ts
++++ b/packages/core/src/session.ts
+@@ -21,12 +21,18 @@ import { homedir } from 'node:os';
+ import { dirname, isAbsolute, join } from 'node:path';
+ import { addUsage, emptyUsage, type Message, type ToolCallBlock, type Usage } from '@pi/ai';
+ import {
++  JOURNAL_SCHEMA_VERSION,
++  journalSchemaVersion,
+   parseSessionEntry,
+   reduceModelRequests,
++  reduceOpenRun,
+   reduceToolExecutions,
+   validateLifecycle,
++  type ApprovalDecision,
+   type LifecycleEntry,
+   type ModelRequestState,
++  type OpenRunState,
++  type RunBudgetSnapshot,
+   type RunStatus,
+   type SessionEntry,
+   type SessionLineage,
+@@ -34,16 +40,20 @@ import {
+ } from './journal.js';
+ 
+ export type {
++  ApprovalDecision,
+   CompactionEntry,
+   LegacySessionEntry,
+   LifecycleEntry,
+   ModelRequestEntry,
+   ModelRequestState,
+   ModelRequestStatus,
++  OpenRunState,
++  RunBudgetSnapshot,
+   RunStatus,
+   SessionEntry,
+   SessionLineage,
+   SessionLineageRelation,
++  ToolApprovalState,
+   ToolExecutionState,
+   ToolExecutionStatus,
+   ToolLifecycleEntry,
+@@ -477,7 +487,10 @@ export class Session {
+       const id = options.id ?? randomUUID();
+       const file = join(dir, `${id}.jsonl`);
+       const created = now();
+-      const entries: SessionEntry[] = [{ t: 'meta', v: 1, id, cwd, model, created }];
++      const entries: SessionEntry[] = [
++        { t: 'meta', v: 1, id, cwd, model, created },
++        { t: 'journal_schema', v: 2, at: created, schema: JOURNAL_SCHEMA_VERSION },
++      ];
+       if (options.lineage) {
+         entries.push({ t: 'session_lineage', v: 2, at: created, ...options.lineage });
+       }
+@@ -653,8 +666,15 @@ export class Session {
+     this.entries.push(...normalized);
+   }
+ 
+-  setRunStatus(status: RunStatus, reason?: string): void {
+-    this.append({ t: 'run_status', v: 2, at: now(), status, ...(reason ? { reason } : {}) });
++  setRunStatus(status: RunStatus, reason?: string, options: { budget?: RunBudgetSnapshot } = {}): void {
++    this.append({
++      t: 'run_status',
++      v: 2,
++      at: now(),
++      status,
++      ...(reason ? { reason } : {}),
++      ...(options.budget ? { budget: options.budget } : {}),
++    });
+   }
+ 
+   markReady(): void {
+@@ -721,6 +741,36 @@ export class Session {
+     return executionId;
+   }
+ 
++  /** Defer a planned call pending a human decision; the derived status becomes awaiting_approval. */
++  requestToolApproval(executionId: string): void {
++    this.append({ t: 'tool_approval_requested', v: 2, at: now(), executionId });
++  }
++
++  /**
++   * Record the human decision. `decidedAt` defaults to append time and should be
++   * passed when the decision was collected earlier (a resume invocation applying
++   * flags recorded before the journal was reopened).
++   */
++  decideToolApproval(
++    executionId: string,
++    decision: ApprovalDecision,
++    options: { decidedAt?: string; editedArguments?: Record<string, unknown>; reason?: string } = {},
++  ): void {
++    if (decision !== 'edited' && options.editedArguments !== undefined) {
++      throw new TypeError('editedArguments is only valid for an edited decision');
++    }
++    this.append({
++      t: 'tool_approval_decided',
++      v: 2,
++      at: now(),
++      executionId,
++      decision,
++      decidedAt: options.decidedAt ?? now(),
++      ...(options.editedArguments !== undefined ? { editedArguments: options.editedArguments } : {}),
++      ...(options.reason ? { reason: options.reason } : {}),
++    });
++  }
++
+   startTool(executionId: string): void {
+     this.append({ t: 'tool_started', v: 2, at: now(), executionId });
+   }
+@@ -875,6 +925,34 @@ export class Session {
+     return this.toolExecutions.filter((state) => state.status === 'planned' || state.status === 'started');
+   }
+ 
++  /** Gated calls with no recorded decision yet. */
++  get awaitingApprovalExecutions(): readonly ToolExecutionState[] {
++    return this.toolExecutions.filter((state) => state.status === 'awaiting_approval');
++  }
++
++  /**
++   * Executions a resume must still settle: undecided gated calls plus decisions
++   * that were recorded before anything started (0011 decision 4 — approved with
++   * no `started` row means nothing began).
++   */
++  get suspendedToolExecutions(): readonly ToolExecutionState[] {
++    return this.toolExecutions.filter(
++      (state) =>
++        state.status === 'awaiting_approval' ||
++        (state.status === 'planned' && state.approval?.decision !== undefined),
++    );
++  }
++
++  /** Budget accounting for the run segment that is open or ended suspended. */
++  get openRun(): OpenRunState {
++    return reduceOpenRun(this.entries);
++  }
++
++  /** Declared journal generation; 1 for sessions written before the marker existed. */
++  get schemaVersion(): number {
++    return journalSchemaVersion(this.entries);
++  }
++
+   get interruptedToolExecutions(): readonly ToolExecutionState[] {
+     return this.toolExecutions.filter((state) => state.status === 'started');
+   }
+diff --git a/packages/core/src/telemetry.ts b/packages/core/src/telemetry.ts
+index 8e23a2c..79b6b0b 100644
+--- a/packages/core/src/telemetry.ts
++++ b/packages/core/src/telemetry.ts
+@@ -67,7 +67,14 @@ export type RuntimeEventName =
+ 
+ export type RuntimeSpanName = 'agent.run' | 'model.request' | 'tool.execute' | 'context.compact';
+ export type TelemetryLevel = 'debug' | 'info' | 'warn' | 'error';
+-export type TelemetrySpanStatus = 'ok' | 'error' | 'canceled' | 'incomplete' | 'budget_exceeded' | 'unknown';
++export type TelemetrySpanStatus =
++  | 'ok'
++  | 'error'
++  | 'canceled'
++  | 'incomplete'
++  | 'budget_exceeded'
++  | 'suspended'
++  | 'unknown';
+ 
+ interface RuntimeTelemetryBase extends TelemetryContext {
+   schemaVersion: typeof TELEMETRY_SCHEMA_VERSION;
+@@ -234,6 +241,7 @@ const telemetrySpanStatuses = new Set<TelemetrySpanStatus>([
+   'canceled',
+   'incomplete',
+   'budget_exceeded',
++  'suspended',
+   'unknown',
+ ]);
+ 
+diff --git a/packages/core/src/tools/types.ts b/packages/core/src/tools/types.ts
+index ce890f5..869789d 100644
+--- a/packages/core/src/tools/types.ts
++++ b/packages/core/src/tools/types.ts
+@@ -37,6 +37,25 @@ export interface ToolExecutionPolicy {
+    */
+   readonly allowAbsolutePaths?: boolean;
+   readonly bash?: BashExecutionPolicy;
++  /**
++   * Tool names gated behind a recorded human decision, or `"*"` for every tool
++   * (ADR 0011). Default none, which preserves current behavior exactly.
++   *
++   * Provenance is restricted: this may only be set from user config and CLI
++   * flags. Project content loaded by `--trust-project` and tool extensions must
++   * never reach it — 0006's rule that project instructions cannot touch tool
++   * policy extends to this field. Gating is per tool name; argument patterns are
++   * an explicit non-goal.
++   */
++  readonly approval?: readonly string[] | '*';
++}
++
++/** Whether a policy gates this tool name behind a human decision. */
++export function requiresApproval(policy: ToolExecutionPolicy | undefined, toolName: string): boolean {
++  const approval = policy?.approval;
++  if (approval === undefined) return false;
++  if (approval === '*') return true;
++  return approval.includes(toolName);
+ }
+ 
+ /** Build the default, workspace-confined policy for an agent/tool context. */
+diff --git a/packages/core/tests/session.test.ts b/packages/core/tests/session.test.ts
+index 7833cd1..44da1b9 100644
+--- a/packages/core/tests/session.test.ts
++++ b/packages/core/tests/session.test.ts
+@@ -145,21 +145,21 @@ test('open rejects corrupt or schema-invalid rows anywhere except a partial JSON
+   );
+   assert.throws(
+     () => Session.open(corruptMiddle.file),
+-    (error: unknown) => error instanceof SessionCorruptionError && error.lineNumber === 2,
++    (error: unknown) => error instanceof SessionCorruptionError && error.lineNumber === 3,
+   );
+ 
+   const invalidTail = Session.create('/some/project', 'test-model', dir);
+   appendFileSync(invalidTail.file, '{"t":"usage","usage":{"inputTokens":1}}\n', 'utf8');
+   assert.throws(
+     () => Session.open(invalidTail.file),
+-    (error: unknown) => error instanceof SessionCorruptionError && error.lineNumber === 2,
++    (error: unknown) => error instanceof SessionCorruptionError && error.lineNumber === 3,
+   );
+ 
+   const completeCorruptTail = Session.create('/some/project', 'test-model', dir);
+   appendFileSync(completeCorruptTail.file, '{not-json}\n', 'utf8');
+   assert.throws(
+     () => Session.open(completeCorruptTail.file),
+-    (error: unknown) => error instanceof SessionCorruptionError && error.lineNumber === 2,
++    (error: unknown) => error instanceof SessionCorruptionError && error.lineNumber === 3,
+   );
+ });
+ 
+@@ -344,6 +344,7 @@ test('model, compaction, and terminal run lifecycle rows survive replay', () =>
+   assert.deepEqual(
+     reopened.lifecycleEntries.map((entry) => entry.t),
+     [
++      'journal_schema',
+       'model_request_started',
+       'model_request_failed',
+       'compaction_started',

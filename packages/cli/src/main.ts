@@ -30,10 +30,19 @@ import {
   tryLockSession,
   validateToolSet,
   type AgentEvent,
+  type ApprovalDecisionInput,
   type Observer,
+  type PendingApproval,
   type RunBudget,
   type Tool,
 } from '@pi/core';
+import {
+  APPROVAL_PROMPT,
+  describePendingApproval,
+  parseApprovalReply,
+  parseEditedArguments,
+  resolveDecisionFlags,
+} from './approvals.js';
 import { HELP, parseArgs, type CliArgs } from './args.js';
 import { loadConfiguredExtensions } from './extensions.js';
 import { interpolate, loadTemplates, type PromptTemplate } from './templates.js';
@@ -59,6 +68,8 @@ interface Setup {
   budget: Partial<RunBudget>;
   systemPrompt: string;
   allowHostBash: boolean;
+  /** gated tool names; only CLI flags and user config can reach this */
+  approval?: readonly string[] | '*';
   observer?: Observer;
   thinkingBudget?: number;
   contextWindow: number;
@@ -106,7 +117,11 @@ function buildAgent(setup: Omit<Setup, 'agent'>, cwd: string, model: string): Ag
     tools: setup.tools,
     cwd,
     session: setup.session,
-    toolPolicy: { workspaceRoot: cwd, bash: { allowHostExecution: setup.allowHostBash } },
+    toolPolicy: {
+      workspaceRoot: cwd,
+      bash: { allowHostExecution: setup.allowHostBash },
+      ...(setup.approval !== undefined ? { approval: setup.approval } : {}),
+    },
     ...(setup.observer ? { observer: setup.observer } : {}),
     contextWindow: setup.contextWindow,
     autoCompact: setup.autoCompact,
@@ -155,6 +170,7 @@ async function setup(args: CliArgs): Promise<Setup> {
     { source: 'configured tools' },
   );
   const session = openSession(args, cwd, profile.model);
+  const approval = args.requireApproval ?? profile.approval;
   const envWindow = Number(process.env['PI_CONTEXT_WINDOW']);
   const partial: Omit<Setup, 'agent'> = {
     config,
@@ -170,6 +186,9 @@ async function setup(args: CliArgs): Promise<Setup> {
     offload: args.offload,
     systemPrompt: buildSystemPrompt({ cwd, agentsMd, skills, bashAvailable: args.allowHostBash }),
     allowHostBash: args.allowHostBash,
+    // Provenance is restricted to the flag and the user config file. Project
+    // content loaded by --trust-project and extensions never reach this field.
+    ...(approval !== undefined ? { approval } : {}),
     ...(args.telemetry
       ? {
           observer: new SafeObserver({
@@ -216,9 +235,20 @@ function printUsageSummary(
  * Headless mode is the sub-agent story: progress goes to stderr, only the final
  * reply goes to stdout, so `pi -p "..."` composes cleanly inside bash tool calls.
  */
+/** Pending approvals are the actionable part of a suspended run: always show them. */
+function reportPendingApprovals(agent: Agent): void {
+  const pending = agent.pendingApprovals;
+  if (pending.length === 0) return;
+  process.stderr.write(
+    `${pending.length} tool call${pending.length === 1 ? '' : 's'} awaiting approval; decide with --approve/--reject/--edit on a resume:\n`,
+  );
+  for (const item of pending) process.stderr.write(`  ${describePendingApproval(item)}\n`);
+}
+
 async function headless(args: CliArgs): Promise<number> {
+  const decisionFlags = args.approveAll || args.approvals.length > 0;
   let prompt = args.prompt;
-  if (!prompt && !process.stdin.isTTY) {
+  if (!prompt && !decisionFlags && !process.stdin.isTTY) {
     const chunks: Buffer[] = [];
     let bytes = 0;
     for await (const chunk of process.stdin) {
@@ -231,12 +261,30 @@ async function headless(args: CliArgs): Promise<number> {
     }
     prompt = Buffer.concat(chunks).toString('utf8').trim();
   }
-  if (!prompt) {
+  if (!prompt && !decisionFlags) {
     if (args.json) throw new JsonRunFailure('no prompt: pass one as an argument or on stdin');
     process.stderr.write('no prompt: pass one as an argument or on stdin\n');
     return 1;
   }
   const { agent, session } = await setup(args);
+  // A session with undecided approvals cannot accept new input: its transcript
+  // still ends at the assistant tool_use whose results are pending.
+  if (agent.suspended && !decisionFlags) {
+    if (args.json) {
+      throw new JsonRunFailure(
+        'session is suspended awaiting tool approval; resume with --approve/--reject/--edit',
+        (agent.session ?? session).id,
+      );
+    }
+    reportPendingApprovals(agent);
+    return 4;
+  }
+  if (!agent.suspended && decisionFlags) {
+    const message = 'no suspended tool approvals in this session';
+    if (args.json) throw new JsonRunFailure(message, (agent.session ?? session).id);
+    process.stderr.write(`${message}\n`);
+    return 1;
+  }
 
   // first Ctrl+C interrupts the turn (state stays well-formed), second force-quits
   const controller = new AbortController();
@@ -249,8 +297,14 @@ async function headless(args: CliArgs): Promise<number> {
 
   let finalText = '';
   let terminal: Extract<AgentEvent, { type: 'turn_done' }> | undefined;
+  const turn = decisionFlags
+    ? agent.resume(
+        resolveDecisionFlags(args.approvals, args.approveAll, agent.pendingApprovals),
+        controller.signal,
+      )
+    : agent.run(prompt, controller.signal);
   try {
-    for await (const event of agent.run(prompt, controller.signal)) {
+    for await (const event of turn) {
       if (args.json) {
         process.stdout.write(`${JSON.stringify({ v: 1, sessionId: (agent.session ?? session).id, event })}\n`);
       }
@@ -279,6 +333,8 @@ async function headless(args: CliArgs): Promise<number> {
         process.stderr.write(dim(`offloaded ${event.count} old tool outputs\n`));
       } else if (event.type === 'budget_exceeded') {
         process.stderr.write(`budget exceeded: ${event.reason}\n`);
+      } else if (event.type === 'approval_decided') {
+        process.stderr.write(dim(`approval ${event.decision}: ${oneLine(event.call.name, 64)}\n`));
       }
     }
   } catch (error) {
@@ -296,7 +352,15 @@ async function headless(args: CliArgs): Promise<number> {
     process.stderr.write(
       `run ${terminal.status}: ${terminal.reason} after ${terminal.iterations} model request(s) and ${terminal.toolCalls} tool call(s)\n`,
     );
-    exitCode = terminal.status === 'canceled' ? 130 : terminal.status === 'budget_exceeded' ? 2 : 3;
+    if (terminal.status === 'suspended') reportPendingApprovals(agent);
+    exitCode =
+      terminal.status === 'canceled'
+        ? 130
+        : terminal.status === 'budget_exceeded'
+          ? 2
+          : terminal.status === 'suspended'
+            ? 4
+            : 3;
   }
   // Keep this typed record last on stderr. Legacy benchmark panes may combine
   // stdout/stderr, so emitting it after model text prevents echoed JSON from
@@ -377,49 +441,160 @@ function handleEvent(event: AgentEvent, state: ReplState): void {
         ),
       );
       break;
+    case 'approval_required':
+      ensureNewline();
+      process.stdout.write(
+        red(`[✋ ${event.executions.length} tool call${event.executions.length === 1 ? '' : 's'} need approval]\n`),
+      );
+      break;
+    case 'approval_decided':
+      ensureNewline();
+      process.stdout.write(dim(`[approval ${event.decision}: ${oneLine(event.call.name, 64)}]\n`));
+      break;
     case 'response_done':
       ensureNewline();
       break;
   }
 }
 
+/**
+ * Collect one decision per pending approval from a live terminal. Anything other
+ * than an explicit answer re-asks; the caller stops the turn if the human quits.
+ */
+/** Promise-shaped readline question that resolves undefined if stdin closes first. */
+function ask(rl: ReturnType<typeof createInterface>, query: string): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const onClose = () => {
+      if (settled) return;
+      settled = true;
+      resolve(undefined);
+    };
+    rl.once('close', onClose);
+    rl.question(query, (answer) => {
+      settled = true;
+      rl.removeListener('close', onClose);
+      resolve(answer);
+    });
+  });
+}
+
+async function promptForDecisions(
+  rl: ReturnType<typeof createInterface>,
+  pending: readonly PendingApproval[],
+): Promise<ApprovalDecisionInput[] | undefined> {
+  const decisions: ApprovalDecisionInput[] = [];
+  for (const item of pending) {
+    process.stdout.write(`\n${bold('approval required')} ${dim(oneLine(item.executionId, 128))}\n`);
+    process.stdout.write(`  ${bold(oneLine(item.call.name, 64))} ${dim(summarizeArgs(item.call.arguments))}\n`);
+    process.stdout.write(`  ${dim(oneLine(JSON.stringify(item.call.arguments), 2_000))}\n`);
+    for (;;) {
+      const answer = await ask(rl, `${cyan(APPROVAL_PROMPT)} `);
+      if (answer === undefined) return undefined; // stdin closed mid-question
+      const reply = parseApprovalReply(answer);
+      if (reply.kind === 'invalid') {
+        process.stdout.write(red(`${reply.message}\n`));
+        continue;
+      }
+      if (reply.kind === 'approve') {
+        decisions.push({ executionId: item.executionId, decision: 'approved' });
+        break;
+      }
+      if (reply.kind === 'reject') {
+        decisions.push({
+          executionId: item.executionId,
+          decision: 'rejected',
+          ...(reply.reason ? { reason: reply.reason } : {}),
+        });
+        break;
+      }
+      const raw = await ask(rl, `${cyan('replacement arguments (JSON):')} `);
+      if (raw === undefined) return undefined;
+      try {
+        decisions.push({
+          executionId: item.executionId,
+          decision: 'edited',
+          editedArguments: parseEditedArguments(raw),
+        });
+      } catch (error) {
+        process.stdout.write(red(`${String(error instanceof Error ? error.message : error)}\n`));
+        continue;
+      }
+      break;
+    }
+  }
+  return decisions;
+}
+
 interface ReplTurnResult {
   exitCode: number;
   persistenceFailure: boolean;
+  suspended: boolean;
 }
 
-async function runInput(agent: Agent, input: string, state: ReplState): Promise<ReplTurnResult> {
-  state.running = new AbortController();
-  let exitCode = 1;
-  let persistenceFailure = false;
-  try {
-    const drainSteering = () => state.steering.splice(0);
-    for await (const event of agent.run(input, state.running.signal, drainSteering)) {
-      handleEvent(event, state);
-      if (event.type === 'turn_done') {
-        persistenceFailure = event.reason === 'persistence';
-        exitCode =
-          event.status === 'completed'
-            ? 0
-            : event.status === 'canceled'
-              ? 130
-              : event.status === 'budget_exceeded'
-                ? 2
-                : 3;
+type TurnRequest = { input: string } | { decisions: ApprovalDecisionInput[] };
+
+/**
+ * Run one turn, then keep going while approvals can be collected: the process
+ * never has to exit for a decision, but each suspension is still a real durable
+ * stop that a crash here would preserve.
+ */
+async function runInput(
+  agent: Agent,
+  request: TurnRequest,
+  state: ReplState,
+  collectDecisions?: (pending: readonly PendingApproval[]) => Promise<ApprovalDecisionInput[] | undefined>,
+): Promise<ReplTurnResult> {
+  let next: TurnRequest | undefined = request;
+  let result: ReplTurnResult = { exitCode: 1, persistenceFailure: false, suspended: false };
+  while (next) {
+    const current: TurnRequest = next;
+    next = undefined;
+    state.running = new AbortController();
+    let exitCode = 1;
+    let persistenceFailure = false;
+    let suspended = false;
+    try {
+      const drainSteering = () => state.steering.splice(0);
+      const turn =
+        'input' in current
+          ? agent.run(current.input, state.running.signal, drainSteering)
+          : agent.resume(current.decisions, state.running.signal, drainSteering);
+      for await (const event of turn) {
+        handleEvent(event, state);
+        if (event.type === 'turn_done') {
+          persistenceFailure = event.reason === 'persistence';
+          suspended = event.status === 'suspended';
+          exitCode =
+            event.status === 'completed'
+              ? 0
+              : event.status === 'canceled'
+                ? 130
+                : event.status === 'budget_exceeded'
+                  ? 2
+                  : event.status === 'suspended'
+                    ? 4
+                    : 3;
+        }
       }
+    } catch (error) {
+      const text = String(error instanceof Error ? error.message : error);
+      process.stdout.write(`\n${red(text)}\n`);
+      if (/context|too long|maximum.*length/i.test(text)) {
+        process.stdout.write(dim('the conversation may have outgrown the model context, try /compact\n'));
+      }
+    } finally {
+      state.running = undefined;
+      // a note typed during the final response would otherwise leak into the next turn
+      state.steering.length = 0;
     }
-  } catch (error) {
-    const text = String(error instanceof Error ? error.message : error);
-    process.stdout.write(`\n${red(text)}\n`);
-    if (/context|too long|maximum.*length/i.test(text)) {
-      process.stdout.write(dim('the conversation may have outgrown the model context, try /compact\n'));
+    result = { exitCode, persistenceFailure, suspended };
+    if (suspended && collectDecisions) {
+      const decisions = await collectDecisions(agent.pendingApprovals);
+      if (decisions) next = { decisions };
     }
-  } finally {
-    state.running = undefined;
-    // a note typed during the final response would otherwise leak into the next turn
-    state.steering.length = 0;
   }
-  return { exitCode, persistenceFailure };
+  return result;
 }
 
 interface SlashResult {
@@ -496,6 +671,20 @@ async function repl(args: CliArgs): Promise<number> {
   );
 
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: `\n${cyan('pi>')} ` });
+  // Inline decisions need a live human at the other end. Scripted stdin is a
+  // batch: it reports the suspension and exits 4 rather than inventing answers.
+  const collectDecisions = process.stdin.isTTY
+    ? (pending: readonly PendingApproval[]) => promptForDecisions(rl, pending)
+    : undefined;
+  const reportSuspension = (suspendedAgent: Agent): void => {
+    process.stdout.write(red('[suspended: tool approvals are pending]\n'));
+    for (const item of suspendedAgent.pendingApprovals) {
+      process.stdout.write(dim(`  ${describePendingApproval(item)}\n`));
+    }
+    process.stdout.write(
+      dim('resume with: pi -c --approve <id|all> | --reject <id> --reason "…" | --edit <id> --args \'<json>\'\n'),
+    );
+  };
   let sigintArmed = false;
   rl.on('SIGINT', () => {
     if (state.running) {
@@ -666,7 +855,8 @@ async function repl(args: CliArgs): Promise<number> {
         input = line;
       }
       if (input) {
-        const turn = await runInput(agent, input, state);
+        const turn = await runInput(agent, { input }, state, collectDecisions);
+        if (turn.suspended) reportSuspension(agent);
         if (scripted && turn.exitCode !== 0 && exitCode === 0) exitCode = turn.exitCode;
         // auto-compaction may have moved the agent to a fresh session file
         if (agent.session && agent.session !== session) session = agent.session;
@@ -680,6 +870,13 @@ async function repl(args: CliArgs): Promise<number> {
       }
       if (!eof) rl.prompt();
       return false;
+    };
+
+    const onTurnFailure = (error: unknown): void => {
+      exitCode = 1;
+      pending.length = 0;
+      process.stdout.write(`\n${red(String(error instanceof Error ? error.message : error))}\n`);
+      rl.close();
     };
 
     const drainQueue = async (first: string): Promise<void> => {
@@ -720,15 +917,44 @@ async function repl(args: CliArgs): Promise<number> {
         }
         return;
       }
-      void drainQueue(rawLine).catch((error: unknown) => {
-        exitCode = 1;
-        pending.length = 0;
-        process.stdout.write(`\n${red(String(error instanceof Error ? error.message : error))}\n`);
-        rl.close();
-      });
+      void drainQueue(rawLine).catch(onTurnFailure);
     });
 
-    rl.prompt();
+    // A session opened with pending approvals must settle them before it can take
+    // new input: its transcript still ends at the assistant tool_use.
+    processing = true;
+    const startupDecisions = args.approveAll || args.approvals.length > 0;
+    const start = async (): Promise<void> => {
+      try {
+        if (agent.suspended) {
+          const decisions = startupDecisions
+            ? resolveDecisionFlags(args.approvals, args.approveAll, agent.pendingApprovals)
+            : await collectDecisions?.(agent.pendingApprovals);
+          if (decisions) {
+            const turn = await runInput(agent, { decisions }, state, collectDecisions);
+            if (turn.suspended) reportSuspension(agent);
+            if (agent.session && agent.session !== session) session = agent.session;
+            if (scripted && turn.exitCode !== 0 && exitCode === 0) exitCode = turn.exitCode;
+          } else {
+            reportSuspension(agent);
+            if (exitCode === 0) exitCode = 4;
+          }
+        } else if (startupDecisions) {
+          process.stdout.write(red('no suspended tool approvals in this session\n'));
+          if (exitCode === 0) exitCode = 1;
+        }
+      } finally {
+        processing = false;
+      }
+      const queued = pending.shift();
+      if (queued !== undefined) {
+        void drainQueue(queued).catch(onTurnFailure);
+        return;
+      }
+      if (eof) finish();
+      else rl.prompt();
+    };
+    void start().catch(onTurnFailure);
   });
 }
 

@@ -2,6 +2,9 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+/** Tool names gated behind a human decision, or "*" for every tool (ADR 0011). */
+export type ApprovalPolicy = readonly string[] | '*';
+
 export interface Profile {
   name: string;
   provider: 'anthropic' | 'openai';
@@ -10,6 +13,8 @@ export interface Profile {
   baseUrl?: string;
   /** context window in tokens (defaults to a per-model-family table) */
   contextWindow?: number;
+  /** approval gating from the profile, falling back to the top-level setting */
+  approval?: ApprovalPolicy;
 }
 
 interface ProfileConfig {
@@ -19,12 +24,15 @@ interface ProfileConfig {
   /** env var holding the API key; the key itself never lives in the config file */
   apiKeyEnv?: string;
   contextWindow?: number;
+  approval?: ApprovalPolicy;
 }
 
 export interface PiConfig {
   defaultProfile?: string;
   profiles?: Record<string, ProfileConfig>;
   extensions?: string[];
+  /** default approval gating for every profile; user config and CLI flags are its only sources */
+  approval?: ApprovalPolicy;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -37,11 +45,22 @@ function optionalString(value: unknown, path: string): string | undefined {
   return value;
 }
 
+function optionalApproval(value: unknown, path: string): ApprovalPolicy | undefined {
+  if (value === undefined) return undefined;
+  if (value === '*') return '*';
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || item.length === 0)) {
+    throw new TypeError(`${path} must be "*" or an array of tool names`);
+  }
+  return [...(value as string[])];
+}
+
 export function validateConfig(value: unknown): PiConfig {
   if (!isRecord(value)) throw new TypeError('config must be an object');
   const config: PiConfig = {};
   const defaultProfile = optionalString(value['defaultProfile'], 'defaultProfile');
   if (defaultProfile) config.defaultProfile = defaultProfile;
+  const approval = optionalApproval(value['approval'], 'approval');
+  if (approval !== undefined) config.approval = approval;
   if (value['extensions'] !== undefined) {
     if (!Array.isArray(value['extensions']) || value['extensions'].some((item) => typeof item !== 'string' || !item)) {
       throw new TypeError('extensions must be an array of non-empty strings');
@@ -61,7 +80,9 @@ export function validateConfig(value: unknown): PiConfig {
       if (contextWindow !== undefined && (!Number.isSafeInteger(contextWindow) || (contextWindow as number) <= 0)) {
         throw new TypeError(`profiles.${name}.contextWindow must be a positive integer`);
       }
+      const profileApproval = optionalApproval(raw['approval'], `profiles.${name}.approval`);
       profiles[name] = {
+        ...(profileApproval !== undefined ? { approval: profileApproval } : {}),
         ...(provider ? { provider } : {}),
         ...(optionalString(raw['model'], `profiles.${name}.model`) ? { model: raw['model'] as string } : {}),
         ...(optionalString(raw['baseUrl'], `profiles.${name}.baseUrl`) ? { baseUrl: raw['baseUrl'] as string } : {}),
@@ -130,6 +151,9 @@ export function resolveProfile(
   if (!apiKey && !baseUrl) {
     throw new Error(`no API key for profile "${name}": set ${apiKeyEnv}`);
   }
+  // Profile gating overrides the top-level default; neither can be reached by
+  // project content or extensions.
+  const approval = merged.approval ?? config.approval;
   return {
     name,
     provider,
@@ -137,5 +161,6 @@ export function resolveProfile(
     apiKey,
     ...(baseUrl ? { baseUrl } : {}),
     ...(merged.contextWindow ? { contextWindow: merged.contextWindow } : {}),
+    ...(approval !== undefined ? { approval } : {}),
   };
 }
