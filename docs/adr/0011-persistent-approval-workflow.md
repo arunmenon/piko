@@ -1,6 +1,6 @@
 # 0011 — Persistent approve/edit/reject workflow
 
-Status: proposed (2026-08-19; revised same day after external ADR review)
+Status: accepted (2026-08-19; revised after external ADR review, accepted same day)
 Depends on: 0006, 0007, 0009, 0010, 0015
 
 ## Context

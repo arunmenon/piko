@@ -17,7 +17,7 @@ new decisions get an ADR in the same change that implements them.
 | 0008 | Strict provider contract with typed terminal states | accepted |
 | 0009 | Hard run budgets enforced in the loop | accepted |
 | 0010 | Fail-closed headless and JSON automation contract | accepted |
-| 0011 | Persistent approve/edit/reject workflow | **proposed** |
+| 0011 | Persistent approve/edit/reject workflow | accepted |
 | 0012 | Tool extensions are trusted controller code (amends 0002) | accepted |
 | 0013 | Three separate event surfaces; telemetry redacts by default | accepted |
 | 0014 | Prompt-cache discipline | accepted |
