@@ -26,7 +26,7 @@ statistical bar for self-improvement promotion.
 |---|-----|--------|--------------|
 | G1 | Durable approvals (0011) implemented in the v0.2.0 tranche; fault coverage and the approval/compaction boundary were closed on 2026-08-24 | ADR review; tree @ e07affd; `docs/adr/evidence/0011-approval-test-map.md` | Phase 1 — complete |
 | G2 | Dollar accounting and a pre-dispatch spend ceiling landed with durable price provenance on 2026-08-24 | 0009; ADR 0020; `docs/adr/evidence/0020-pricing-test-map.md` | Phase 2a — complete |
-| G3 | Secret *usage* is prevented but not observable; no access-pattern events | Podcast (host); 0013 substrate exists | Phase 2 |
+| G3 | Secret-access telemetry landed 2026-08-24: credential.attach and policy.env_sanitized events, names-only by construction | 0013/0016; packages/core/tests/telemetry-secrets.test.ts | Phase 2b — complete |
 | G4 | No graceful drain on SIGTERM; run status can end untidy under supervisors | Exo guardian pattern | Phase 2 |
 | G5 | Adoption blockers: no license, no published packages, no quickstart, no doctor | Roadmap v1.0; goal choice | Phase 3 (ADR 0019) |
 | G6 | Journal schema markers already ship, but migration, compatibility, and publication policy remain unpublished | 0007 consequences; tree @ f8142ae | Phase 3 (ADR 0019) |
