@@ -48,4 +48,21 @@ benchmark hacks: no regression class introduced, no fabricated-credential
 behavior where it does not belong, reasonable failure spend. Result to be
 recorded here.
 
-Held-out result: PENDING
+Held-out result: PENDING. First attempt (run 21-06-12) aborted with zero
+valid trials: the OpenAI account exhausted its credit balance mid-run
+(HTTP 429 credit_balance_exhausted), so every in-flight trial failed as an
+API error. Nothing from that run is recorded. Rerun from scratch once the
+account is topped up.
+
+## Official suite path (Harbor / Terminal-Bench 2.x)
+
+bench/harbor_agent.py ports the adapter to Harbor as custom agent
+`bench.harbor_agent:Piko` (named "piko"; Harbor's built-in "pi" is the
+badlogic agent). It reuses bench/routing.py for command and credential
+construction and installs the same generated single-file build, so the
+legacy and Harbor paths cannot drift apart silently. Acceptance so far
+(no API spend): install-only trial on terminal-bench@2.0's gpt2-codegolf
+container completed cleanly. Open item: the terminal-bench 2.1 dataset ref
+resolves on the hub but returns zero tasks through this client; run the
+89-task terminal-bench@2.0 suite meanwhile, and note the public terminus
+anchor (78.0 +/- 1.2) is quoted against 2.1.
