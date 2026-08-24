@@ -169,12 +169,12 @@
 </ul>
 
 <h2><span class="sec">06</span>Where piko sits</h2>
-<p>piko (<a href="https://github.com/arunmenon/piko">github.com/arunmenon/piko</a>) is a clean-room TypeScript implementation of the lean thesis. The CLI exposes four workspace file tools by default; host bash is a separate, unsandboxed opt-in. Its checked all-built-ins context estimate is roughly 750 tokens on this revision, including the bash schema, and CI-gated below 1,000. It has no third-party runtime packages, records durable JSONL lifecycle state, and compacts into lineage-linked session files. It does not implement in-process sub-agent orchestration.</p>
+<p>piko (<a href="https://github.com/arunmenon/piko">github.com/arunmenon/piko</a>) is a clean-room TypeScript implementation of the lean thesis. The CLI exposes four workspace file tools by default; host bash is a separate, unsandboxed opt-in. Its checked all-built-ins context estimate is roughly 850 tokens on this revision, including the bash schema, and CI-gated below 1,000. It has no third-party runtime packages, records durable JSONL lifecycle state, and compacts into lineage-linked session files. It does not implement in-process sub-agent orchestration.</p>
 <p class="src">In the matrix below, piko cells describe the inspected working tree. Other harness cells repeat the dated external snapshot and are not normalized or independently verified.</p>
 <div class="tablewrap"><table>
   <thead><tr><th></th><th>Claude Code</th><th>Codex CLI</th><th>upstream pi</th><th>OpenCode</th><th>piko</th></tr></thead>
   <tbody>
-    <tr><td>Fixed context (design)</td><td class="num">20–30k</td><td class="num">2–5k</td><td class="num">&lt;1k</td><td class="num">~7k</td><td class="num"><span class="tag good">~750 estimated, locally gated</span></td></tr>
+    <tr><td>Fixed context (design)</td><td class="num">20–30k</td><td class="num">2–5k</td><td class="num">&lt;1k</td><td class="num">~7k</td><td class="num"><span class="tag good">~850 estimated, locally gated</span></td></tr>
     <tr><td>Reported first-turn input (API boundary)</td><td class="num">28,407</td><td class="num">—</td><td class="num">2,768</td><td class="num">12,374</td><td class="num"><span class="tag warn">no published artifact</span></td></tr>
     <tr><td>Tools</td><td class="num">44</td><td class="num">~4–7</td><td class="num">4</td><td class="num">~10</td><td class="num">4 default; host bash/extensions opt in</td></tr>
     <tr><td>Compaction</td><td>5 mechanisms, opaque threshold</td><td>server-side, encrypted</td><td>auto</td><td>auto</td><td>auto + manual, <strong>new-file observable</strong></td></tr>

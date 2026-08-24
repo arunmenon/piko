@@ -90,7 +90,13 @@ lists fingerprint the machine and stay out. Values, headers, and paths never
 enter events; absence is by construction (types that cannot hold a value),
 proven with redaction disabled — strictly stronger than redaction tests. Any
 future remote/exported sink must not widen name exposure without explicit
-ADR 0021 treatment.
+ADR treatment. Hardened 2026-08-24 after external review found three gaps in
+the "by construction" claim: the sanitize event exported the full allowlist
+(now a count), apiKeyEnv was an unrestricted string that could smuggle
+value-like text into the source attribute (now a strict env-name grammar at
+parse AND resolve), and keyless endpoints emitted attach evidence for a
+credential that never existed (now suppressed). Exact-attribute tests with
+redaction disabled pin the event shapes.
 (c) Bounded graceful drain: SIGTERM stops admission of new turns, grants the
 in-flight operation a configured grace period, then aborts it. Cooperative work
 may finish normally; otherwise provider/tool outcomes are journaled

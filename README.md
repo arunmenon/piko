@@ -3,7 +3,7 @@
 > The CLI command is `pi`; the project is **piko** ("tiny pi").
 
 A clean-room minimal coding agent in the spirit of [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
-The checked all-built-ins prefix stays **under 1,000 estimated tokens** (roughly 750 on this
+The checked all-built-ins prefix stays **under 1,000 estimated tokens** (roughly 850 on this
 revision, including the opt-in bash schema, enforced by `npm run check-budget`). Project
 instructions and extension schemas are separately opt-in and bounded. No third-party runtime
 packages.

@@ -5,7 +5,7 @@ early-alpha harness; completion here means implemented and locally tested, not p
 
 ## v0.2 safety and correctness — implemented in this working tree, unreleased
 
-Package manifests remain at `0.1.0`; this heading describes the pending change set, not a published release.
+Package manifests are versioned `0.2.0`; the tag and publish decision remains a pending human gate, so nothing is released.
 
 - Workspace-relative, symlink-aware file containment and atomic writes.
 - Deny-by-default host bash with a sanitized environment and explicit `--allow-host-bash` opt-in.

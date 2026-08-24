@@ -34,3 +34,24 @@ scrolled through tool output.
   parsing means real corruption demands human reconciliation instead of
   silent skipping — chosen deliberately after the earlier skip-and-continue
   behavior masked data loss.
+
+## Amendment (2026-08-24, from external review)
+
+The Decision text above overstated two properties, confirmed by an
+independent review against the implementation:
+
+- No stale-lock takeover exists. A lock file is authoritative until removed
+  by hand, including locks left by SIGKILL or a dead PID
+  (packages/core/src/session.ts never unlinks another owner's lock). The
+  token-inspection language described intent, not code.
+- The library boundary does not enforce single-writer. `Session.open()`
+  returns a fully mutable session without requiring the lock; two openers
+  of one journal can interleave conflicting lifecycle transitions and
+  corrupt it. The CLI locks correctly; `@pi/core` consumers are not forced
+  to.
+
+Consequently a crash CAN hide the newest conversation: `pi -c` filters
+locked sessions and silently selects an older one, or reports "no previous
+session". Until the proposed remediation ADRs land (lock-capability
+session API; explicit stale-lock recovery), treat single-writer as a CLI
+convention, not a core-enforced invariant.

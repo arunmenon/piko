@@ -80,8 +80,9 @@ OpenAI-compatible endpoint, use `openai/<model>` plus `OPENAI_BASE_URL`. Bare
 models remain supported for old scripts but prefixed models are preferred.
 
 Terminal-Bench 2.0 and 2.1 use Harbor and a different agent API. The legacy
-adapter must not be described as a Harbor or TB 2.x submission. A future Harbor
-port should live beside this adapter until existing 0.2.x results have been
+adapter must not be described as a Harbor or TB 2.x submission. The Harbor
+port now lives beside this adapter (bench/harbor_agent.py, custom agent
+`bench.harbor_agent:Piko`); it stays here until existing 0.2.x results have been
 reproduced and archived.
 
 ## Comparing repeated runs

@@ -6,7 +6,7 @@ import {
   lstatSync,
   openSync,
   readSync,
-  readdirSync,
+  opendirSync,
   realpathSync,
 } from 'node:fs';
 import { platform } from 'node:os';
@@ -16,6 +16,7 @@ export const AGENTS_MD_LINE_WARNING = 60;
 export const MAX_AGENTS_MD_BYTES = 32 * 1024;
 export const MAX_SKILL_SUMMARY_BYTES = 1024;
 export const MAX_SKILL_INDEX_ENTRIES = 50;
+export const SKILL_SCAN_ENTRY_BUDGET = 10_000;
 
 export interface AgentsMd {
   content: string;
@@ -83,11 +84,24 @@ export function discoverSkills(cwd: string): SkillEntry[] {
   if (!lstatSync(requestedDir).isDirectory()) return [];
   const dir = realpathSync(requestedDir);
   if (!isInside(root, dir)) return [];
+  // Bounded scan: readdirSync materializes the whole directory before any cap
+  // applies, so a trusted repo with a pathological entry count could exhaust
+  // memory (review finding 13). Read at most SKILL_SCAN_ENTRY_BUDGET entries;
+  // past the budget the index is truncated, never the process.
+  const names: string[] = [];
+  const handle = opendirSync(dir);
+  try {
+    let scanned = 0;
+    for (;;) {
+      const entry = handle.readSync();
+      if (entry === null || ++scanned > SKILL_SCAN_ENTRY_BUDGET) break;
+      if (entry.name.endsWith('.md')) names.push(entry.name);
+    }
+  } finally {
+    handle.closeSync();
+  }
   const entries: SkillEntry[] = [];
-  for (const file of readdirSync(dir)
-    .filter((name) => name.endsWith('.md'))
-    .sort()
-    .slice(0, MAX_SKILL_INDEX_ENTRIES)) {
+  for (const file of names.sort().slice(0, MAX_SKILL_INDEX_ENTRIES)) {
     const relativePath = join('.agent', 'skills', file);
     const path = projectFile(root, relativePath);
     if (!path) continue;

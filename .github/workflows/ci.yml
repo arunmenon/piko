@@ -32,6 +32,20 @@ jobs:
         with:
           python-version: "3.12"
       - run: npm ci
+      - name: Lockfile agrees with workspace manifests
+        run: |
+          node -e '
+            const { readFileSync } = require("node:fs");
+            const lock = JSON.parse(readFileSync("package-lock.json", "utf8"));
+            for (const dir of ["packages/ai", "packages/core", "packages/cli"]) {
+              const manifest = JSON.parse(readFileSync(`${dir}/package.json`, "utf8"));
+              const locked = lock.packages[dir]?.version;
+              if (locked !== manifest.version) {
+                console.error(`${dir}: lockfile has ${locked}, manifest has ${manifest.version}; run npm install and commit the lockfile`);
+                process.exit(1);
+              }
+            }
+          '
       - run: npm test
       - run: npm run check-budget
       - name: Verify publish contents

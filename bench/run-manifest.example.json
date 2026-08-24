@@ -6,7 +6,7 @@
     "repository": "https://github.com/arunmenon/piko",
     "commit": "40-character-git-sha",
     "dirty": false,
-    "packageVersion": "0.1.0",
+    "packageVersion": "0.2.0",
     "adapter": "legacy-terminal-bench-0.2.18"
   },
   "benchmark": {

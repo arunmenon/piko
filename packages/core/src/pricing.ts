@@ -423,7 +423,10 @@ export async function loadPricingTable(options: LoadPricingOptions = {}): Promis
     try {
       const fetcher = options.fetcher ?? ((target, init) => fetch(target, init) as Promise<FetchResponse>);
       const response = await Promise.race([fetcher(url, { signal: controller.signal }), timeout]);
-      const text = await boundedResponseText(response);
+      // One absolute deadline across fetch AND body consumption: native fetch
+      // propagates the abort into its body stream, but an injected fetcher may
+      // return an OK response whose reads never settle (review finding 10).
+      const text = await Promise.race([boundedResponseText(response), timeout]);
       const body = JSON.parse(text) as unknown;
       const fetchedAt = now.toISOString();
       const revision = sha256(text);
