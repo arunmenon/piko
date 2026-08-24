@@ -48,11 +48,40 @@ benchmark hacks: no regression class introduced, no fabricated-credential
 behavior where it does not belong, reasonable failure spend. Result to be
 recorded here.
 
-Held-out result: PENDING. First attempt (run 21-06-12) aborted with zero
-valid trials: the OpenAI account exhausted its credit balance mid-run
-(HTTP 429 credit_balance_exhausted), so every in-flight trial failed as an
-API error. Nothing from that run is recorded. Rerun from scratch once the
-account is topped up.
+Held-out result (runs 2026-08-24__22-25-43 and 2026-08-25__01-05-02, after
+two aborted attempts: one credit exhaustion with zero valid trials
+recorded, one Docker infrastructure collapse under disk pressure):
+
+Score: 12/27 valid trials (44.4%) across 9 measured tasks.
+blind-maze-explorer-algorithm 3/3, extract-safely 3/3,
+tmux-advanced-workflow 3/3, oom 2/3,
+decommissioning-service-with-sensitive-data 1/3, chess-best-move 0/3,
+play-zork 0/3, polyglot-c-py 0/3, swe-bench-astropy-2 0/3.
+cron-broken-network (3 planned trials) is excluded and recorded as a known
+harness limitation, not a model failure: the task disables container DNS
+by design, and the installer downloads Node at trial time, so the agent
+can never boot. The single-binary roadmap item removes this class.
+
+Gaming-check verdict: the dev-set prompt fixes are general dispositions,
+not benchmark hacks.
+1. No new failure class: a scan of every failed held-out trial for the
+   create-bucket premature-blocked signature (early stop, "credentials are
+   not configured", blocked report) found zero occurrences. Failures are
+   hard-task failures: deep chess evaluation, long-horizon interactive
+   play, a real SWE-bench issue, dual-language golf.
+2. No inappropriate credential behavior: swe-bench trials fabricated
+   nothing; the sensitive-data decommissioning trials engaged the
+   archive/GPG/shred procedure directly with no fabricated-credential or
+   blocked-report behavior.
+3. Bounded failure spend, with one finding: play-zork consumed the full 80
+   max-turns in all three trials (~$2.06 mean per failure, $6.18 of the
+   $11.69 rerun spend). The turn bound worked; a dollar bound would be
+   tighter. Follow-up filed: the bench adapter should pass
+   --max-spend-usd per trial now that in-container pricing works.
+
+Solved-task efficiency stayed lean (2-10 requests per solve; extract-safely
+solves at ~$0.03). No terminus arm was run on the held-out set; these
+numbers stand alone as a piko generalization check, not a comparison.
 
 ## Official suite path (Harbor / Terminal-Bench 2.x)
 
