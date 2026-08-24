@@ -1,0 +1,834 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-24T15:09:30.099223+00:00",
+  "inputs": {
+    "pi": "/private/tmp/claude-501/-Users-arunmenon-projects-pi/277d6939-898d-4a37-864a-57b70b0f2cc0/scratchpad/tb-runs/2026-08-24__20-29-49",
+    "baseline": "/private/tmp/claude-501/-Users-arunmenon-projects-pi/277d6939-898d-4a37-864a-57b70b0f2cc0/scratchpad/tb-runs/2026-08-24__19-10-52"
+  },
+  "summary": {
+    "pi": {
+      "solved_trials": 24,
+      "trials": 28,
+      "solved_tasks": 9,
+      "tasks": 10,
+      "input_tokens": 450113,
+      "output_tokens": 39402,
+      "cache_read_tokens": 199168,
+      "trials_with_token_data": 28,
+      "mean_input_per_measured_trial": 16075.464285714286,
+      "mean_output_per_measured_trial": 1407.2142857142858,
+      "cost_usd": 2.536369,
+      "trials_with_cost_data": 28,
+      "cost_per_solved_trial_usd": 0.10568204166666667
+    },
+    "baseline": {
+      "solved_trials": 25,
+      "trials": 28,
+      "solved_tasks": 9,
+      "tasks": 10,
+      "input_tokens": 439498,
+      "output_tokens": 39971,
+      "cache_read_tokens": null,
+      "trials_with_token_data": 28,
+      "mean_input_per_measured_trial": 15696.357142857143,
+      "mean_output_per_measured_trial": 1427.5357142857142,
+      "cost_usd": 0,
+      "trials_with_cost_data": 0,
+      "cost_per_solved_trial_usd": 0
+    }
+  },
+  "pairedTaskInputRatio": {
+    "baselineOverPi": 0.9943378855627775,
+    "matchedTasks": 10
+  },
+  "tasks": {
+    "create-bucket": {
+      "pi": [
+        {
+          "trial": "create-bucket/create-bucket.1-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 3279,
+            "output": 677,
+            "requests": 3,
+            "cost_usd": 0.036705,
+            "input_uncached": 3279,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        },
+        {
+          "trial": "create-bucket/create-bucket.2-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 3789,
+            "output": 1054,
+            "requests": 3,
+            "cost_usd": 0.050565,
+            "input_uncached": 3789,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        },
+        {
+          "trial": "create-bucket/create-bucket.3-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 3951,
+            "output": 1201,
+            "requests": 3,
+            "cost_usd": 0.055785,
+            "input_uncached": 3951,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "create-bucket/create-bucket.1-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 11052,
+            "output": 1324,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        },
+        {
+          "trial": "create-bucket/create-bucket.2-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 3689,
+            "output": 576,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        },
+        {
+          "trial": "create-bucket/create-bucket.3-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 5212,
+            "output": 766,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        }
+      ]
+    },
+    "fix-git": {
+      "pi": [
+        {
+          "trial": "fix-git/fix-git.1-of-3.2026-08-24__20-29-49",
+          "resolved": false,
+          "tokens": {
+            "input": 41846,
+            "output": 1534,
+            "requests": 13,
+            "cost_usd": 0.14005,
+            "input_uncached": 16246,
+            "cache_read": 25600,
+            "cache_write": 0
+          }
+        },
+        {
+          "trial": "fix-git/fix-git.2-of-3.2026-08-24__20-29-49",
+          "resolved": false,
+          "tokens": {
+            "input": 81137,
+            "output": 4101,
+            "requests": 16,
+            "cost_usd": 0.249931,
+            "input_uncached": 19185,
+            "cache_read": 61952,
+            "cache_write": 0
+          }
+        },
+        {
+          "trial": "fix-git/fix-git.3-of-3.2026-08-24__20-29-49",
+          "resolved": false,
+          "tokens": {
+            "input": 24674,
+            "output": 996,
+            "requests": 9,
+            "cost_usd": 0.104866,
+            "input_uncached": 13922,
+            "cache_read": 10752,
+            "cache_write": 0
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "fix-git/fix-git.1-of-3.2026-08-24__19-10-52",
+          "resolved": false,
+          "tokens": {
+            "input": 16281,
+            "output": 1568,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        },
+        {
+          "trial": "fix-git/fix-git.2-of-3.2026-08-24__19-10-52",
+          "resolved": false,
+          "tokens": {
+            "input": 16577,
+            "output": 1463,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        },
+        {
+          "trial": "fix-git/fix-git.3-of-3.2026-08-24__19-10-52",
+          "resolved": false,
+          "tokens": {
+            "input": 25682,
+            "output": 1575,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        }
+      ]
+    },
+    "fix-permissions": {
+      "pi": [
+        {
+          "trial": "fix-permissions/fix-permissions.1-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 4335,
+            "output": 215,
+            "requests": 5,
+            "cost_usd": 0.028125,
+            "input_uncached": 4335,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        },
+        {
+          "trial": "fix-permissions/fix-permissions.2-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 4335,
+            "output": 194,
+            "requests": 5,
+            "cost_usd": 0.027495,
+            "input_uncached": 4335,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        },
+        {
+          "trial": "fix-permissions/fix-permissions.3-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 3446,
+            "output": 264,
+            "requests": 4,
+            "cost_usd": 0.02515,
+            "input_uncached": 3446,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "fix-permissions/fix-permissions.1-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 4725,
+            "output": 567,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        },
+        {
+          "trial": "fix-permissions/fix-permissions.2-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 4911,
+            "output": 614,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        },
+        {
+          "trial": "fix-permissions/fix-permissions.3-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 4756,
+            "output": 601,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        }
+      ]
+    },
+    "hello-world": {
+      "pi": [
+        {
+          "trial": "hello-world/hello-world.1-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 3404,
+            "output": 161,
+            "requests": 4,
+            "cost_usd": 0.02185,
+            "input_uncached": 3404,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        },
+        {
+          "trial": "hello-world/hello-world.2-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 3398,
+            "output": 157,
+            "requests": 4,
+            "cost_usd": 0.0217,
+            "input_uncached": 3398,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        },
+        {
+          "trial": "hello-world/hello-world.3-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 2352,
+            "output": 62,
+            "requests": 3,
+            "cost_usd": 0.01362,
+            "input_uncached": 2352,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "hello-world/hello-world.1-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 1655,
+            "output": 225,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        },
+        {
+          "trial": "hello-world/hello-world.2-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 1658,
+            "output": 214,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        },
+        {
+          "trial": "hello-world/hello-world.3-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 1664,
+            "output": 235,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        }
+      ]
+    },
+    "heterogeneous-dates": {
+      "pi": [
+        {
+          "trial": "heterogeneous-dates/heterogeneous-dates.1-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 5416,
+            "output": 572,
+            "requests": 5,
+            "cost_usd": 0.04424,
+            "input_uncached": 5416,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        },
+        {
+          "trial": "heterogeneous-dates/heterogeneous-dates.2-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 7719,
+            "output": 1017,
+            "requests": 6,
+            "cost_usd": 0.061617,
+            "input_uncached": 6055,
+            "cache_read": 1664,
+            "cache_write": 0
+          }
+        },
+        {
+          "trial": "heterogeneous-dates/heterogeneous-dates.3-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 5435,
+            "output": 614,
+            "requests": 5,
+            "cost_usd": 0.045595,
+            "input_uncached": 5435,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "heterogeneous-dates/heterogeneous-dates.1-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 8639,
+            "output": 956,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        },
+        {
+          "trial": "heterogeneous-dates/heterogeneous-dates.2-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 7012,
+            "output": 982,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        },
+        {
+          "trial": "heterogeneous-dates/heterogeneous-dates.3-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 6758,
+            "output": 888,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        }
+      ]
+    },
+    "openssl-selfsigned-cert": {
+      "pi": [
+        {
+          "trial": "openssl-selfsigned-cert/openssl-selfsigned-cert.1-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 4432,
+            "output": 1518,
+            "requests": 3,
+            "cost_usd": 0.0677,
+            "input_uncached": 4432,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        },
+        {
+          "trial": "openssl-selfsigned-cert/openssl-selfsigned-cert.2-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 4578,
+            "output": 1290,
+            "requests": 3,
+            "cost_usd": 0.06159,
+            "input_uncached": 4578,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        },
+        {
+          "trial": "openssl-selfsigned-cert/openssl-selfsigned-cert.3-of-3.2026-08-24__20-29-49",
+          "resolved": false,
+          "tokens": {
+            "input": 4521,
+            "output": 1276,
+            "requests": 3,
+            "cost_usd": 0.060885,
+            "input_uncached": 4521,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "openssl-selfsigned-cert/openssl-selfsigned-cert.1-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 7146,
+            "output": 1096,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        },
+        {
+          "trial": "openssl-selfsigned-cert/openssl-selfsigned-cert.2-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 7226,
+            "output": 1037,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        },
+        {
+          "trial": "openssl-selfsigned-cert/openssl-selfsigned-cert.3-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 7210,
+            "output": 1081,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        }
+      ]
+    },
+    "organization-json-generator": {
+      "pi": [
+        {
+          "trial": "organization-json-generator/organization-json-generator.1-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 18125,
+            "output": 2754,
+            "requests": 8,
+            "cost_usd": 0.136957,
+            "input_uncached": 10061,
+            "cache_read": 8064,
+            "cache_write": 0
+          }
+        },
+        {
+          "trial": "organization-json-generator/organization-json-generator.2-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 22876,
+            "output": 2423,
+            "requests": 9,
+            "cost_usd": 0.131198,
+            "input_uncached": 10460,
+            "cache_read": 12416,
+            "cache_write": 0
+          }
+        },
+        {
+          "trial": "organization-json-generator/organization-json-generator.3-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 11822,
+            "output": 2095,
+            "requests": 6,
+            "cost_usd": 0.102376,
+            "input_uncached": 7470,
+            "cache_read": 4352,
+            "cache_write": 0
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "organization-json-generator/organization-json-generator.1-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 24635,
+            "output": 2160,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        },
+        {
+          "trial": "organization-json-generator/organization-json-generator.2-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 25245,
+            "output": 2181,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        },
+        {
+          "trial": "organization-json-generator/organization-json-generator.3-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 17122,
+            "output": 1918,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        }
+      ]
+    },
+    "simple-sheets-put": {
+      "pi": [
+        {
+          "trial": "simple-sheets-put/simple-sheets-put.1-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 27281,
+            "output": 1876,
+            "requests": 7,
+            "cost_usd": 0.135085,
+            "input_uncached": 14481,
+            "cache_read": 12800,
+            "cache_write": 0
+          }
+        },
+        {
+          "trial": "simple-sheets-put/simple-sheets-put.2-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 38342,
+            "output": 1810,
+            "requests": 10,
+            "cost_usd": 0.176314,
+            "input_uncached": 22854,
+            "cache_read": 15488,
+            "cache_write": 0
+          }
+        },
+        {
+          "trial": "simple-sheets-put/simple-sheets-put.3-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 47775,
+            "output": 2150,
+            "requests": 12,
+            "cost_usd": 0.214095,
+            "input_uncached": 27935,
+            "cache_read": 19840,
+            "cache_write": 0
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "simple-sheets-put/simple-sheets-put.1-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 34821,
+            "output": 2391,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        },
+        {
+          "trial": "simple-sheets-put/simple-sheets-put.2-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 65403,
+            "output": 2885,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        },
+        {
+          "trial": "simple-sheets-put/simple-sheets-put.3-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 49256,
+            "output": 2992,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        }
+      ]
+    },
+    "simple-web-scraper": {
+      "pi": [
+        {
+          "trial": "simple-web-scraper/simple-web-scraper.1-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 10103,
+            "output": 1284,
+            "requests": 6,
+            "cost_usd": 0.081547,
+            "input_uncached": 8439,
+            "cache_read": 1664,
+            "cache_write": 0
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "simple-web-scraper/simple-web-scraper.1-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 14079,
+            "output": 1607,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        }
+      ]
+    },
+    "sqlite-db-truncate": {
+      "pi": [
+        {
+          "trial": "sqlite-db-truncate/sqlite-db-truncate.1-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 23240,
+            "output": 3211,
+            "requests": 8,
+            "cost_usd": 0.162418,
+            "input_uncached": 12104,
+            "cache_read": 11136,
+            "cache_write": 0
+          }
+        },
+        {
+          "trial": "sqlite-db-truncate/sqlite-db-truncate.2-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 18025,
+            "output": 1977,
+            "requests": 8,
+            "cost_usd": 0.113147,
+            "input_uncached": 9961,
+            "cache_read": 8064,
+            "cache_write": 0
+          }
+        },
+        {
+          "trial": "sqlite-db-truncate/sqlite-db-truncate.3-of-3.2026-08-24__20-29-49",
+          "resolved": true,
+          "tokens": {
+            "input": 20477,
+            "output": 2919,
+            "requests": 9,
+            "cost_usd": 0.165763,
+            "input_uncached": 15101,
+            "cache_read": 5376,
+            "cache_write": 0
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "sqlite-db-truncate/sqlite-db-truncate.1-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 21228,
+            "output": 2620,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        },
+        {
+          "trial": "sqlite-db-truncate/sqlite-db-truncate.2-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 27429,
+            "output": 2916,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        },
+        {
+          "trial": "sqlite-db-truncate/sqlite-db-truncate.3-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 18427,
+            "output": 2533,
+            "requests": null,
+            "cost_usd": null,
+            "input_uncached": null,
+            "cache_read": null,
+            "cache_write": null
+          }
+        }
+      ]
+    }
+  }
+}
