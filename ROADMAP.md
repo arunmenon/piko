@@ -25,7 +25,7 @@ Package manifests remain at `0.1.0`; this heading describes the pending change s
 - [x] Atomic CLI model/profile switch that rebuilds provider and context-window state.
 - [x] Linked-session audit and per-request model attribution.
 - [x] Persistent approve/edit/reject workflow that can suspend and survive process loss.
-- [ ] Carry or explicitly surrender pending approvals across /compact (currently abandoned in the old session with an honest suspended status, but without warning).
+- [x] Compaction while approvals are pending: blocked at both session and agent layers with execution IDs in the error (0011 addendum, 2026-08-24); carrying suspended batches through compaction stays deferred until it has its own lifecycle design and crash-window evidence.
 - [ ] Container or microVM `ToolExecutor` adapter with filesystem and egress policy.
 - [ ] Stable bidirectional RPC/SDK surface beyond one-shot JSONL output.
 - [ ] Provider capability registry and native OpenAI Responses adapter.

@@ -684,3 +684,36 @@ test('a suspended session refuses a second concurrent turn and reports its pendi
   appendFileSync(session.file, '', 'utf8');
   assert.equal(Session.open(session.file).toolExecutions[0]?.status, 'awaiting_approval');
 });
+
+test('pending approvals block manual and automatic compaction without mutating the session', async () => {
+  const workspace = dir('approval-compaction');
+  const session = Session.create(workspace, 'model', workspace);
+  const danger = recordingTool('danger');
+  const client = scriptedClient(() => ({ role: 'assistant', content: [toolCall('c1', 'danger')] }));
+  const agent = new Agent({
+    client,
+    model: 'model',
+    systemPrompt: 's',
+    tools: [danger],
+    cwd: workspace,
+    session,
+    contextWindow: 128_000,
+    toolPolicy: { approval: ['danger'] },
+  });
+  assert.equal(terminalOf(await drain(agent.run('go'))).status, 'suspended');
+  const executionId = agent.pendingApprovals[0]?.executionId;
+  assert.ok(executionId);
+  const before = readFileSync(session.file, 'utf8');
+
+  await assert.rejects(() => agent.summarize(), new RegExp(executionId));
+  assert.throws(() => session.beginCompaction('manual'), new RegExp(executionId));
+  assert.throws(() => session.beginCompaction('auto'), new RegExp(executionId));
+  await assert.rejects(() => drain(agent.run('force auto compaction')), /tool approvals are pending/);
+
+  assert.equal(readFileSync(session.file, 'utf8'), before);
+  assert.equal(client.requests.length, 1, 'no summary or normal provider request may run past the gate');
+  assert.equal(
+    Session.open(session.file).lifecycleEntries.some((entry) => entry.t === 'compaction_started'),
+    false,
+  );
+});

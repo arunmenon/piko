@@ -803,6 +803,14 @@ export class Session {
     trigger: 'auto' | 'manual',
     options: { compactionId?: string; keepFromMessage?: number } = {},
   ): string {
+    const blocked = this.suspendedToolExecutions;
+    if (blocked.length > 0) {
+      throw new Error(
+        `cannot compact while tool approvals are pending; decide and resume execution(s): ${blocked
+          .map((state) => state.executionId)
+          .join(', ')}`,
+      );
+    }
     const compactionId = options.compactionId ?? randomUUID();
     this.append({
       t: 'compaction_started',

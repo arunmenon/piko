@@ -2085,6 +2085,18 @@ export class Agent {
     return Math.min(KEEP_RECENT_TOKENS, Math.max(1_000, Math.floor(window / 5)));
   }
 
+  /** Compaction cannot migrate the open tool-use batch in approval v1. */
+  private assertCompactionAllowed(): void {
+    const blocked = this._session?.suspendedToolExecutions ?? [];
+    if (!this.suspended && blocked.length === 0) return;
+    const executionIds = blocked.length > 0
+      ? blocked.map((state) => state.executionId)
+      : this.pendingApprovals.map((item) => item.executionId);
+    throw new Error(
+      `cannot compact while tool approvals are pending; decide and resume execution(s): ${executionIds.join(', ') || 'pending batch'}`,
+    );
+  }
+
   /**
    * Checkpoint the live (possibly micro-offloaded) transcript into a fresh,
    * self-contained session before the append-only journal reaches its recovery
@@ -2147,6 +2159,7 @@ export class Agent {
     turnUsage: Usage,
     onRequestStart: () => void,
   ): Promise<number> {
+    this.assertCompactionAllowed();
     const keepFrom = chooseKeepBoundary(this.messages, this.compactionKeepTokens());
     if (keepFrom <= 0) {
       throw new Error(
@@ -2503,6 +2516,7 @@ export class Agent {
 
   /** Manual handoff summary; unlike old behavior, its request and usage are accounted. */
   async summarize(signal?: AbortSignal): Promise<string> {
+    this.assertCompactionAllowed();
     const summarized = await this.summarizeMessages(this.messages, signal);
     return summarized.text;
   }

@@ -70,3 +70,17 @@ unattended; judgment calls stop the line and wait.
   content hashes are noted as the future mitigation; approval UI beyond the
   terminal; multi-approver policy; OS-level enforcement (a rejected call is not
   a sandbox — 0006's boundaries still apply).
+
+## Addendum (2026-08-24) — compaction boundary
+
+Approval v1 does not migrate a suspended tool-use batch into a new lineage
+head. While a session has an undecided approval, or an approved/edited call that
+has not yet started, both manual and automatic compaction refuse before writing
+a `compaction_started` row or making a summary request. The error lists the
+blocking execution IDs and directs the operator to decide and resume them.
+
+This preserves the original tool-call IDs, ordering, budget segment, and
+single-writer decision point in one journal. Carrying suspended executions
+through compaction remains deferred until it has an explicit lifecycle design
+and the same crash-window evidence as this ADR. The Phase 1 evidence map is
+maintained in `docs/adr/evidence/0011-approval-test-map.md`.
