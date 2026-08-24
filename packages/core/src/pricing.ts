@@ -24,6 +24,20 @@ export interface ModelPrice {
   outputUSDPerToken: number;
   cacheReadUSDPerToken: number;
   cacheWriteUSDPerToken: number;
+  /**
+   * Long-context rates, applied to the whole request when its prompt tokens
+   * (input + cache read + cache write) exceed aboveInputTokens. Absent tier
+   * keys inherit the base rate. Requests are priced per usage record, so the
+   * applicable tier is known exactly; this is why tiered rows no longer have
+   * to be rejected as ambiguous.
+   */
+  longContext?: {
+    aboveInputTokens: number;
+    inputUSDPerToken: number;
+    outputUSDPerToken: number;
+    cacheReadUSDPerToken: number;
+    cacheWriteUSDPerToken: number;
+  };
   /** Highest token-denominated rate advertised by the source row, for hard reservations. */
   reservationInputUSDPerToken?: number;
   reservationOutputUSDPerToken?: number;
@@ -129,6 +143,54 @@ function optionalRate(row: Record<string, unknown>, names: readonly string[]): n
   return undefined;
 }
 
+const LONG_CONTEXT_KEY =
+  /^(input_cost_per_token|output_cost_per_token|cache_read_input_token_cost|cache_creation_input_token_cost)_above_(\d+)k_tokens$/;
+
+/**
+ * Extract a single long-context tier from a LiteLLM row. Returns undefined
+ * when the row has no tier keys. Throws when tier keys disagree on the
+ * threshold: a row with several thresholds is genuinely ambiguous and the
+ * whole row stays rejected, as before.
+ */
+function parseLongContextTier(
+  row: Record<string, unknown>,
+  base: { input: number; output: number; cacheRead: number; cacheWrite: number },
+): ModelPrice['longContext'] {
+  let aboveInputTokens: number | undefined;
+  const rates: Record<string, number> = {};
+  for (const [key, value] of Object.entries(row)) {
+    const match = LONG_CONTEXT_KEY.exec(key.toLowerCase());
+    if (!match) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      throw new TypeError(`${key} must be a finite nonnegative number`);
+    }
+    const threshold = Number(match[2]) * 1_000;
+    if (aboveInputTokens !== undefined && aboveInputTokens !== threshold) {
+      throw new TypeError('row advertises multiple long-context thresholds');
+    }
+    aboveInputTokens = threshold;
+    rates[match[1]!] = value;
+  }
+  if (aboveInputTokens === undefined) return undefined;
+  const tierInput = rates['input_cost_per_token'] ?? base.input;
+  // Mirror the base parser's conservatism: a row that never advertises a
+  // cache rate had it defaulted from input, so the tier defaults from tier
+  // input; a row with an explicit base cache rate but no tier variant keeps
+  // the advertised base value.
+  const tierCacheRead =
+    rates['cache_read_input_token_cost'] ?? ('cache_read_input_token_cost' in row ? base.cacheRead : tierInput);
+  const tierCacheWrite =
+    rates['cache_creation_input_token_cost'] ??
+    ('cache_creation_input_token_cost' in row ? base.cacheWrite : tierInput);
+  return {
+    aboveInputTokens,
+    inputUSDPerToken: tierInput,
+    outputUSDPerToken: rates['output_cost_per_token'] ?? base.output,
+    cacheReadUSDPerToken: tierCacheRead,
+    cacheWriteUSDPerToken: tierCacheWrite,
+  };
+}
+
 function unresolvedDefaultRate(
   row: Record<string, unknown>,
   input: number,
@@ -155,6 +217,10 @@ function unresolvedDefaultRate(
     ) {
       continue;
     }
+
+    // Single-threshold long-context keys are represented exactly by the
+    // parsed tier and priced per request; they no longer make a row ambiguous.
+    if (LONG_CONTEXT_KEY.test(normalized)) continue;
 
     let representedBy: number | undefined;
     if (normalized === 'output_cost_per_reasoning_token') representedBy = output;
@@ -194,6 +260,7 @@ export function parsePricingTable(
         ]) ?? input;
       const cacheWrite =
         optionalRate(row, ['cacheWriteUSDPerToken', 'cache_creation_input_token_cost']) ?? input;
+      const longContext = parseLongContextTier(row, { input, output, cacheRead, cacheWrite });
       if (unresolvedDefaultRate(row, input, output, cacheRead, cacheWrite)) continue;
       prices.set(model, {
         model,
@@ -201,8 +268,16 @@ export function parsePricingTable(
         outputUSDPerToken: output,
         cacheReadUSDPerToken: cacheRead,
         cacheWriteUSDPerToken: cacheWrite,
-        reservationInputUSDPerToken: Math.max(input, cacheRead, cacheWrite),
-        reservationOutputUSDPerToken: output,
+        ...(longContext ? { longContext } : {}),
+        reservationInputUSDPerToken: Math.max(
+          input,
+          cacheRead,
+          cacheWrite,
+          longContext?.inputUSDPerToken ?? 0,
+          longContext?.cacheReadUSDPerToken ?? 0,
+          longContext?.cacheWriteUSDPerToken ?? 0,
+        ),
+        reservationOutputUSDPerToken: Math.max(output, longContext?.outputUSDPerToken ?? 0),
         provenance: { ...provenance },
       });
     } catch {
@@ -409,8 +484,20 @@ export function validateModelPrice(price: ModelPrice): void {
     ...(price.reservationOutputUSDPerToken !== undefined
       ? { reservationOutputUSDPerToken: price.reservationOutputUSDPerToken }
       : {}),
+    ...(price.longContext
+      ? {
+          'longContext.aboveInputTokens': price.longContext.aboveInputTokens,
+          'longContext.inputUSDPerToken': price.longContext.inputUSDPerToken,
+          'longContext.outputUSDPerToken': price.longContext.outputUSDPerToken,
+          'longContext.cacheReadUSDPerToken': price.longContext.cacheReadUSDPerToken,
+          'longContext.cacheWriteUSDPerToken': price.longContext.cacheWriteUSDPerToken,
+        }
+      : {}),
   })) {
     finiteNonNegative(value, `price.${name}`);
+  }
+  if (price.longContext && !Number.isSafeInteger(price.longContext.aboveInputTokens)) {
+    throw new TypeError('price.longContext.aboveInputTokens must be a safe integer');
   }
   if (!['explicit', 'fresh_cache', 'network', 'stale_cache'].includes(price.provenance.source)) {
     throw new TypeError('price.provenance.source is unsupported');
@@ -435,10 +522,15 @@ function usdCeiling(value: number): number {
 
 export function costForUsage(usage: Usage, price: ModelPrice): RequestCost {
   validateModelPrice(price);
-  const inputUSD = usd(usage.inputTokens * price.inputUSDPerToken);
-  const outputUSD = usd(usage.outputTokens * price.outputUSDPerToken);
-  const cacheReadUSD = usd(usage.cacheReadTokens * price.cacheReadUSDPerToken);
-  const cacheWriteUSD = usd(usage.cacheWriteTokens * price.cacheWriteUSDPerToken);
+  // LiteLLM long-context semantics: once the request's prompt exceeds the
+  // threshold, the whole request bills at the tier rates.
+  const promptTokens = usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
+  const rates =
+    price.longContext && promptTokens > price.longContext.aboveInputTokens ? price.longContext : price;
+  const inputUSD = usd(usage.inputTokens * rates.inputUSDPerToken);
+  const outputUSD = usd(usage.outputTokens * rates.outputUSDPerToken);
+  const cacheReadUSD = usd(usage.cacheReadTokens * rates.cacheReadUSDPerToken);
+  const cacheWriteUSD = usd(usage.cacheWriteTokens * rates.cacheWriteUSDPerToken);
   return {
     model: price.model,
     usd: usd(inputUSD + outputUSD + cacheReadUSD + cacheWriteUSD),
@@ -480,8 +572,15 @@ export function reserveRequestSpend(
     price.cacheReadUSDPerToken,
     price.cacheWriteUSDPerToken,
     price.reservationInputUSDPerToken ?? 0,
+    price.longContext?.inputUSDPerToken ?? 0,
+    price.longContext?.cacheReadUSDPerToken ?? 0,
+    price.longContext?.cacheWriteUSDPerToken ?? 0,
   );
-  const outputRate = Math.max(price.outputUSDPerToken, price.reservationOutputUSDPerToken ?? 0);
+  const outputRate = Math.max(
+    price.outputUSDPerToken,
+    price.reservationOutputUSDPerToken ?? 0,
+    price.longContext?.outputUSDPerToken ?? 0,
+  );
   const perAttempt = inputTokenUpperBound * inputRate + request.maxTokens! * outputRate;
   return {
     model: price.model,

@@ -31,22 +31,91 @@ test('pricing parser accepts exact piko/LiteLLM rows and never invents aliases',
         output_cost_per_reasoning_token: 0.000002,
       },
       compact: { inputUSDPerToken: 0.000003, outputUSDPerToken: 0.000004 },
-      ambiguous: {
+      tiered: {
         input_cost_per_token: 0.000001,
         output_cost_per_token: 0.000002,
         output_cost_per_token_above_128k_tokens: 0.000004,
+      },
+      conflicting_tiers: {
+        input_cost_per_token: 0.000001,
+        output_cost_per_token: 0.000002,
+        input_cost_per_token_above_128k_tokens: 0.000002,
+        output_cost_per_token_above_200k_tokens: 0.000004,
+      },
+      ambiguous_reasoning: {
+        input_cost_per_token: 0.000001,
+        output_cost_per_token: 0.000002,
+        output_cost_per_reasoning_token: 0.000009,
       },
       metadata: { max_tokens: 1000 },
     },
     provenance,
   );
-  assert.equal(prices.size, 2);
+  assert.equal(prices.size, 3);
   assert.equal(prices.get('exact')?.cacheReadUSDPerToken, 0.0000005);
   assert.equal(prices.get('exact')?.cacheWriteUSDPerToken, 0.000001, 'missing cache rate is conservative');
   assert.equal(prices.get('exact')?.reservationOutputUSDPerToken, 0.000002);
   assert.equal(prices.get('compact')?.inputUSDPerToken, 0.000003);
-  assert.equal(prices.get('ambiguous'), undefined, 'usage-dependent rates are not guessed');
+  const tiered = prices.get('tiered');
+  assert.deepEqual(
+    tiered?.longContext,
+    {
+      aboveInputTokens: 128_000,
+      inputUSDPerToken: 0.000001,
+      outputUSDPerToken: 0.000004,
+      cacheReadUSDPerToken: 0.000001,
+      cacheWriteUSDPerToken: 0.000001,
+    },
+    'single-threshold long-context rows parse with exact tier rates',
+  );
+  assert.equal(tiered?.reservationOutputUSDPerToken, 0.000004, 'reservation covers the tier rate');
+  assert.equal(prices.get('conflicting_tiers'), undefined, 'multiple thresholds stay rejected');
+  assert.equal(prices.get('ambiguous_reasoning'), undefined, 'usage-dependent rates are not guessed');
   assert.equal(prices.get('provider/exact'), undefined, 'model aliases are never guessed');
+});
+
+test('long-context tier prices the whole request only above its threshold', () => {
+  const prices = parsePricingTable(
+    {
+      'gpt-tiered': {
+        input_cost_per_token: 0.000005,
+        output_cost_per_token: 0.00003,
+        cache_read_input_token_cost: 0.0000005,
+        input_cost_per_token_above_272k_tokens: 0.00001,
+        cache_read_input_token_cost_above_272k_tokens: 0.000001,
+        output_cost_per_token_above_272k_tokens: 0.00006,
+      },
+    },
+    provenance,
+  );
+  const price = prices.get('gpt-tiered');
+  assert.ok(price);
+  const approximately = (actual: number, expected: number, note: string) =>
+    assert.ok(Math.abs(actual - expected) < 1e-9, `${note}: ${actual} != ${expected}`);
+  const below: Usage = { inputTokens: 20_000, outputTokens: 1_000, cacheReadTokens: 50_000, cacheWriteTokens: 0 };
+  const belowCost = costForUsage(below, price);
+  approximately(belowCost.inputUSD, 20_000 * 0.000005, 'base input rate under threshold');
+  approximately(belowCost.cacheReadUSD, 50_000 * 0.0000005, 'base cache-read rate under threshold');
+  approximately(belowCost.outputUSD, 1_000 * 0.00003, 'base output rate under threshold');
+  const above: Usage = { inputTokens: 30_000, outputTokens: 1_000, cacheReadTokens: 250_000, cacheWriteTokens: 0 };
+  const aboveCost = costForUsage(above, price);
+  approximately(aboveCost.inputUSD, 30_000 * 0.00001, 'prompt over threshold bills input at tier rate');
+  approximately(aboveCost.cacheReadUSD, 250_000 * 0.000001, 'cache reads follow the tier');
+  approximately(aboveCost.outputUSD, 1_000 * 0.00006, 'output follows the tier');
+  const reservation = reserveRequestSpend(
+    {
+      model: 'gpt-tiered',
+      system: 's',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      tools: [],
+      maxTokens: 10,
+    } as unknown as CompletionRequest,
+    price,
+  );
+  assert.ok(
+    reservation.usd >= reservation.inputTokenUpperBound * 0.00001 + 10 * 0.00006,
+    'reservations assume the most expensive tier',
+  );
 });
 
 test('pricing loader follows explicit, fresh-cache, network, stale-cache, empty without throwing', async () => {

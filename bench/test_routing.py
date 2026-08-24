@@ -44,6 +44,18 @@ class RoutingTests(unittest.TestCase):
         self.assertIn("--allow-host-bash", command)
         self.assertTrue(command.endswith("'fix this; echo unsafe'"))
 
+    def test_command_is_pinned_exactly(self):
+        """Flags here must exist in the CLI's args parser; nothing cross-checks
+        that automatically (an unknown flag only fails inside the container,
+        which cost a burned smoke run), so any drift must be a conscious edit."""
+        command = command_for_route(route_model("openai/gpt-5.5"), 80, "do the task")
+        self.assertEqual(
+            command,
+            "pi -p --usage --allow-host-bash "
+            "--pricing /opt/pi/model-prices.json "
+            "--profile openai --model gpt-5.5 --max-turns 80 'do the task'",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

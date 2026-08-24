@@ -54,6 +54,7 @@ def command_for_route(route: ModelRoute, max_turns: int, instruction: str) -> st
         raise ValueError("max_turns must be >= 1")
     return (
         "pi -p --usage --allow-host-bash "
+        "--pricing /opt/pi/model-prices.json "
         f"--profile {shlex.quote(route.profile)} --model {shlex.quote(route.model)} "
         f"--max-turns {max_turns} {shlex.quote(instruction)}"
     )
