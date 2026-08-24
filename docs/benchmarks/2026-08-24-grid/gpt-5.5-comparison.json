@@ -1,0 +1,644 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-24T13:51:22.412604+00:00",
+  "inputs": {
+    "pi": "/private/tmp/claude-501/-Users-arunmenon-projects-pi/277d6939-898d-4a37-864a-57b70b0f2cc0/scratchpad/tb-runs/2026-08-24__17-31-14",
+    "baseline": "/private/tmp/claude-501/-Users-arunmenon-projects-pi/277d6939-898d-4a37-864a-57b70b0f2cc0/scratchpad/tb-runs/2026-08-24__19-10-52"
+  },
+  "summary": {
+    "pi": {
+      "solved_trials": 19,
+      "trials": 28,
+      "solved_tasks": 8,
+      "tasks": 10,
+      "input_tokens": 490392,
+      "output_tokens": 32734,
+      "trials_with_token_data": 24,
+      "mean_input_per_measured_trial": 20433.0,
+      "mean_output_per_measured_trial": 1363.9166666666667,
+      "cost_usd": 0,
+      "trials_with_cost_data": 0,
+      "cost_per_solved_trial_usd": 0
+    },
+    "baseline": {
+      "solved_trials": 25,
+      "trials": 28,
+      "solved_tasks": 9,
+      "tasks": 10,
+      "input_tokens": 439498,
+      "output_tokens": 39971,
+      "trials_with_token_data": 28,
+      "mean_input_per_measured_trial": 15696.357142857143,
+      "mean_output_per_measured_trial": 1427.5357142857142,
+      "cost_usd": 0,
+      "trials_with_cost_data": 0,
+      "cost_per_solved_trial_usd": 0
+    }
+  },
+  "pairedTaskInputRatio": {
+    "baselineOverPi": 0.8664112537085863,
+    "matchedTasks": 9
+  },
+  "tasks": {
+    "create-bucket": {
+      "pi": [
+        {
+          "trial": "create-bucket/create-bucket.1-of-3.2026-08-24__17-31-14",
+          "resolved": false,
+          "tokens": {
+            "input": 1471,
+            "output": 550,
+            "requests": 2,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "create-bucket/create-bucket.2-of-3.2026-08-24__17-31-14",
+          "resolved": false,
+          "tokens": {
+            "input": 2230,
+            "output": 587,
+            "requests": 3,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "create-bucket/create-bucket.3-of-3.2026-08-24__17-31-14",
+          "resolved": false,
+          "tokens": {
+            "input": 2199,
+            "output": 338,
+            "requests": 3,
+            "cost_usd": null
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "create-bucket/create-bucket.1-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 11052,
+            "output": 1324,
+            "requests": null,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "create-bucket/create-bucket.2-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 3689,
+            "output": 576,
+            "requests": null,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "create-bucket/create-bucket.3-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 5212,
+            "output": 766,
+            "requests": null,
+            "cost_usd": null
+          }
+        }
+      ]
+    },
+    "fix-git": {
+      "pi": [
+        {
+          "trial": "fix-git/fix-git.1-of-3.2026-08-24__17-31-14",
+          "resolved": false,
+          "tokens": {
+            "input": 60716,
+            "output": 2781,
+            "requests": 16,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "fix-git/fix-git.2-of-3.2026-08-24__17-31-14",
+          "resolved": false,
+          "tokens": {
+            "input": 53600,
+            "output": 1522,
+            "requests": 15,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "fix-git/fix-git.3-of-3.2026-08-24__17-31-14",
+          "resolved": false,
+          "tokens": {
+            "input": 79140,
+            "output": 2519,
+            "requests": 19,
+            "cost_usd": null
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "fix-git/fix-git.1-of-3.2026-08-24__19-10-52",
+          "resolved": false,
+          "tokens": {
+            "input": 16281,
+            "output": 1568,
+            "requests": null,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "fix-git/fix-git.2-of-3.2026-08-24__19-10-52",
+          "resolved": false,
+          "tokens": {
+            "input": 16577,
+            "output": 1463,
+            "requests": null,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "fix-git/fix-git.3-of-3.2026-08-24__19-10-52",
+          "resolved": false,
+          "tokens": {
+            "input": 25682,
+            "output": 1575,
+            "requests": null,
+            "cost_usd": null
+          }
+        }
+      ]
+    },
+    "fix-permissions": {
+      "pi": [
+        {
+          "trial": "fix-permissions/fix-permissions.1-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": {
+            "input": 3852,
+            "output": 159,
+            "requests": 5,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "fix-permissions/fix-permissions.2-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": {
+            "input": 3852,
+            "output": 141,
+            "requests": 5,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "fix-permissions/fix-permissions.3-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": {
+            "input": 3852,
+            "output": 157,
+            "requests": 5,
+            "cost_usd": null
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "fix-permissions/fix-permissions.1-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 4725,
+            "output": 567,
+            "requests": null,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "fix-permissions/fix-permissions.2-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 4911,
+            "output": 614,
+            "requests": null,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "fix-permissions/fix-permissions.3-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 4756,
+            "output": 601,
+            "requests": null,
+            "cost_usd": null
+          }
+        }
+      ]
+    },
+    "hello-world": {
+      "pi": [
+        {
+          "trial": "hello-world/hello-world.1-of-3.2026-08-24__17-31-14",
+          "resolved": false,
+          "tokens": null
+        },
+        {
+          "trial": "hello-world/hello-world.2-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": {
+            "input": 1391,
+            "output": 45,
+            "requests": 2,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "hello-world/hello-world.3-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": {
+            "input": 2178,
+            "output": 103,
+            "requests": 3,
+            "cost_usd": null
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "hello-world/hello-world.1-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 1655,
+            "output": 225,
+            "requests": null,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "hello-world/hello-world.2-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 1658,
+            "output": 214,
+            "requests": null,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "hello-world/hello-world.3-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 1664,
+            "output": 235,
+            "requests": null,
+            "cost_usd": null
+          }
+        }
+      ]
+    },
+    "heterogeneous-dates": {
+      "pi": [
+        {
+          "trial": "heterogeneous-dates/heterogeneous-dates.1-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": {
+            "input": 6247,
+            "output": 554,
+            "requests": 6,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "heterogeneous-dates/heterogeneous-dates.2-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": {
+            "input": 6484,
+            "output": 820,
+            "requests": 6,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "heterogeneous-dates/heterogeneous-dates.3-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": {
+            "input": 4712,
+            "output": 546,
+            "requests": 5,
+            "cost_usd": null
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "heterogeneous-dates/heterogeneous-dates.1-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 8639,
+            "output": 956,
+            "requests": null,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "heterogeneous-dates/heterogeneous-dates.2-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 7012,
+            "output": 982,
+            "requests": null,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "heterogeneous-dates/heterogeneous-dates.3-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 6758,
+            "output": 888,
+            "requests": null,
+            "cost_usd": null
+          }
+        }
+      ]
+    },
+    "openssl-selfsigned-cert": {
+      "pi": [
+        {
+          "trial": "openssl-selfsigned-cert/openssl-selfsigned-cert.1-of-3.2026-08-24__17-31-14",
+          "resolved": false,
+          "tokens": null
+        },
+        {
+          "trial": "openssl-selfsigned-cert/openssl-selfsigned-cert.2-of-3.2026-08-24__17-31-14",
+          "resolved": false,
+          "tokens": null
+        },
+        {
+          "trial": "openssl-selfsigned-cert/openssl-selfsigned-cert.3-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": null
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "openssl-selfsigned-cert/openssl-selfsigned-cert.1-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 7146,
+            "output": 1096,
+            "requests": null,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "openssl-selfsigned-cert/openssl-selfsigned-cert.2-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 7226,
+            "output": 1037,
+            "requests": null,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "openssl-selfsigned-cert/openssl-selfsigned-cert.3-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 7210,
+            "output": 1081,
+            "requests": null,
+            "cost_usd": null
+          }
+        }
+      ]
+    },
+    "organization-json-generator": {
+      "pi": [
+        {
+          "trial": "organization-json-generator/organization-json-generator.1-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": {
+            "input": 30396,
+            "output": 2104,
+            "requests": 12,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "organization-json-generator/organization-json-generator.2-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": {
+            "input": 30549,
+            "output": 2657,
+            "requests": 12,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "organization-json-generator/organization-json-generator.3-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": {
+            "input": 28353,
+            "output": 2343,
+            "requests": 11,
+            "cost_usd": null
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "organization-json-generator/organization-json-generator.1-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 24635,
+            "output": 2160,
+            "requests": null,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "organization-json-generator/organization-json-generator.2-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 25245,
+            "output": 2181,
+            "requests": null,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "organization-json-generator/organization-json-generator.3-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 17122,
+            "output": 1918,
+            "requests": null,
+            "cost_usd": null
+          }
+        }
+      ]
+    },
+    "simple-sheets-put": {
+      "pi": [
+        {
+          "trial": "simple-sheets-put/simple-sheets-put.1-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": {
+            "input": 25384,
+            "output": 1781,
+            "requests": 7,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "simple-sheets-put/simple-sheets-put.2-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": {
+            "input": 28206,
+            "output": 1846,
+            "requests": 8,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "simple-sheets-put/simple-sheets-put.3-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": {
+            "input": 37563,
+            "output": 2137,
+            "requests": 10,
+            "cost_usd": null
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "simple-sheets-put/simple-sheets-put.1-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 34821,
+            "output": 2391,
+            "requests": null,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "simple-sheets-put/simple-sheets-put.2-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 65403,
+            "output": 2885,
+            "requests": null,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "simple-sheets-put/simple-sheets-put.3-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 49256,
+            "output": 2992,
+            "requests": null,
+            "cost_usd": null
+          }
+        }
+      ]
+    },
+    "simple-web-scraper": {
+      "pi": [
+        {
+          "trial": "simple-web-scraper/simple-web-scraper.1-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": {
+            "input": 11338,
+            "output": 1257,
+            "requests": 6,
+            "cost_usd": null
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "simple-web-scraper/simple-web-scraper.1-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 14079,
+            "output": 1607,
+            "requests": null,
+            "cost_usd": null
+          }
+        }
+      ]
+    },
+    "sqlite-db-truncate": {
+      "pi": [
+        {
+          "trial": "sqlite-db-truncate/sqlite-db-truncate.1-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": {
+            "input": 12420,
+            "output": 2424,
+            "requests": 7,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "sqlite-db-truncate/sqlite-db-truncate.2-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": {
+            "input": 36913,
+            "output": 2827,
+            "requests": 12,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "sqlite-db-truncate/sqlite-db-truncate.3-of-3.2026-08-24__17-31-14",
+          "resolved": true,
+          "tokens": {
+            "input": 17346,
+            "output": 2536,
+            "requests": 8,
+            "cost_usd": null
+          }
+        }
+      ],
+      "baseline": [
+        {
+          "trial": "sqlite-db-truncate/sqlite-db-truncate.1-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 21228,
+            "output": 2620,
+            "requests": null,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "sqlite-db-truncate/sqlite-db-truncate.2-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 27429,
+            "output": 2916,
+            "requests": null,
+            "cost_usd": null
+          }
+        },
+        {
+          "trial": "sqlite-db-truncate/sqlite-db-truncate.3-of-3.2026-08-24__19-10-52",
+          "resolved": true,
+          "tokens": {
+            "input": 18427,
+            "output": 2533,
+            "requests": null,
+            "cost_usd": null
+          }
+        }
+      ]
+    }
+  }
+}
