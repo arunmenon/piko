@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-24T15:09:30.099223+00:00",
+  "generatedAt": "2026-08-24T18:18:20.919991+00:00",
   "inputs": {
     "pi": "/private/tmp/claude-501/-Users-arunmenon-projects-pi/277d6939-898d-4a37-864a-57b70b0f2cc0/scratchpad/tb-runs/2026-08-24__20-29-49",
     "baseline": "/private/tmp/claude-501/-Users-arunmenon-projects-pi/277d6939-898d-4a37-864a-57b70b0f2cc0/scratchpad/tb-runs/2026-08-24__19-10-52"
@@ -8,7 +8,7 @@
   "summary": {
     "pi": {
       "solved_trials": 24,
-      "trials": 28,
+      "trials": 30,
       "solved_tasks": 9,
       "tasks": 10,
       "input_tokens": 450113,
@@ -19,11 +19,12 @@
       "mean_output_per_measured_trial": 1407.2142857142858,
       "cost_usd": 2.536369,
       "trials_with_cost_data": 28,
-      "cost_per_solved_trial_usd": 0.10568204166666667
+      "infrastructure_failures": 2,
+      "cost_per_solved_trial_usd": 0.08252654166666666
     },
     "baseline": {
       "solved_trials": 25,
-      "trials": 28,
+      "trials": 30,
       "solved_tasks": 9,
       "tasks": 10,
       "input_tokens": 439498,
@@ -34,7 +35,8 @@
       "mean_output_per_measured_trial": 1427.5357142857142,
       "cost_usd": 0,
       "trials_with_cost_data": 0,
-      "cost_per_solved_trial_usd": 0
+      "infrastructure_failures": 2,
+      "cost_per_solved_trial_usd": null
     }
   },
   "pairedTaskInputRatio": {
@@ -55,7 +57,8 @@
             "input_uncached": 3279,
             "cache_read": 0,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "create-bucket/create-bucket.2-of-3.2026-08-24__20-29-49",
@@ -68,7 +71,8 @@
             "input_uncached": 3789,
             "cache_read": 0,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "create-bucket/create-bucket.3-of-3.2026-08-24__20-29-49",
@@ -81,7 +85,8 @@
             "input_uncached": 3951,
             "cache_read": 0,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         }
       ],
       "baseline": [
@@ -96,7 +101,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "create-bucket/create-bucket.2-of-3.2026-08-24__19-10-52",
@@ -109,7 +115,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "create-bucket/create-bucket.3-of-3.2026-08-24__19-10-52",
@@ -122,7 +129,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         }
       ]
     },
@@ -139,7 +147,8 @@
             "input_uncached": 16246,
             "cache_read": 25600,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "fix-git/fix-git.2-of-3.2026-08-24__20-29-49",
@@ -152,7 +161,8 @@
             "input_uncached": 19185,
             "cache_read": 61952,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "fix-git/fix-git.3-of-3.2026-08-24__20-29-49",
@@ -165,7 +175,8 @@
             "input_uncached": 13922,
             "cache_read": 10752,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         }
       ],
       "baseline": [
@@ -180,7 +191,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "fix-git/fix-git.2-of-3.2026-08-24__19-10-52",
@@ -193,7 +205,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "fix-git/fix-git.3-of-3.2026-08-24__19-10-52",
@@ -206,7 +219,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         }
       ]
     },
@@ -223,7 +237,8 @@
             "input_uncached": 4335,
             "cache_read": 0,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "fix-permissions/fix-permissions.2-of-3.2026-08-24__20-29-49",
@@ -236,7 +251,8 @@
             "input_uncached": 4335,
             "cache_read": 0,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "fix-permissions/fix-permissions.3-of-3.2026-08-24__20-29-49",
@@ -249,7 +265,8 @@
             "input_uncached": 3446,
             "cache_read": 0,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         }
       ],
       "baseline": [
@@ -264,7 +281,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "fix-permissions/fix-permissions.2-of-3.2026-08-24__19-10-52",
@@ -277,7 +295,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "fix-permissions/fix-permissions.3-of-3.2026-08-24__19-10-52",
@@ -290,7 +309,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         }
       ]
     },
@@ -307,7 +327,8 @@
             "input_uncached": 3404,
             "cache_read": 0,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "hello-world/hello-world.2-of-3.2026-08-24__20-29-49",
@@ -320,7 +341,8 @@
             "input_uncached": 3398,
             "cache_read": 0,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "hello-world/hello-world.3-of-3.2026-08-24__20-29-49",
@@ -333,7 +355,8 @@
             "input_uncached": 2352,
             "cache_read": 0,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         }
       ],
       "baseline": [
@@ -348,7 +371,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "hello-world/hello-world.2-of-3.2026-08-24__19-10-52",
@@ -361,7 +385,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "hello-world/hello-world.3-of-3.2026-08-24__19-10-52",
@@ -374,7 +399,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         }
       ]
     },
@@ -391,7 +417,8 @@
             "input_uncached": 5416,
             "cache_read": 0,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "heterogeneous-dates/heterogeneous-dates.2-of-3.2026-08-24__20-29-49",
@@ -404,7 +431,8 @@
             "input_uncached": 6055,
             "cache_read": 1664,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "heterogeneous-dates/heterogeneous-dates.3-of-3.2026-08-24__20-29-49",
@@ -417,7 +445,8 @@
             "input_uncached": 5435,
             "cache_read": 0,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         }
       ],
       "baseline": [
@@ -432,7 +461,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "heterogeneous-dates/heterogeneous-dates.2-of-3.2026-08-24__19-10-52",
@@ -445,7 +475,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "heterogeneous-dates/heterogeneous-dates.3-of-3.2026-08-24__19-10-52",
@@ -458,7 +489,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         }
       ]
     },
@@ -475,7 +507,8 @@
             "input_uncached": 4432,
             "cache_read": 0,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "openssl-selfsigned-cert/openssl-selfsigned-cert.2-of-3.2026-08-24__20-29-49",
@@ -488,7 +521,8 @@
             "input_uncached": 4578,
             "cache_read": 0,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "openssl-selfsigned-cert/openssl-selfsigned-cert.3-of-3.2026-08-24__20-29-49",
@@ -501,7 +535,8 @@
             "input_uncached": 4521,
             "cache_read": 0,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         }
       ],
       "baseline": [
@@ -516,7 +551,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "openssl-selfsigned-cert/openssl-selfsigned-cert.2-of-3.2026-08-24__19-10-52",
@@ -529,7 +565,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "openssl-selfsigned-cert/openssl-selfsigned-cert.3-of-3.2026-08-24__19-10-52",
@@ -542,7 +579,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         }
       ]
     },
@@ -559,7 +597,8 @@
             "input_uncached": 10061,
             "cache_read": 8064,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "organization-json-generator/organization-json-generator.2-of-3.2026-08-24__20-29-49",
@@ -572,7 +611,8 @@
             "input_uncached": 10460,
             "cache_read": 12416,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "organization-json-generator/organization-json-generator.3-of-3.2026-08-24__20-29-49",
@@ -585,7 +625,8 @@
             "input_uncached": 7470,
             "cache_read": 4352,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         }
       ],
       "baseline": [
@@ -600,7 +641,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "organization-json-generator/organization-json-generator.2-of-3.2026-08-24__19-10-52",
@@ -613,7 +655,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "organization-json-generator/organization-json-generator.3-of-3.2026-08-24__19-10-52",
@@ -626,7 +669,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         }
       ]
     },
@@ -643,7 +687,8 @@
             "input_uncached": 14481,
             "cache_read": 12800,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "simple-sheets-put/simple-sheets-put.2-of-3.2026-08-24__20-29-49",
@@ -656,7 +701,8 @@
             "input_uncached": 22854,
             "cache_read": 15488,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "simple-sheets-put/simple-sheets-put.3-of-3.2026-08-24__20-29-49",
@@ -669,7 +715,8 @@
             "input_uncached": 27935,
             "cache_read": 19840,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         }
       ],
       "baseline": [
@@ -684,7 +731,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "simple-sheets-put/simple-sheets-put.2-of-3.2026-08-24__19-10-52",
@@ -697,7 +745,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "simple-sheets-put/simple-sheets-put.3-of-3.2026-08-24__19-10-52",
@@ -710,7 +759,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         }
       ]
     },
@@ -727,7 +777,20 @@
             "input_uncached": 8439,
             "cache_read": 1664,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
+        },
+        {
+          "trial": "simple-web-scraper/SYNTHESIZED-missing-2",
+          "resolved": false,
+          "tokens": null,
+          "infrastructure_failure": true
+        },
+        {
+          "trial": "simple-web-scraper/SYNTHESIZED-missing-3",
+          "resolved": false,
+          "tokens": null,
+          "infrastructure_failure": true
         }
       ],
       "baseline": [
@@ -742,7 +805,20 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
+        },
+        {
+          "trial": "simple-web-scraper/SYNTHESIZED-missing-2",
+          "resolved": false,
+          "tokens": null,
+          "infrastructure_failure": true
+        },
+        {
+          "trial": "simple-web-scraper/SYNTHESIZED-missing-3",
+          "resolved": false,
+          "tokens": null,
+          "infrastructure_failure": true
         }
       ]
     },
@@ -759,7 +835,8 @@
             "input_uncached": 12104,
             "cache_read": 11136,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "sqlite-db-truncate/sqlite-db-truncate.2-of-3.2026-08-24__20-29-49",
@@ -772,7 +849,8 @@
             "input_uncached": 9961,
             "cache_read": 8064,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "sqlite-db-truncate/sqlite-db-truncate.3-of-3.2026-08-24__20-29-49",
@@ -785,7 +863,8 @@
             "input_uncached": 15101,
             "cache_read": 5376,
             "cache_write": 0
-          }
+          },
+          "infrastructure_failure": false
         }
       ],
       "baseline": [
@@ -800,7 +879,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "sqlite-db-truncate/sqlite-db-truncate.2-of-3.2026-08-24__19-10-52",
@@ -813,7 +893,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         },
         {
           "trial": "sqlite-db-truncate/sqlite-db-truncate.3-of-3.2026-08-24__19-10-52",
@@ -826,7 +907,8 @@
             "input_uncached": null,
             "cache_read": null,
             "cache_write": null
-          }
+          },
+          "infrastructure_failure": false
         }
       ]
     }

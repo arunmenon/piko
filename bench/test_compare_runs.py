@@ -72,3 +72,45 @@ class CompareRunsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def write_run_metadata(root: Path, tasks: dict[str, int]):
+    attempts = max(tasks.values())
+    root.joinpath("run_metadata.json").write_text(
+        json.dumps({"task_ids": sorted(tasks), "n_attempts": attempts})
+    )
+
+
+class ExpectedTrialsTests(unittest.TestCase):
+    def test_missing_trials_become_infrastructure_failures_in_the_denominator(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            make_trial(root, "task-a", "trial-1", resolved=True, input_tokens=100, output_tokens=10)
+            write_run_metadata(root, {"task-a": 3, "task-b": 3})
+            rows = collect(root, pi_tokens)
+            self.assertEqual(len(rows["task-a"]), 3)
+            self.assertEqual(len(rows["task-b"]), 3)
+            summary = summarize("pi", rows, emit=False)
+            self.assertEqual(summary["trials"], 6)
+            self.assertEqual(summary["infrastructure_failures"], 5)
+            self.assertEqual(summary["solved_trials"], 1)
+
+    def test_unexpected_task_directories_fail_loudly(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            make_trial(root, "rogue-task", "trial-1", resolved=True, input_tokens=100, output_tokens=10)
+            write_run_metadata(root, {"task-a": 1})
+            with self.assertRaises(ValueError):
+                collect(root, pi_tokens)
+
+    def test_cost_per_solved_trial_is_null_unless_every_solve_is_priced(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            make_trial(root, "task-a", "trial-1", resolved=True, input_tokens=100, output_tokens=10)
+            directory = root / "task-a" / "trial-2"
+            (directory / "panes").mkdir(parents=True)
+            (directory / "results.json").write_text(json.dumps({"is_resolved": True}))
+            rows = collect(root, pi_tokens)
+            summary = summarize("pi", rows, emit=False)
+            self.assertEqual(summary["solved_trials"], 2)
+            self.assertIsNone(summary["cost_per_solved_trial_usd"])

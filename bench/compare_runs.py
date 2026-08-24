@@ -33,6 +33,24 @@ class Trial(TypedDict):
     trial: str
     resolved: bool
     tokens: Tokens | None
+    # True when the run's own metadata expected this trial but no results.json
+    # exists: the container never produced a verdict (build failure, crash).
+    # Synthesized so infrastructure failures stay in the denominator instead of
+    # silently vanishing from the comparison (external review finding 6).
+    infrastructure_failure: bool
+
+
+def expected_trial_counts(run_dir: Path) -> dict[str, int] | None:
+    """Task -> expected attempt count from the run's own tb metadata."""
+    metadata_path = run_dir / "run_metadata.json"
+    if not metadata_path.is_file():
+        return None
+    metadata = json.loads(metadata_path.read_text())
+    task_ids = metadata.get("task_ids")
+    attempts = metadata.get("n_attempts")
+    if not isinstance(task_ids, list) or type(attempts) is not int or attempts < 1:
+        return None
+    return {str(task): attempts for task in task_ids}
 
 
 def trial_dirs(run_dir: Path):
@@ -129,8 +147,27 @@ def collect(run_dir: Path, extractor: Callable[[Path], Tokens | None]) -> dict[s
                 "trial": str(trial.relative_to(run_dir)),
                 "resolved": resolved(trial),
                 "tokens": extractor(trial),
+                "infrastructure_failure": False,
             }
         )
+    expected = expected_trial_counts(run_dir)
+    if expected is None:
+        print(f"compare-runs: WARNING: {run_dir} has no usable run_metadata.json; missing trials cannot be detected")
+        return dict(rows)
+    for task, count in expected.items():
+        observed = len(rows.get(task, []))
+        for index in range(observed, count):
+            rows[task].append(
+                {
+                    "trial": f"{task}/SYNTHESIZED-missing-{index + 1}",
+                    "resolved": False,
+                    "tokens": None,
+                    "infrastructure_failure": True,
+                }
+            )
+    unexpected = {task: len(trials) for task, trials in rows.items() if task not in expected}
+    if unexpected:
+        raise ValueError(f"trials found for tasks absent from run_metadata.json: {sorted(unexpected)}")
     return dict(rows)
 
 
@@ -151,17 +188,23 @@ def task_aggregate(trials: list[Trial]) -> dict[str, int | float | None]:
     }
 
 
-def summarize(name: str, rows: dict[str, list[Trial]], *, emit: bool = True) -> dict[str, int | float]:
+def summarize(name: str, rows: dict[str, list[Trial]], *, emit: bool = True) -> dict[str, int | float | None]:
     trials = [trial for task_trials in rows.values() for trial in task_trials]
     tokens = [trial["tokens"] for trial in trials if trial["tokens"] is not None]
     solved = sum(1 for trial in trials if trial["resolved"])
+    infrastructure_failures = sum(1 for trial in trials if trial.get("infrastructure_failure"))
+    solved_costs = [
+        trial["tokens"]["cost_usd"] if trial["tokens"] is not None else None
+        for trial in trials
+        if trial["resolved"]
+    ]
     solved_tasks = sum(1 for task_trials in rows.values() if any(trial["resolved"] for trial in task_trials))
     total_in = sum(token["input"] for token in tokens)
     total_out = sum(token["output"] for token in tokens)
     cache_rows = [token["cache_read"] for token in tokens if token.get("cache_read") is not None]
     total_cache_read = sum(cache_rows)
     cost_rows = [token["cost_usd"] for token in tokens if token["cost_usd"] is not None]
-    summary: dict[str, int | float] = {
+    summary: dict[str, int | float | None] = {
         "solved_trials": solved,
         "trials": len(trials),
         "solved_tasks": solved_tasks,
@@ -174,10 +217,19 @@ def summarize(name: str, rows: dict[str, list[Trial]], *, emit: bool = True) -> 
         "mean_output_per_measured_trial": total_out / len(tokens) if tokens else 0,
         "cost_usd": sum(cost_rows),
         "trials_with_cost_data": len(cost_rows),
-        "cost_per_solved_trial_usd": sum(cost_rows) / solved if cost_rows and solved else 0,
+        "infrastructure_failures": infrastructure_failures,
+        # Null unless every solved trial is priced: dividing a partial cost sum
+        # by all solves understates the ratio (external review finding 11).
+        "cost_per_solved_trial_usd": (
+            sum(cost for cost in solved_costs if cost is not None) / solved
+            if solved and solved_costs and all(cost is not None for cost in solved_costs)
+            else None
+        ),
     }
     if emit:
         print(f"\n{name}: {solved}/{len(trials)} trials solved across {solved_tasks}/{len(rows)} tasks")
+        if infrastructure_failures:
+            print(f"  {infrastructure_failures} expected trial(s) produced no verdict (infrastructure); kept in the denominator")
         cache_note = f" (cache reads {total_cache_read:,} of the input; bill them at the cached rate)" if cache_rows else ""
         print(f"  total tokens: {total_in:,} in / {total_out:,} out ({len(tokens)}/{len(trials)} trials have data){cache_note}")
         if tokens:
