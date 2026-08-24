@@ -25,8 +25,9 @@ Headline findings (honest):
 1. At the gpt-5.5 tier on this subset, terminus-2 beat piko on solve rate
    (25 vs 19) AND cost per solve (~$0.136 vs ~$0.181). The gpt-4.1-era
    "6x cheaper at parity" result does not generalize to this tier/subset.
-2. piko's gap concentrates in three places: create-bucket (0/3 vs 3/3 —
-   piko quits after ~2 calls; standing defect, 0-for-history, autopsy open);
+2. piko's gap concentrates in three places: create-bucket (0/3 vs 3/3 --
+   piko quit after ~2 calls; root-caused and fixed post-grid, retest 3/3,
+   see create-bucket-autopsy.md);
    fix-git failure spend (both harnesses 0/3, but piko burned 64.5k mean
    input per failure vs terminus 19.5k — flail thresholds tuned on
    non-reasoning models look loose for reasoning models); openssl and
