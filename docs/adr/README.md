@@ -26,7 +26,7 @@ new decisions get an ADR in the same change that implements them.
 | 0017 | Evidence-gated self-improvement (`pi improve`) | **proposed** |
 | 0018 | Container sandbox executor behind a provider seam | **proposed** |
 | 0019 | Release and compatibility contract | **proposed** |
-| 0020 | Dollar-denominated cost accounting and spend ceilings (amends 0009) | **proposed** |
+| 0020 | Dollar-denominated cost accounting and spend ceilings (amends 0009) | accepted |
 
 Headers may carry `Amends` / `Amended-by` / `Depends on` lines; the records
 they link are never edited beyond those pointers and dated addenda.

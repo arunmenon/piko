@@ -4,6 +4,15 @@ import { classifyEvalOutcome, parseUsageSummary, type UsageSummary } from './res
 
 const usage: UsageSummary = {
   usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 },
+  cost: {
+    usd: 0.0012,
+    actualUSD: 0.0012,
+    reservedUSD: 0,
+    pricedRequests: 1,
+    unpricedRequests: 0,
+    unknownRequests: 0,
+    complete: true,
+  },
   requests: 1,
   session: '/tmp/session.jsonl',
   status: 'completed',
@@ -28,6 +37,12 @@ test('parseUsageSummary ignores other JSON and validates counters', () => {
   ].join('\n');
   assert.deepEqual(parseUsageSummary(stderr), usage);
   assert.equal(parseUsageSummary('{"v":1,"type":"usage_summary","usage":{"inputTokens":1},"requests":1}'), undefined);
+  assert.equal(
+    parseUsageSummary(
+      '{"v":1,"type":"usage_summary","usage":{"inputTokens":1,"outputTokens":1,"cacheReadTokens":0,"cacheWriteTokens":0},"cost":{"actualUSD":"free"},"requests":1}',
+    ),
+    undefined,
+  );
 });
 
 test('successful files do not hide process failures', () => {

@@ -51,3 +51,22 @@ export function formatUsage(usage: {
   const hitText = hit !== undefined ? ` | cache hit ${hit}%` : '';
   return `in ${usage.inputTokens} (cache read ${usage.cacheReadTokens}, write ${usage.cacheWriteTokens}) | out ${usage.outputTokens}${hitText}`;
 }
+
+export function formatCost(cost: {
+  actualUSD: number;
+  reservedUSD: number;
+  pricedRequests: number;
+  unpricedRequests: number;
+  unknownRequests: number;
+}): string {
+  const complete = cost.reservedUSD === 0 && cost.unpricedRequests === 0 && cost.unknownRequests === 0;
+  const usd = complete
+    ? `$${cost.actualUSD.toFixed(6)}`
+    : `unavailable${cost.actualUSD > 0 ? ` ($${cost.actualUSD.toFixed(6)} priced subtotal)` : ''}`;
+  const uncertainty = [
+    cost.reservedUSD > 0 ? `$${cost.reservedUSD.toFixed(6)} reserved` : '',
+    cost.unpricedRequests > 0 ? `${cost.unpricedRequests} unpriced` : '',
+    cost.unknownRequests > 0 ? `${cost.unknownRequests} unknown` : '',
+  ].filter(Boolean);
+  return `${usd}${uncertainty.length > 0 ? ` (${uncertainty.join(', ')})` : ''}`;
+}

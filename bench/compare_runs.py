@@ -19,6 +19,7 @@ class Tokens(TypedDict):
     input: int
     output: int
     requests: int | None
+    cost_usd: float | None
 
 
 class Trial(TypedDict):
@@ -66,7 +67,19 @@ def pi_tokens(trial: Path) -> Tokens | None:
         return None
     usage = summary["usage"]
     total_in = usage["inputTokens"] + usage["cacheReadTokens"] + usage["cacheWriteTokens"]
-    return {"input": total_in, "output": usage["outputTokens"], "requests": summary["requests"]}
+    cost = summary.get("cost")
+    cost_usd = None
+    if isinstance(cost, dict) and cost.get("complete") is True:
+        raw_cost = cost.get("usd")
+        if type(raw_cost) not in (int, float) or not 0 <= raw_cost < float("inf"):
+            return None
+        cost_usd = float(raw_cost)
+    return {
+        "input": total_in,
+        "output": usage["outputTokens"],
+        "requests": summary["requests"],
+        "cost_usd": cost_usd,
+    }
 
 
 def terminus_tokens(trial: Path) -> Tokens | None:
@@ -79,7 +92,7 @@ def terminus_tokens(trial: Path) -> Tokens | None:
             input_tokens, output_tokens = int(data[in_key]), int(data[out_key])
             if input_tokens < 0 or output_tokens < 0:
                 raise ValueError(f"negative token count in {trial / 'results.json'}")
-            return {"input": input_tokens, "output": output_tokens, "requests": None}
+            return {"input": input_tokens, "output": output_tokens, "requests": None, "cost_usd": None}
     return None
 
 
@@ -109,6 +122,12 @@ def task_aggregate(trials: list[Trial]) -> dict[str, int | float | None]:
         "with_token_data": len(tokens),
         "mean_input": sum(token["input"] for token in tokens) / len(tokens) if tokens else None,
         "mean_output": sum(token["output"] for token in tokens) / len(tokens) if tokens else None,
+        "mean_cost_usd": (
+            sum(token["cost_usd"] for token in tokens if token["cost_usd"] is not None)
+            / len([token for token in tokens if token["cost_usd"] is not None])
+            if any(token["cost_usd"] is not None for token in tokens)
+            else None
+        ),
     }
 
 
@@ -119,6 +138,7 @@ def summarize(name: str, rows: dict[str, list[Trial]], *, emit: bool = True) -> 
     solved_tasks = sum(1 for task_trials in rows.values() if any(trial["resolved"] for trial in task_trials))
     total_in = sum(token["input"] for token in tokens)
     total_out = sum(token["output"] for token in tokens)
+    cost_rows = [token["cost_usd"] for token in tokens if token["cost_usd"] is not None]
     summary: dict[str, int | float] = {
         "solved_trials": solved,
         "trials": len(trials),
@@ -129,12 +149,17 @@ def summarize(name: str, rows: dict[str, list[Trial]], *, emit: bool = True) -> 
         "trials_with_token_data": len(tokens),
         "mean_input_per_measured_trial": total_in / len(tokens) if tokens else 0,
         "mean_output_per_measured_trial": total_out / len(tokens) if tokens else 0,
+        "cost_usd": sum(cost_rows),
+        "trials_with_cost_data": len(cost_rows),
+        "cost_per_solved_trial_usd": sum(cost_rows) / solved if cost_rows and solved else 0,
     }
     if emit:
         print(f"\n{name}: {solved}/{len(trials)} trials solved across {solved_tasks}/{len(rows)} tasks")
         print(f"  total tokens: {total_in:,} in / {total_out:,} out ({len(tokens)}/{len(trials)} trials have data)")
         if tokens:
             print(f"  mean per measured trial: {total_in / len(tokens):,.0f} in / {total_out / len(tokens):,.0f} out")
+        if cost_rows:
+            print(f"  cost: ${sum(cost_rows):.6f} ({len(cost_rows)}/{len(trials)} trials priced)")
     return summary
 
 

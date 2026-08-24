@@ -1,4 +1,11 @@
 import { addUsage, emptyUsage, type Message, type ToolCallBlock, type Usage } from '@pi/ai';
+import {
+  addRequestCost,
+  emptyCostSummary,
+  type CostSummary,
+  type RequestCost,
+  type SpendReservation,
+} from './pricing.js';
 
 /** Rows written by piko 0.1. Kept verbatim so existing transcripts remain readable. */
 export type LegacySessionEntry =
@@ -22,7 +29,8 @@ export type SessionLineageRelation = 'branch' | 'compaction' | 'continuation';
  * declaring a newer generation is refused rather than half-understood.
  *
  * 1 — v0.2 lifecycle rows (model request, tool, compaction, run status, lineage).
- * 2 — adds tool approval rows and the suspended run status (ADR 0011).
+ * 2 — adds approvals/suspension and optional request-linked pricing fields
+ *     (ADRs 0011 and 0020).
  */
 export const JOURNAL_SCHEMA_VERSION = 2;
 export const LEGACY_JOURNAL_SCHEMA_VERSION = 1;
@@ -36,6 +44,7 @@ export interface RunBudgetSnapshot {
   maxInputTokens?: number;
   maxOutputTokens?: number;
   maxTotalTokens?: number;
+  maxSpendUSD?: number;
 }
 
 const runBudgetSnapshotFields = [
@@ -58,6 +67,8 @@ export interface SessionLineage {
   priorUsage?: Usage;
   /** False when priorUsage was itself reconstructed from a bounded legacy chain. */
   priorUsageComplete?: boolean;
+  /** Dollar checkpoint paired with priorUsage for bounded lineage accounting. */
+  priorCost?: CostSummary;
 }
 
 interface LifecycleBase {
@@ -72,12 +83,14 @@ export type ModelRequestEntry =
       requestId: string;
       model: string;
       messageCount?: number;
+      spendReservation?: SpendReservation;
     })
   | (LifecycleBase & {
       t: 'model_request_completed';
       requestId: string;
       stopReason?: string;
       usage?: Usage;
+      cost?: RequestCost;
     })
   | (LifecycleBase & {
       t: 'model_request_failed';
@@ -102,6 +115,8 @@ export interface ModelRequestState {
   endedAt?: string;
   stopReason?: string;
   usage?: Usage;
+  spendReservation?: SpendReservation;
+  cost?: RequestCost;
   error?: string;
   retryable?: boolean;
   reason?: string;
@@ -262,6 +277,68 @@ function validateRunBudgetSnapshot(value: unknown, path: string): void {
   for (const field of runBudgetSnapshotFields) {
     if (budget[field] !== undefined) requirePositiveInteger(budget[field], `${path}.${field}`);
   }
+  if (budget['maxSpendUSD'] !== undefined) requirePositiveFinite(budget['maxSpendUSD'], `${path}.maxSpendUSD`);
+}
+
+function requireFiniteNonNegative(value: unknown, path: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new TypeError(`${path} must be a finite nonnegative number`);
+  }
+  return value;
+}
+
+function requirePositiveFinite(value: unknown, path: string): number {
+  const number = requireFiniteNonNegative(value, path);
+  if (number <= 0) throw new TypeError(`${path} must be greater than zero`);
+  return number;
+}
+
+function validatePricingProvenance(value: unknown, path: string): void {
+  const pricing = requireRecord(value, path);
+  if (!['explicit', 'fresh_cache', 'network', 'stale_cache'].includes(String(pricing['source']))) {
+    throw new TypeError(`${path}.source is unsupported`);
+  }
+  requireString(pricing['revision'], `${path}.revision`);
+  if (pricing['currency'] !== 'USD') throw new TypeError(`${path}.currency must be "USD"`);
+  requireTimestamp(pricing['effectiveAt'], `${path}.effectiveAt`);
+}
+
+function validateRequestCost(value: unknown, path: string): void {
+  const cost = requireRecord(value, path);
+  requireString(cost['model'], `${path}.model`);
+  requireFiniteNonNegative(cost['usd'], `${path}.usd`);
+  requireFiniteNonNegative(cost['inputUSD'], `${path}.inputUSD`);
+  requireFiniteNonNegative(cost['outputUSD'], `${path}.outputUSD`);
+  requireFiniteNonNegative(cost['cacheReadUSD'], `${path}.cacheReadUSD`);
+  requireFiniteNonNegative(cost['cacheWriteUSD'], `${path}.cacheWriteUSD`);
+  validatePricingProvenance(cost['pricing'], `${path}.pricing`);
+  const components =
+    (cost['inputUSD'] as number) +
+    (cost['outputUSD'] as number) +
+    (cost['cacheReadUSD'] as number) +
+    (cost['cacheWriteUSD'] as number);
+  if (Math.abs((cost['usd'] as number) - components) > 1e-12) {
+    throw new TypeError(`${path}.usd must equal its component costs`);
+  }
+}
+
+function validateSpendReservation(value: unknown, path: string): void {
+  const reservation = requireRecord(value, path);
+  requireString(reservation['model'], `${path}.model`);
+  requireFiniteNonNegative(reservation['usd'], `${path}.usd`);
+  requirePositiveInteger(reservation['inputTokenUpperBound'], `${path}.inputTokenUpperBound`);
+  requirePositiveInteger(reservation['outputTokenUpperBound'], `${path}.outputTokenUpperBound`);
+  requirePositiveInteger(reservation['attempts'], `${path}.attempts`);
+  validatePricingProvenance(reservation['pricing'], `${path}.pricing`);
+}
+
+function validateCostSummary(value: unknown, path: string): void {
+  const summary = requireRecord(value, path);
+  requireFiniteNonNegative(summary['actualUSD'], `${path}.actualUSD`);
+  requireFiniteNonNegative(summary['reservedUSD'], `${path}.reservedUSD`);
+  requireNonNegativeInteger(summary['pricedRequests'], `${path}.pricedRequests`);
+  requireNonNegativeInteger(summary['unpricedRequests'], `${path}.unpricedRequests`);
+  requireNonNegativeInteger(summary['unknownRequests'], `${path}.unknownRequests`);
 }
 
 function requireNonNegativeInteger(value: unknown, path: string): number {
@@ -382,11 +459,18 @@ export function validateSessionEntry(value: unknown): asserts value is SessionEn
       requireString(entry['requestId'], `${type}.requestId`);
       requireString(entry['model'], `${type}.model`);
       optionalNonNegativeInteger(entry['messageCount'], `${type}.messageCount`);
+      if (entry['spendReservation'] !== undefined) {
+        validateSpendReservation(entry['spendReservation'], `${type}.spendReservation`);
+      }
       return;
     case 'model_request_completed':
       requireString(entry['requestId'], `${type}.requestId`);
       optionalString(entry['stopReason'], `${type}.stopReason`);
       if (entry['usage'] !== undefined) validateUsage(entry['usage'], `${type}.usage`);
+      if (entry['cost'] !== undefined) validateRequestCost(entry['cost'], `${type}.cost`);
+      if (entry['cost'] !== undefined && entry['usage'] === undefined) {
+        throw new TypeError(`${type}.cost requires usage`);
+      }
       return;
     case 'model_request_failed':
       requireString(entry['requestId'], `${type}.requestId`);
@@ -469,6 +553,7 @@ export function validateSessionEntry(value: unknown): asserts value is SessionEn
       optionalNonNegativeInteger(entry['atMessage'], `${type}.atMessage`);
       if (entry['priorUsage'] !== undefined) validateUsage(entry['priorUsage'], `${type}.priorUsage`);
       optionalBoolean(entry['priorUsageComplete'], `${type}.priorUsageComplete`);
+      if (entry['priorCost'] !== undefined) validateCostSummary(entry['priorCost'], `${type}.priorCost`);
       return;
     default:
       throw new TypeError(`unsupported session entry type: ${type}`);
@@ -579,10 +664,16 @@ export function reduceModelRequests(entries: readonly SessionEntry[]): Map<strin
   for (const entry of entries) {
     if (entry.t === 'model_request_started') {
       if (states.has(entry.requestId)) invalidTransition(`duplicate model request ${entry.requestId}`);
+      if (entry.spendReservation && entry.spendReservation.model !== entry.model) {
+        invalidTransition(`${entry.requestId} reservation model does not match request model`);
+      }
       states.set(entry.requestId, {
         requestId: entry.requestId,
         model: entry.model,
         ...(entry.messageCount !== undefined ? { messageCount: entry.messageCount } : {}),
+        ...(entry.spendReservation !== undefined
+          ? { spendReservation: structuredClone(entry.spendReservation) }
+          : {}),
         status: 'started',
         startedAt: entry.at,
       });
@@ -603,6 +694,24 @@ export function reduceModelRequests(entries: readonly SessionEntry[]): Map<strin
       state.status = 'completed';
       if (entry.stopReason !== undefined) state.stopReason = entry.stopReason;
       if (entry.usage !== undefined) state.usage = structuredClone(entry.usage);
+      if (entry.cost !== undefined) {
+        if (entry.cost.model !== state.model) {
+          invalidTransition(`${entry.requestId} cost model does not match request model`);
+        }
+        if (state.spendReservation) {
+          const reserved = state.spendReservation.pricing;
+          const priced = entry.cost.pricing;
+          if (
+            reserved.source !== priced.source ||
+            reserved.revision !== priced.revision ||
+            reserved.currency !== priced.currency ||
+            reserved.effectiveAt !== priced.effectiveAt
+          ) {
+            invalidTransition(`${entry.requestId} cost provenance does not match its reservation`);
+          }
+        }
+        state.cost = structuredClone(entry.cost);
+      }
     } else if (entry.t === 'model_request_failed') {
       state.status = 'failed';
       state.error = entry.error;
@@ -613,6 +722,28 @@ export function reduceModelRequests(entries: readonly SessionEntry[]): Map<strin
     }
   }
   return states;
+}
+
+/** Reconstruct actual and conservatively reserved dollars without re-pricing history. */
+export function summarizeCosts(entries: readonly SessionEntry[]): CostSummary {
+  const summary = emptyCostSummary();
+  let lifecycleAccountingStarted = false;
+  for (const entry of entries) {
+    if (entry.t === 'model_request_started') lifecycleAccountingStarted = true;
+    else if (entry.t === 'usage' && !lifecycleAccountingStarted) summary.unpricedRequests++;
+  }
+  for (const request of reduceModelRequests(entries).values()) {
+    if (request.status === 'completed') {
+      addRequestCost(summary, request.cost);
+      if (!request.cost && request.spendReservation) summary.reservedUSD += request.spendReservation.usd;
+      continue;
+    }
+    if (request.status === 'failed' || request.status === 'outcome_unknown' || request.status === 'started') {
+      summary.unknownRequests++;
+      if (request.spendReservation) summary.reservedUSD += request.spendReservation.usd;
+    }
+  }
+  return summary;
 }
 
 /** Validate request/compaction uniqueness and terminal ordering in addition to tools. */
@@ -661,6 +792,7 @@ export function journalSchemaVersion(entries: readonly SessionEntry[]): number {
 /** Budget accounting for the run segment that is still open, or ended suspended. */
 export interface OpenRunState {
   usage: Usage;
+  cost: CostSummary;
   modelRequests: number;
   toolCalls: number;
   /** Ceilings recorded on the segment's terminal row, when it has one. */
@@ -685,13 +817,18 @@ export function reduceOpenRun(entries: readonly SessionEntry[]): OpenRunState {
     if (entry.status === 'running' && afterTerminal) start = index + 1;
     afterTerminal = entry.status !== 'running' && entry.status !== 'suspended';
   }
-  const state: OpenRunState = { usage: emptyUsage(), modelRequests: 0, toolCalls: 0 };
+  const state: OpenRunState = { usage: emptyUsage(), cost: emptyCostSummary(), modelRequests: 0, toolCalls: 0 };
+  const segmentEntries = entries.slice(start);
   for (let index = start; index < entries.length; index++) {
     const entry = entries[index]!;
-    if (entry.t === 'model_request_started') state.modelRequests++;
-    else if (entry.t === 'model_request_completed' && entry.usage) addUsage(state.usage, entry.usage);
+    if (entry.t === 'model_request_started') {
+      state.modelRequests++;
+    } else if (entry.t === 'model_request_completed') {
+      if (entry.usage) addUsage(state.usage, entry.usage);
+    }
     else if (entry.t === 'tool_started') state.toolCalls++;
     else if (entry.t === 'run_status' && entry.budget) state.budget = structuredClone(entry.budget);
   }
+  state.cost = summarizeCosts(segmentEntries);
   return state;
 }

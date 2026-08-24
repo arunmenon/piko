@@ -17,6 +17,7 @@ import {
 import {
   SESSION_ROTATE_BYTES,
   Session,
+  costAcrossSessionLineageDetailed,
   releaseSessionLock,
   usageAcrossSessionLineageDetailed,
   type ApprovalDecision,
@@ -24,6 +25,20 @@ import {
   type ToolApprovalState,
   type ToolExecutionState,
 } from './session.js';
+import {
+  addCostSummary,
+  addRequestCost,
+  costComplete,
+  costForUsage,
+  emptyCostSummary,
+  reserveRequestSpend,
+  spendExposure,
+  validateModelPrice,
+  type CostSummary,
+  type ModelPrice,
+  type RequestCost,
+  type SpendReservation,
+} from './pricing.js';
 import {
   defaultToolExecutionPolicy,
   requiresApproval,
@@ -81,6 +96,8 @@ export interface RunBudget {
   maxOutputTokens?: number;
   /** Optional cumulative provider-reported input + output ceiling for one turn. */
   maxTotalTokens?: number;
+  /** Optional per-turn dollar ceiling, enforced using a conservative pre-dispatch reservation. */
+  maxSpendUSD?: number;
 }
 
 export type TurnStatus = 'completed' | 'incomplete' | 'budget_exceeded' | 'canceled' | 'suspended';
@@ -97,6 +114,7 @@ export type TurnStopReason =
   | 'input_tokens'
   | 'output_tokens'
   | 'total_tokens'
+  | 'spend'
   | 'flail_stop'
   | 'persistence'
   | 'user_abort';
@@ -150,6 +168,20 @@ class CompactionPersistenceError extends Error {
     super(message, options);
     this.name = 'CompactionPersistenceError';
   }
+}
+
+class SpendBudgetExceededError extends Error {
+  constructor(readonly reservationUSD: number, readonly remainingUSD: number) {
+    super(
+      `spend budget cannot reserve $${reservationUSD.toFixed(6)} for the next provider request; $${Math.max(0, remainingUSD).toFixed(6)} remains`,
+    );
+    this.name = 'SpendBudgetExceededError';
+  }
+}
+
+function addUnknownRequestCost(total: CostSummary, reservation?: SpendReservation): void {
+  total.unknownRequests++;
+  if (reservation) total.reservedUSD += reservation.usd;
 }
 
 /**
@@ -222,7 +254,7 @@ export type AgentEvent =
   | { type: 'thinking'; text: string }
   | { type: 'tool_start'; call: ToolCallBlock }
   | { type: 'tool_end'; call: ToolCallBlock; result: ToolOutput }
-  | { type: 'response_done'; message: AssistantMessage; stopReason: StopReason; usage: Usage }
+  | { type: 'response_done'; message: AssistantMessage; stopReason: StopReason; usage: Usage; cost?: RequestCost }
   | { type: 'compacted'; dropped: number; sessionFile?: string }
   | { type: 'session_rotated'; sessionFile: string }
   | { type: 'flail_nudge'; consecutiveFailures: number }
@@ -239,9 +271,17 @@ export type AgentEvent =
     }
   | {
       type: 'budget_exceeded';
-      reason: 'model_requests' | 'tool_calls' | 'wall_time' | 'input_tokens' | 'output_tokens' | 'total_tokens';
+      reason: 'model_requests' | 'tool_calls' | 'wall_time' | 'input_tokens' | 'output_tokens' | 'total_tokens' | 'spend';
     }
-  | { type: 'turn_done'; iterations: number; toolCalls: number; usage: Usage; status: TurnStatus; reason: TurnStopReason };
+  | {
+      type: 'turn_done';
+      iterations: number;
+      toolCalls: number;
+      usage: Usage;
+      cost: CostSummary;
+      status: TurnStatus;
+      reason: TurnStopReason;
+    };
 
 export interface AgentOptions {
   client: CompletionClient;
@@ -266,6 +306,8 @@ export interface AgentOptions {
   thinkingBudget?: number;
   /** model context window in tokens — enables auto-compaction when set */
   contextWindow?: number;
+  /** Exact-model USD pricing resolved once by the trusted controller at startup. */
+  pricing?: ModelPrice;
   /** set false to disable auto-compaction (default on when contextWindow is known) */
   autoCompact?: boolean;
   /** doom-loop guard: nudge after N consecutive tool failures, stop the turn after M (default 5/10;
@@ -382,9 +424,12 @@ function releaseStream<T>(iterator: AsyncIterator<T>): void {
 export class Agent {
   readonly messages: Message[];
   readonly usageTotal: Usage = emptyUsage();
+  readonly costTotal: CostSummary = emptyCostSummary();
   /** Whether usageTotal includes every ancestor rather than a bounded legacy prefix. */
   readonly usageHistoryComplete: boolean;
+  readonly costHistoryComplete: boolean;
   lastTurnUsage: Usage = emptyUsage();
+  lastTurnCost: CostSummary = emptyCostSummary();
   requestCount = 0;
   /** Immutable with its provider client; model switches rebuild the Agent atomically. */
   readonly model: string;
@@ -413,9 +458,17 @@ export class Agent {
       const history = usageAcrossSessionLineageDetailed(options.session);
       addUsage(this.usageTotal, history.usage);
       this.usageHistoryComplete = history.complete;
+      const costHistory = costAcrossSessionLineageDetailed(options.session);
+      Object.assign(this.costTotal, costHistory.cost);
+      this.costHistoryComplete = costHistory.complete;
     } else {
       this.usageHistoryComplete = true;
+      this.costHistoryComplete = true;
     }
+    if (options.pricing && options.pricing.model !== options.model) {
+      throw new Error(`pricing model ${options.pricing.model} does not match agent model ${options.model}`);
+    }
+    if (options.pricing) validateModelPrice(options.pricing);
     this.model = options.model;
     if (options.session) this._session = options.session;
     this.cwd = options.cwd;
@@ -863,6 +916,13 @@ export class Agent {
       (budget as unknown as Record<string, number>)[name] = value;
     }
     for (const [name, value] of Object.entries(budget)) {
+      if (name === 'maxSpendUSD') {
+        if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) {
+          this.running = false;
+          throw new Error('invalid run budget maxSpendUSD: expected a finite number > 0');
+        }
+        continue;
+      }
       if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
         this.running = false;
         throw new Error(`invalid run budget ${name}: expected a safe integer > 0`);
@@ -878,6 +938,16 @@ export class Agent {
         `invalid run budget maxToolOutputBytes: minimum supported value is ${MIN_TOOL_OUTPUT_BYTES}`,
       );
     }
+    if (budget.maxSpendUSD !== undefined && !this.options.pricing) {
+      this.running = false;
+      throw new Error(
+        `maxSpendUSD requires an exact price for model ${this.model}; provide a pricing table containing that model`,
+      );
+    }
+    if (budget.maxSpendUSD !== undefined && openRun && !costComplete(openRun.cost)) {
+      this.running = false;
+      throw new Error('cannot resume a spend-capped run whose prior request cost is unpriced or outcome-unknown');
+    }
 
     const runController = new AbortController();
     this.activeRunSignal = runController.signal;
@@ -892,6 +962,8 @@ export class Agent {
 
     const turnUsage = emptyUsage();
     if (openRun) addUsage(turnUsage, openRun.usage);
+    const turnCost = emptyCostSummary();
+    if (openRun) addCostSummary(turnCost, openRun.cost);
     let iterations = openRun?.modelRequests ?? 0;
     let toolCalls = openRun?.toolCalls ?? 0;
     let status: TurnStatus = 'incomplete';
@@ -1148,8 +1220,15 @@ export class Agent {
             }
             let dropped: number;
             try {
-              dropped = await this.compact(runController.signal, turnUsage, () => iterations++);
+              dropped = await this.compact(runController.signal, turnUsage, turnCost, budget, () => iterations++);
             } catch (error) {
+              if (error instanceof SpendBudgetExceededError) {
+                status = 'budget_exceeded';
+                reason = 'spend';
+                await this.observeBudget(telemetryContext, 'spend');
+                yield { type: 'budget_exceeded', reason: 'spend' };
+                break;
+              }
               if (!runController.signal.aborted && error instanceof CompactionPersistenceError) {
                 status = 'incomplete';
                 reason = 'persistence';
@@ -1239,12 +1318,42 @@ export class Agent {
             this.options.thinkingBudget !== undefined && this.options.thinkingBudget < requestMaxTokens
               ? this.options.thinkingBudget
               : undefined;
+          const completionRequest: CompletionRequest = {
+            model: this.model,
+            system: this.options.systemPrompt,
+            messages: this.messages,
+            tools: this.toolDefinitions(),
+            // RunBudget counts actual provider attempts. Retries are modeled as
+            // separate harness decisions rather than hidden inside one request.
+            maxAttempts: 1,
+            timeoutMs: Math.min(this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, budget.maxWallTimeMs),
+            maxTokens: requestMaxTokens,
+            ...(requestThinkingBudget !== undefined ? { thinkingBudget: requestThinkingBudget } : {}),
+          };
+          const spendReservation =
+            budget.maxSpendUSD !== undefined
+              ? reserveRequestSpend(completionRequest, this.options.pricing!)
+              : undefined;
+          if (
+            budget.maxSpendUSD !== undefined &&
+            spendExposure(turnCost) + (spendReservation?.usd ?? 0) > budget.maxSpendUSD
+          ) {
+            status = 'budget_exceeded';
+            reason = 'spend';
+            await this.observeBudget(telemetryContext, 'spend');
+            yield { type: 'budget_exceeded', reason: 'spend' };
+            break;
+          }
           let done: { message: AssistantMessage; stopReason: StopReason; usage: Usage } | undefined;
           const requestId = createTelemetryId('request');
           const requestJournaled =
             !this._session ||
             this.journal((session) => {
-              session.beginModelRequest(this.model, { requestId, messageCount: this.messages.length });
+              session.beginModelRequest(this.model, {
+                requestId,
+                messageCount: this.messages.length,
+                ...(spendReservation ? { spendReservation } : {}),
+              });
               return true;
             }) === true;
           if (!requestJournaled) {
@@ -1262,24 +1371,17 @@ export class Agent {
           });
           const requestStartedAt = Date.now();
           await this.observe(requestSpan);
-          const stream = this.options.client.stream(
-            {
-              model: this.model,
-              system: this.options.systemPrompt,
-              messages: this.messages,
-              tools: this.toolDefinitions(),
-              // RunBudget counts actual provider attempts. Retries are modeled as
-              // separate harness decisions rather than hidden inside one request.
-              maxAttempts: 1,
-              timeoutMs: Math.min(this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, budget.maxWallTimeMs),
-              maxTokens: requestMaxTokens,
-              ...(requestThinkingBudget !== undefined ? { thinkingBudget: requestThinkingBudget } : {}),
-            },
-            runController.signal,
-          );
+          const stream = this.options.client.stream(completionRequest, runController.signal);
           const streamIterator = stream[Symbol.asyncIterator]();
           let streamEnded = false;
           let requestLifecycleTerminal = false;
+          let requestCostTerminal = false;
+          const recordUnknownCost = () => {
+            if (requestCostTerminal) return;
+            addUnknownRequestCost(turnCost, spendReservation);
+            addUnknownRequestCost(this.costTotal, spendReservation);
+            requestCostTerminal = true;
+          };
           try {
             while (true) {
               const next = await nextStreamEvent(streamIterator, runController.signal);
@@ -1305,6 +1407,7 @@ export class Agent {
               this.journal((session) => session.failModelRequest(requestId, String(error)));
             }
             requestLifecycleTerminal = true;
+            recordUnknownCost();
             await this.observe(
               createSpanEnded(requestContext, {
                 name: 'model.request',
@@ -1341,10 +1444,12 @@ export class Agent {
                   'request iteration stopped before the provider stream reached a terminal boundary',
                 ),
               );
+              recordUnknownCost();
             }
           }
           if (!done) {
             this.journal((session) => session.failModelRequest(requestId, 'provider stream produced no complete message'));
+            recordUnknownCost();
             await this.observe(
               createSpanEnded(requestContext, {
                 name: 'model.request',
@@ -1364,10 +1469,15 @@ export class Agent {
           const hasAnswerText = done.message.content.some(
             (block) => block.type === 'text' && block.text.trim().length > 0,
           );
+          const requestCost = this.options.pricing ? costForUsage(done.usage, this.options.pricing) : undefined;
           const responseJournaled =
             !this._session ||
             this.journal((session) => {
-              session.completeModelRequest(requestId, { stopReason: done!.stopReason, usage: done!.usage });
+              session.completeModelRequest(requestId, {
+                stopReason: done!.stopReason,
+                usage: done!.usage,
+                ...(requestCost ? { cost: requestCost } : {}),
+              });
               return true;
             }) === true;
           await this.observe(
@@ -1397,6 +1507,9 @@ export class Agent {
 
           addUsage(turnUsage, done.usage);
           addUsage(this.usageTotal, done.usage);
+          addRequestCost(turnCost, requestCost);
+          addRequestCost(this.costTotal, requestCost);
+          requestCostTerminal = true;
           this.lastContextTokens = totalTokens(done.usage);
           if (!responseJournaled) {
             status = 'incomplete';
@@ -1412,7 +1525,13 @@ export class Agent {
           this.messages.push(done.message);
           const responsePersisted = this.persist(done.message);
           this.lastEstimatedRequestTokens = this.estimateCurrentRequestTokens();
-          yield { type: 'response_done', message: done.message, stopReason: done.stopReason, usage: done.usage };
+          yield {
+            type: 'response_done',
+            message: done.message,
+            stopReason: done.stopReason,
+            usage: done.usage,
+            ...(requestCost ? { cost: requestCost } : {}),
+          };
           if (!responsePersisted) {
             status = 'incomplete';
             reason = 'persistence';
@@ -1442,6 +1561,20 @@ export class Agent {
             }
             status = 'incomplete';
             reason = 'provider_stop';
+            break;
+          }
+          if (budget.maxSpendUSD !== undefined && spendExposure(turnCost) > budget.maxSpendUSD) {
+            const explanation = 'not run: the completed provider response exceeded the dollar spend ceiling';
+            this.journalSkippedTools(calls, explanation, requestId);
+            const skipped = unexecutedToolResults(calls, explanation);
+            if (skipped) {
+              this.messages.push(skipped);
+              this.persist(skipped);
+            }
+            status = 'budget_exceeded';
+            reason = 'spend';
+            await this.observeBudget(telemetryContext, 'spend');
+            yield { type: 'budget_exceeded', reason: 'spend' };
             break;
           }
           const responseUsageExceeded = exceededUsageBudgetReason(turnUsage, budget);
@@ -1989,9 +2122,10 @@ export class Agent {
       this.activeTelemetryContext = undefined;
       this.activeRunSignal = undefined;
       this.lastTurnUsage = turnUsage;
+      this.lastTurnCost = turnCost;
     }
 
-    yield { type: 'turn_done', iterations, toolCalls, usage: turnUsage, status, reason };
+    yield { type: 'turn_done', iterations, toolCalls, usage: turnUsage, cost: turnCost, status, reason };
   }
 
   private offloadCounter = 0;
@@ -2113,6 +2247,7 @@ export class Agent {
         relation: 'continuation',
         priorUsage: structuredClone(this.usageTotal),
         priorUsageComplete: this.usageHistoryComplete,
+        priorCost: structuredClone(this.costTotal),
       },
     });
     const fresh = locked.session;
@@ -2157,6 +2292,8 @@ export class Agent {
   private async compact(
     signal: AbortSignal | undefined,
     turnUsage: Usage,
+    turnCost: CostSummary,
+    budget: RunBudget,
     onRequestStart: () => void,
   ): Promise<number> {
     this.assertCompactionAllowed();
@@ -2180,7 +2317,14 @@ export class Agent {
     const droppedMessages = this.messages.slice(0, keepFrom);
     let summarized: { text: string; usage: Usage };
     try {
-      summarized = await this.summarizeMessages(droppedMessages, signal, turnUsage, onRequestStart);
+      summarized = await this.summarizeMessages(
+        droppedMessages,
+        signal,
+        turnUsage,
+        turnCost,
+        budget,
+        onRequestStart,
+      );
     } catch (error) {
       if (compactionId) {
         this.journalFor(sourceSession, (session) => session.failCompaction(compactionId, String(error)));
@@ -2224,6 +2368,7 @@ export class Agent {
             relation: 'compaction',
             priorUsage: structuredClone(this.usageTotal),
             priorUsageComplete: this.usageHistoryComplete,
+            priorCost: structuredClone(this.costTotal),
           },
         });
         const fresh = locked.session;
@@ -2378,6 +2523,8 @@ export class Agent {
     messages: Message[],
     signal?: AbortSignal,
     turnUsage?: Usage,
+    turnCost?: CostSummary,
+    budget?: Pick<RunBudget, 'maxSpendUSD'>,
     onRequestStart?: () => void,
   ): Promise<{ text: string; usage: Usage }> {
     let text = '';
@@ -2397,11 +2544,41 @@ export class Agent {
         `context preflight failed: compaction summary request projects ${summaryEstimate} tokens against a ${summaryThreshold}-token input limit`,
       );
     }
+    const summaryRequest: CompletionRequest = {
+      model: this.model,
+      system: COMPACTION_SYSTEM_PROMPT,
+      messages: summaryMessages,
+      tools: [],
+      maxAttempts: 1,
+      maxTokens: COMPACTION_SUMMARY_MAX_TOKENS,
+      timeoutMs: this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+    };
+    if (budget?.maxSpendUSD !== undefined && !this.options.pricing) {
+      throw new Error(
+        `maxSpendUSD requires an exact price for model ${this.model}; provide a pricing table containing that model`,
+      );
+    }
+    const spendReservation =
+      budget?.maxSpendUSD !== undefined ? reserveRequestSpend(summaryRequest, this.options.pricing!) : undefined;
+    const activeCost = turnCost ?? emptyCostSummary();
+    if (
+      budget?.maxSpendUSD !== undefined &&
+      spendExposure(activeCost) + (spendReservation?.usd ?? 0) > budget.maxSpendUSD
+    ) {
+      throw new SpendBudgetExceededError(
+        spendReservation?.usd ?? 0,
+        budget.maxSpendUSD - spendExposure(activeCost),
+      );
+    }
     const requestId = createTelemetryId('request');
     const requestJournaled =
       !this._session ||
       this.journal((session) => {
-        session.beginModelRequest(this.model, { requestId, messageCount: summaryMessages.length });
+        session.beginModelRequest(this.model, {
+          requestId,
+          messageCount: summaryMessages.length,
+          ...(spendReservation ? { spendReservation } : {}),
+        });
         return true;
       }) === true;
     if (!requestJournaled) {
@@ -2419,19 +2596,15 @@ export class Agent {
     });
     const requestStartedAt = Date.now();
     await this.observe(requestSpan);
-    const stream = this.options.client.stream(
-      {
-        model: this.model,
-        system: COMPACTION_SYSTEM_PROMPT,
-        messages: summaryMessages,
-        tools: [],
-        maxAttempts: 1,
-        maxTokens: COMPACTION_SUMMARY_MAX_TOKENS,
-        timeoutMs: this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
-      },
-      signal,
-    );
+    const stream = this.options.client.stream(summaryRequest, signal);
     const streamIterator = stream[Symbol.asyncIterator]();
+    let requestCostTerminal = false;
+    const recordUnknownCost = () => {
+      if (requestCostTerminal) return;
+      addUnknownRequestCost(activeCost, spendReservation);
+      addUnknownRequestCost(this.costTotal, spendReservation);
+      requestCostTerminal = true;
+    };
     try {
       while (true) {
         const next = await nextStreamEvent(streamIterator, signal);
@@ -2452,6 +2625,7 @@ export class Agent {
       } else {
         this.journal((session) => session.failModelRequest(requestId, String(error)));
       }
+      recordUnknownCost();
       await this.observe(
         createSpanEnded(telemetryContext, {
           name: 'model.request',
@@ -2466,6 +2640,7 @@ export class Agent {
     }
     if (!done) {
       this.journal((session) => session.failModelRequest(requestId, 'summarizer had no terminal result'));
+      recordUnknownCost();
       await this.observe(
         createSpanEnded(telemetryContext, {
           name: 'model.request',
@@ -2477,16 +2652,26 @@ export class Agent {
       );
       throw new Error('compaction failed: summarizer stream ended without a terminal result');
     }
+    const requestCost = this.options.pricing ? costForUsage(done.usage, this.options.pricing) : undefined;
     const completionJournaled =
       !this._session ||
       this.journal((session) => {
-        session.completeModelRequest(requestId, { stopReason: done!.stopReason, usage: done!.usage });
+        session.completeModelRequest(requestId, {
+          stopReason: done!.stopReason,
+          usage: done!.usage,
+          ...(requestCost ? { cost: requestCost } : {}),
+        });
         return true;
       }) === true;
     // Usage is billable once the provider has completed, even if the summary is
     // semantically unusable (truncated/empty) or its later persistence fails.
     addUsage(this.usageTotal, done.usage);
     if (turnUsage) addUsage(turnUsage, done.usage);
+    addRequestCost(this.costTotal, requestCost);
+    addRequestCost(activeCost, requestCost);
+    requestCostTerminal = true;
+    const actualSpendExceeded =
+      budget?.maxSpendUSD !== undefined && spendExposure(activeCost) > budget.maxSpendUSD;
     await this.observe(
       createSpanEnded(telemetryContext, {
         name: 'model.request',
@@ -2496,6 +2681,9 @@ export class Agent {
         attributes: { purpose: 'compaction', stopReason: done.stopReason, outputTokens: done.usage.outputTokens },
       }),
     );
+    if (actualSpendExceeded) {
+      throw new SpendBudgetExceededError(0, budget!.maxSpendUSD! - spendExposure(activeCost));
+    }
     if (!completionJournaled) {
       throw new CompactionPersistenceError(
         'compaction failed: the billed summary completion could not be durably recorded',
@@ -2517,7 +2705,15 @@ export class Agent {
   /** Manual handoff summary; unlike old behavior, its request and usage are accounted. */
   async summarize(signal?: AbortSignal): Promise<string> {
     this.assertCompactionAllowed();
-    const summarized = await this.summarizeMessages(this.messages, signal);
+    const summaryCost = emptyCostSummary();
+    const maxSpendUSD = this.options.budget?.maxSpendUSD;
+    const summarized = await this.summarizeMessages(
+      this.messages,
+      signal,
+      undefined,
+      summaryCost,
+      maxSpendUSD !== undefined ? { maxSpendUSD } : undefined,
+    );
     return summarized.text;
   }
 }

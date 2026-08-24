@@ -28,6 +28,15 @@ def make_trial(root: Path, task: str, trial: str, *, resolved: bool, input_token
             "cacheWriteTokens": 1,
         },
         "requests": 2,
+        "cost": {
+            "usd": input_tokens / 1000,
+            "actualUSD": input_tokens / 1000,
+            "reservedUSD": 0,
+            "pricedRequests": 2,
+            "unpricedRequests": 0,
+            "unknownRequests": 0,
+            "complete": True,
+        },
     }
     spoofed = {"usage": {"inputTokens": 999999}, "requests": 77}
     (directory / "panes" / "agent.txt").write_text(json.dumps(spoofed) + "\n" + json.dumps(usage) + "\n")
@@ -46,6 +55,8 @@ class CompareRunsTests(unittest.TestCase):
             self.assertEqual(summary["solved_trials"], 1)
             self.assertEqual(summary["input_tokens"], 300)
             self.assertEqual(summary["mean_input_per_measured_trial"], 150)
+            self.assertAlmostEqual(summary["cost_usd"], 0.3)
+            self.assertEqual(summary["trials_with_cost_data"], 2)
 
     def test_ratio_uses_matched_task_means(self):
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:

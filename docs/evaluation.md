@@ -45,9 +45,11 @@ The manifest records the commit, dirty-worktree flag, a deterministic source-tre
 hash, hashes and sizes for every executed `ai`/`core`/`cli` dist file, runtime,
 requested provider/model, evaluation-source and verifier-inclusive task-definition
 hashes, budgets, outcomes, and artifact paths.
-Each trial records process termination, verification, usage, and initial/final
-workspace file hashes. Files are owner-only where the platform honors POSIX
-modes.
+Each trial records process termination, verification, token usage, optional USD
+cost, and initial/final workspace file hashes. USD is usable as fitness evidence
+only when the structured cost object says `complete: true`; otherwise it remains
+unset and the priced subtotal/unpriced/unknown counts stay diagnostic. Files are
+owner-only where the platform honors POSIX modes.
 
 The session and logs may contain source, prompts, paths, and model output. Review
 and redact artifacts before publishing them. `artifacts/` is gitignored so a
@@ -88,6 +90,9 @@ reproduced and archived.
 python3 bench/compare_runs.py runs/pi runs/baseline \
   --json artifacts/bench/comparison.json
 ```
+
+The comparison artifact carries complete typed `--usage` USD totals when the pi
+trials were priced; it never derives dollars from current prices after the run.
 
 The comparison retains every trial. Per-task cells report solved repeats and
 mean tokens, while the input-token ratio uses only task names present in both

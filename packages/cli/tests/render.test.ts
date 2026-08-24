@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { oneLine, red, sanitizeTerminalText, summarizeArgs } from '../src/render.js';
+import { formatCost, oneLine, red, sanitizeTerminalText, summarizeArgs } from '../src/render.js';
 
 test('terminal sanitizer removes C0, ESC, DEL, and C1 controls but preserves newline and tab', () => {
   const raw = 'before\x1b[2Jafter\u009b31m\rrewrite\b!\x07\tok\nnext';
@@ -8,6 +8,17 @@ test('terminal sanitizer removes C0, ESC, DEL, and C1 controls but preserves new
 
   assert.equal(safe, 'before[2Jafter31mrewrite!\tok\nnext');
   assert.doesNotMatch(safe, /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u);
+});
+
+test('cost formatting never presents incomplete pricing as zero dollars', () => {
+  assert.equal(
+    formatCost({ actualUSD: 0, reservedUSD: 0, pricedRequests: 0, unpricedRequests: 1, unknownRequests: 0 }),
+    'unavailable (1 unpriced)',
+  );
+  assert.equal(
+    formatCost({ actualUSD: 0.001, reservedUSD: 0, pricedRequests: 1, unpricedRequests: 0, unknownRequests: 0 }),
+    '$0.001000',
+  );
 });
 
 test('human-facing summaries neutralize terminal sequences before truncation', () => {

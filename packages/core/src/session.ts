@@ -27,6 +27,7 @@ import {
   reduceModelRequests,
   reduceOpenRun,
   reduceToolExecutions,
+  summarizeCosts,
   validateLifecycle,
   type ApprovalDecision,
   type LifecycleEntry,
@@ -38,6 +39,14 @@ import {
   type SessionLineage,
   type ToolExecutionState,
 } from './journal.js';
+import {
+  addCostSummary,
+  costComplete,
+  emptyCostSummary,
+  type CostSummary,
+  type RequestCost,
+  type SpendReservation,
+} from './pricing.js';
 
 export type {
   ApprovalDecision,
@@ -69,6 +78,13 @@ export interface LockedSession {
   session: Session;
   /** Releases the advisory lock; it is also released automatically on process exit. */
   release: () => void;
+}
+
+export interface UsageLedgerEntry {
+  usage: Usage;
+  requestId?: string;
+  model?: string;
+  cost?: RequestCost;
 }
 
 export class SessionCorruptionError extends Error {
@@ -681,7 +697,10 @@ export class Session {
     this.append({ t: 'session_ready', v: 2, at: now() });
   }
 
-  beginModelRequest(model: string, options: { requestId?: string; messageCount?: number } = {}): string {
+  beginModelRequest(
+    model: string,
+    options: { requestId?: string; messageCount?: number; spendReservation?: SpendReservation } = {},
+  ): string {
     const requestId = options.requestId ?? randomUUID();
     this.append({
       t: 'model_request_started',
@@ -690,11 +709,15 @@ export class Session {
       requestId,
       model,
       ...(options.messageCount !== undefined ? { messageCount: options.messageCount } : {}),
+      ...(options.spendReservation ? { spendReservation: options.spendReservation } : {}),
     });
     return requestId;
   }
 
-  completeModelRequest(requestId: string, options: { stopReason?: string; usage?: Usage } = {}): void {
+  completeModelRequest(
+    requestId: string,
+    options: { stopReason?: string; usage?: Usage; cost?: RequestCost } = {},
+  ): void {
     this.append({
       t: 'model_request_completed',
       v: 2,
@@ -702,6 +725,7 @@ export class Session {
       requestId,
       ...(options.stopReason ? { stopReason: options.stopReason } : {}),
       ...(options.usage ? { usage: options.usage } : {}),
+      ...(options.cost ? { cost: options.cost } : {}),
     });
   }
 
@@ -870,14 +894,36 @@ export class Session {
   }
 
   get usageEntries(): readonly Usage[] {
-    const rows: Usage[] = [];
+    return this.usageLedgerEntries.map((entry) => structuredClone(entry.usage));
+  }
+
+  get usageLedgerEntries(): readonly UsageLedgerEntry[] {
+    const rows: UsageLedgerEntry[] = [];
     let lifecycleAccountingStarted = false;
+    const models = new Map<string, string>();
     for (const entry of this.entries) {
-      if (entry.t === 'model_request_started') lifecycleAccountingStarted = true;
-      if (entry.t === 'usage' && !lifecycleAccountingStarted) rows.push(structuredClone(entry.usage));
-      if (entry.t === 'model_request_completed' && entry.usage) rows.push(structuredClone(entry.usage));
+      if (entry.t === 'model_request_started') {
+        lifecycleAccountingStarted = true;
+        models.set(entry.requestId, entry.model);
+      }
+      if (entry.t === 'usage' && !lifecycleAccountingStarted) {
+        rows.push({ usage: structuredClone(entry.usage), ...(this.meta?.model ? { model: this.meta.model } : {}) });
+      }
+      if (entry.t === 'model_request_completed' && entry.usage) {
+        rows.push({
+          usage: structuredClone(entry.usage),
+          requestId: entry.requestId,
+          ...(models.get(entry.requestId) ? { model: models.get(entry.requestId)! } : {}),
+          ...(entry.cost ? { cost: structuredClone(entry.cost) } : {}),
+        });
+      }
     }
     return rows;
+  }
+
+  /** Dollar rows are request-linked; unpriced and unknown attempts remain explicit. */
+  get costSummary(): CostSummary {
+    return summarizeCosts(this.entries);
   }
 
   get meta(): Extract<SessionEntry, { t: 'meta' }> | undefined {
@@ -903,6 +949,7 @@ export class Session {
       ...(entry.atMessage !== undefined ? { atMessage: entry.atMessage } : {}),
       ...(entry.priorUsage ? { priorUsage: structuredClone(entry.priorUsage) } : {}),
       ...(entry.priorUsageComplete !== undefined ? { priorUsageComplete: entry.priorUsageComplete } : {}),
+      ...(entry.priorCost ? { priorCost: structuredClone(entry.priorCost) } : {}),
     };
   }
 
@@ -971,6 +1018,45 @@ export interface LineageUsage {
   /** False only for a legacy chain that was missing or exceeded the bounded ancestry scan. */
   complete: boolean;
   traversed: number;
+}
+
+export interface LineageCost {
+  cost: CostSummary;
+  /** False for missing ancestry or any unpriced/unknown request. */
+  complete: boolean;
+  traversed: number;
+}
+
+/** Durable request costs across a compacted/continued lineage, without re-pricing history. */
+export function costAcrossSessionLineageDetailed(session: Session, maxDepth = 64): LineageCost {
+  if (!Number.isSafeInteger(maxDepth) || maxDepth < 1) throw new RangeError('maxDepth must be a positive safe integer');
+  const total = emptyCostSummary();
+  const seen = new Set<string>();
+  let current: Session | undefined = session;
+  let traversed = 0;
+  let ancestryComplete = true;
+  for (; current && traversed < maxDepth; traversed++) {
+    if (seen.has(current.file)) throw new SessionCorruptionError('session lineage contains a cycle', current.file);
+    seen.add(current.file);
+    addCostSummary(total, current.costSummary);
+    const lineage = current.lineage;
+    if (lineage?.priorCost) {
+      addCostSummary(total, lineage.priorCost);
+      return { cost: total, complete: ancestryComplete && costComplete(total), traversed: traversed + 1 };
+    }
+    if (!lineage?.parentFile || (lineage.relation !== 'compaction' && lineage.relation !== 'continuation')) {
+      ancestryComplete = ancestryComplete && (lineage?.parentFile !== undefined || lineage === undefined);
+      return { cost: total, complete: ancestryComplete && costComplete(total), traversed: traversed + 1 };
+    }
+    const parentFile = isAbsolute(lineage.parentFile)
+      ? lineage.parentFile
+      : join(dirname(current.file), lineage.parentFile);
+    if (!existsSync(parentFile)) {
+      return { cost: total, complete: false, traversed: traversed + 1 };
+    }
+    current = Session.open(parentFile);
+  }
+  return { cost: total, complete: current === undefined && costComplete(total), traversed };
 }
 
 /** Provider-reported usage across a compacted/continued session lineage. */

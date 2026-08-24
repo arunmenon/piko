@@ -25,7 +25,7 @@ statistical bar for self-improvement promotion.
 | # | Gap | Source | Addressed in |
 |---|-----|--------|--------------|
 | G1 | Durable approvals (0011) implemented in the v0.2.0 tranche; fault coverage and the approval/compaction boundary were closed on 2026-08-24 | ADR review; tree @ e07affd; `docs/adr/evidence/0011-approval-test-map.md` | Phase 1 — complete |
-| G2 | Costs tracked as token proxies only; no dollar accounting, no spend ceiling | 0009 consequences; Exo `cost` crate proves the pattern | Phase 2 (ADR 0020) |
+| G2 | Dollar accounting and a pre-dispatch spend ceiling landed with durable price provenance on 2026-08-24 | 0009; ADR 0020; `docs/adr/evidence/0020-pricing-test-map.md` | Phase 2a — complete |
 | G3 | Secret *usage* is prevented but not observable; no access-pattern events | Podcast (host); 0013 substrate exists | Phase 2 |
 | G4 | No graceful drain on SIGTERM; run status can end untidy under supervisors | Exo guardian pattern | Phase 2 |
 | G5 | Adoption blockers: no license, no published packages, no quickstart, no doctor | Roadmap v1.0; goal choice | Phase 3 (ADR 0019) |
@@ -64,7 +64,7 @@ manual/automatic compaction-refusal coverage, including a trusted-project and
 extension provenance regression. `npm run verify` passes on 2026-08-24.
 
 **Phase 2 — small borrowed wins and missing data policy (parallel with Phase 1).**
-(a) ADR 0020: pricing loader (explicit path → fresh cache → fetch → stale cache
+(a) **Complete 2026-08-24 — ADR 0020:** pricing loader (explicit path → fresh cache → fetch → stale cache
 → empty; never fails; tokens persist even when cost is unset), USD in the
 per-turn ledger, `--usage`, `--audit`, and eval artifacts; `RunBudget` gains
 optional `maxSpendUSD` with stop reason `spend`. "Hard ceiling" means the loop
@@ -77,6 +77,9 @@ unset without affecting token accounting. Every cost row records the pricing
 source, revision/hash, currency, and effective time. Tests: table parse, cache
 TTL, degrade paths, provenance, reservation refusal, ceiling trip, retries, and
 unpriceable+cap error.
+Exit evidence: `docs/adr/evidence/0020-pricing-test-map.md`; USD is request-linked
+in the journal, unknown cost is never represented as zero, and `npm run verify`
+passes on the delivery tree.
 (b) Secret-access telemetry: add 0013 metadata-only events when a provider
 credential is attached and when sanitized child-environment policy excludes
 credential-shaped variables. Events contain provider/policy class and counts,

@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import type { AssistantMessage, CompletionRequest, StreamEvent, Usage } from '@pi/ai';
 import { Agent, type AgentEvent, type CompletionClient, type RunBudget } from '../src/agent.js';
 import { Session } from '../src/session.js';
+import type { ModelPrice } from '../src/pricing.js';
 import type { Observer, RuntimeTelemetryEvent } from '../src/telemetry.js';
 import type { Tool } from '../src/tools/types.js';
 
@@ -15,6 +16,23 @@ const smallUsage: Usage = {
   cacheReadTokens: 0,
   cacheWriteTokens: 0,
 };
+
+function price(overrides: Partial<ModelPrice> = {}): ModelPrice {
+  return {
+    model: 'm',
+    inputUSDPerToken: 0.000001,
+    outputUSDPerToken: 0.000002,
+    cacheReadUSDPerToken: 0.0000005,
+    cacheWriteUSDPerToken: 0.000001,
+    provenance: {
+      source: 'explicit',
+      revision: 'test-prices',
+      currency: 'USD',
+      effectiveAt: '2026-08-24T00:00:00.000Z',
+    },
+    ...overrides,
+  };
+}
 
 function clientFor(message: AssistantMessage, stopReason: 'end_turn' | 'tool_use' | 'max_tokens', usage = smallUsage): CompletionClient {
   return {
@@ -121,6 +139,107 @@ test('provider-reported token budget prevents following tool side effects', asyn
   const terminal = events.at(-1) as Extract<AgentEvent, { type: 'turn_done' }>;
   assert.equal(terminal.status, 'budget_exceeded');
   assert.equal(terminal.reason, 'input_tokens');
+});
+
+test('a spend ceiling refuses an unpriceable model before provider dispatch', async () => {
+  let requests = 0;
+  const client: CompletionClient = {
+    async *stream(): AsyncGenerator<StreamEvent, void, void> {
+      requests++;
+      yield {
+        type: 'done',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'should not run' }] },
+        stopReason: 'end_turn',
+        usage: smallUsage,
+      };
+    },
+  };
+  const agent = new Agent({
+    client,
+    model: 'm',
+    systemPrompt: 's',
+    tools: [],
+    cwd: '/tmp',
+    budget: { maxSpendUSD: 1 },
+  });
+  await assert.rejects(() => drain(agent), /requires an exact price/);
+  assert.equal(requests, 0);
+  assert.equal(agent.messages.length, 0);
+});
+
+test('priced usage is journaled with provenance and exposed in the turn ledger', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'pi-spend-ledger-'));
+  const session = Session.create('/project', 'm', directory);
+  const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: 'done' }] };
+  const agent = new Agent({
+    client: clientFor(message, 'end_turn'),
+    model: 'm',
+    systemPrompt: 's',
+    tools: [],
+    cwd: '/project',
+    session,
+    pricing: price(),
+    budget: { maxSpendUSD: 1 },
+  });
+  const terminal = (await drain(agent)).at(-1) as Extract<AgentEvent, { type: 'turn_done' }>;
+  assert.equal(terminal.status, 'completed');
+  assert.equal(terminal.cost.pricedRequests, 1);
+  assert.equal(terminal.cost.actualUSD, 0.000014);
+  assert.equal(agent.costTotal.actualUSD, 0.000014);
+  const request = Session.open(session.file).modelRequests[0];
+  assert.ok(request?.spendReservation && request.spendReservation.usd > request.cost!.usd);
+  assert.equal(request.cost?.pricing.revision, 'test-prices');
+  assert.equal(Session.open(session.file).costSummary.actualUSD, 0.000014);
+});
+
+test('spend reservation stops a later provider request before it can be billed', async () => {
+  let requests = 0;
+  let tools = 0;
+  const client: CompletionClient = {
+    async *stream(): AsyncGenerator<StreamEvent, void, void> {
+      requests++;
+      yield {
+        type: 'done',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'toolCall', id: 'c1', name: 'noop', arguments: {} }],
+        },
+        stopReason: 'tool_use',
+        usage: smallUsage,
+      };
+    },
+  };
+  const tool: Tool = {
+    name: 'noop',
+    description: 'no op',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    async execute() {
+      tools++;
+      return { content: [{ type: 'text', text: 'ok' }] };
+    },
+  };
+  const outputPrice = price({
+    inputUSDPerToken: 0,
+    cacheReadUSDPerToken: 0,
+    cacheWriteUSDPerToken: 0,
+    outputUSDPerToken: 0.001,
+  });
+  const agent = new Agent({
+    client,
+    model: 'm',
+    systemPrompt: 's',
+    tools: [tool],
+    cwd: '/tmp',
+    pricing: outputPrice,
+    budget: { maxSpendUSD: 8.193 },
+  });
+  const events = await drain(agent);
+  const terminal = events.at(-1) as Extract<AgentEvent, { type: 'turn_done' }>;
+  assert.equal(requests, 1);
+  assert.equal(tools, 1);
+  assert.equal(terminal.status, 'budget_exceeded');
+  assert.equal(terminal.reason, 'spend');
+  assert.ok(events.some((event) => event.type === 'budget_exceeded' && event.reason === 'spend'));
 });
 
 test('a final response that overshoots a provider token ceiling is not reported as completed', async () => {
@@ -290,6 +409,8 @@ test('run budgets reject fractional counts, timer overflow, and unusably small t
     { maxToolCalls: 1.5 },
     { maxWallTimeMs: 2_147_483_648 },
     { maxToolOutputBytes: 1 },
+    { maxSpendUSD: 0 },
+    { maxSpendUSD: Number.POSITIVE_INFINITY },
   ]) {
     const agent = new Agent({ client: clientFor(message, 'end_turn'), model: 'm', systemPrompt: 's', tools: [], cwd: '/tmp', budget });
     await assert.rejects(async () => drain(agent), /invalid run budget/);

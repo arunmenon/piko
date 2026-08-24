@@ -23,6 +23,11 @@ test('parseArgs handles flags, budgets, and positional prompt', () => {
     '30',
     '--max-total-tokens',
     '9000',
+    '--max-spend-usd',
+    '1.25',
+    '--pricing',
+    'prices.json',
+    '--offline-pricing',
     '--trust-project',
     '--allow-host-bash',
     '--telemetry',
@@ -40,6 +45,9 @@ test('parseArgs handles flags, budgets, and positional prompt', () => {
   assert.equal(args.maxToolOutputBytes, 5000);
   assert.equal(args.maxTimeMs, 30_000);
   assert.equal(args.maxTotalTokens, 9000);
+  assert.equal(args.maxSpendUSD, 1.25);
+  assert.equal(args.pricingPath, 'prices.json');
+  assert.equal(args.offlinePricing, true);
   assert.equal(args.trustProject, true);
   assert.equal(args.allowHostBash, true);
   assert.equal(args.telemetry, 'trace.jsonl');
@@ -51,6 +59,8 @@ test('parseArgs rejects missing values', () => {
   assert.throws(() => parseArgs(['--model']));
   assert.throws(() => parseArgs(['--max-tool-calls', '0']));
   assert.throws(() => parseArgs(['--max-time', '1.5']));
+  assert.throws(() => parseArgs(['--max-spend-usd', '0']));
+  assert.throws(() => parseArgs(['--max-spend-usd', 'NaN']));
 });
 
 test('parseArgs rejects unsafe timer and tool-output budgets', () => {
@@ -77,6 +87,35 @@ test('--json serializes argument/setup failures instead of emitting an empty std
   assert.equal(row.v, 1);
   assert.equal(row.event.type, 'run_error');
   assert.match(row.event.error, /unknown flag/);
+});
+
+test('a CLI spend ceiling fails closed before session/provider setup when the model is unpriced', () => {
+  const cli = resolve(import.meta.dirname, '..', 'dist', 'main.js');
+  const workspace = mkdtempSync(join(tmpdir(), 'pi-cli-unpriced-'));
+  const result = spawnSync(
+    process.execPath,
+    [
+      cli,
+      '--json',
+      '--profile',
+      'openai',
+      '--model',
+      'not-in-table',
+      '--offline-pricing',
+      '--max-spend-usd',
+      '1',
+      'hello',
+    ],
+    {
+      cwd: workspace,
+      encoding: 'utf8',
+      env: { ...process.env, HOME: workspace, OPENAI_API_KEY: 'test-key' },
+    },
+  );
+  assert.equal(result.status, 1);
+  const row = JSON.parse(result.stdout.trim()) as { event: { type: string; error: string } };
+  assert.equal(row.event.type, 'run_error');
+  assert.match(row.event.error, /requires an exact price/);
 });
 
 test('JSON errors encode terminal controls while human errors sanitize them', () => {

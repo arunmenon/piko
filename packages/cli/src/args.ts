@@ -20,6 +20,9 @@ export interface CliArgs {
   maxInputTokens?: number;
   maxOutputTokens?: number;
   maxTotalTokens?: number;
+  maxSpendUSD?: number;
+  pricingPath?: string;
+  offlinePricing: boolean;
   trustProject: boolean;
   allowHostBash: boolean;
   /** tool names gated behind a human decision, or '*' for all (ADR 0011) */
@@ -48,6 +51,7 @@ export function parseArgs(argv: string[]): CliArgs {
     autoCompact: true,
     flailGuard: true,
     offload: true,
+    offlinePricing: false,
     trustProject: false,
     allowHostBash: false,
     approvals: [],
@@ -74,6 +78,11 @@ export function parseArgs(argv: string[]): CliArgs {
   const integerAtLeast = (flag: string, raw: string, minimum: number): number => {
     const value = positiveInteger(flag, raw);
     if (value < minimum) throw new Error(`${flag} requires an integer >= ${minimum}`);
+    return value;
+  };
+  const positiveDecimal = (flag: string, raw: string): number => {
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value <= 0) throw new Error(`${flag} requires a finite number > 0`);
     return value;
   };
   for (let i = 0; i < argv.length; i++) {
@@ -135,6 +144,15 @@ export function parseArgs(argv: string[]): CliArgs {
         args.maxTotalTokens = positiveInteger('--max-total-tokens', next());
         break;
       }
+      case '--max-spend-usd':
+        args.maxSpendUSD = positiveDecimal('--max-spend-usd', next());
+        break;
+      case '--pricing':
+        args.pricingPath = next();
+        break;
+      case '--offline-pricing':
+        args.offlinePricing = true;
+        break;
       case '--thinking': {
         const value = Number(next());
         if (!Number.isSafeInteger(value) || value < 1) throw new Error('--thinking requires a token budget >= 1');
@@ -259,6 +277,9 @@ options:
   --max-input-tokens <n>  stop after the provider-reported input-token budget
   --max-output-tokens <n> stop after the provider-reported output-token budget
   --max-total-tokens <n>  stop after the combined provider-reported token budget
+  --max-spend-usd <usd>   hard dollar ceiling; requires an exact price for the model
+  --pricing <path>     use an explicit LiteLLM-compatible pricing table (disables fetch)
+  --offline-pricing    use only the 24h/stale local pricing cache; never fetch
   --thinking <tokens>  enable extended thinking with this token budget (Anthropic models)
   --no-auto-compact    never summarize automatically when the context window fills
   --no-flail-guard     disable the doom-loop guard (nudge/stop on repeated tool failures)

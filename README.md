@@ -49,10 +49,12 @@ industry harnesses.
 - **Mid-turn steering**: type while a turn is running and the note is injected before the next
   model call (`[↪ steering applied]`), not queued until the end.
 - **Durable, inspectable local state**: owner-only, fsynced JSONL sessions under `~/.pi/sessions/`,
-  per-turn token ledger with cache hit-rate (`/tokens`, `--usage`), and `pi --audit [session]`
+  per-turn token and USD ledgers with cache hit-rate (`/tokens`, `--usage`), and `pi --audit [session]`
   reconstructing linked-session economics. A versioned write-ahead lifecycle journal records
-  model requests, tool planned/started/completed/failed/unknown states, compaction lineage, and
-  terminal run status. Only a corrupt partial tail is ignored; invalid middle rows fail closed.
+  model requests with exact pricing provenance, tool planned/started/completed/failed/unknown states,
+  compaction lineage, and terminal run status. Unpriced or outcome-unknown requests make aggregate
+  USD explicitly unavailable rather than looking free. Only a corrupt partial tail is ignored;
+  invalid middle rows fail closed.
 - **Approvals that survive process loss**: `--require-approval <names|*>` gates tools behind a
   recorded human decision. The batch runs in order until the first gated call, journals the rest,
   and the turn ends `suspended` (exit 4) without another model request. The decision is a journal
@@ -65,7 +67,7 @@ industry harnesses.
 - **Prompt-cache conscious**: stable prefix ordering with Anthropic cache breakpoints; normal
   turns append. Explicit microcompaction rewrites only eligible old tool-result blocks, while full
   compaction starts a lineage-linked session and preserves the prior transcript.
-- **Fail-closed budgets**: model requests, tool calls, provider-reported tokens, and every retained
+- **Fail-closed budgets**: model requests, tool calls, provider-reported tokens, USD spend, and every retained
   tool result are bounded. Wall deadlines bound harness waits and bundled provider/bash paths;
   arbitrary in-process extension code cannot be forcibly preempted or have its side effects rolled
   back. `max_tokens` and incomplete streams are non-success states.
@@ -95,6 +97,9 @@ node packages/cli/dist/main.js --trust-project --allow-host-bash
 
 # headless: final reply on stdout, progress on stderr
 node packages/cli/dist/main.js -p "review these files" --max-turns 20
+
+# hard dollar ceiling; exact model key required, with a durable pre-dispatch reservation
+node packages/cli/dist/main.js -p --pricing ./model-prices.json --max-spend-usd 0.50 "review these files"
 
 # versioned JSONL automation stream; incomplete/capped runs exit nonzero
 node packages/cli/dist/main.js --json "review these files"
@@ -135,13 +140,19 @@ Config file (`~/.config/pi/config.json`, optional):
 `approval` (a list of tool names or `"*"`) to override it. This file and the `--require-approval`
 flag are its only sources.
 
+Pricing accepts piko's `models.{name}.{inputUSDPerToken,outputUSDPerToken}` schema or exact
+LiteLLM price-table rows. Resolution is explicit path → fresh 24-hour cache → public-table fetch →
+stale cache → empty. `--pricing <path>` and `--offline-pricing` disable fetching; custom provider
+base URLs are offline by default because public-model prices must not be guessed. Every priced
+request records source class, table hash, USD currency, and effective time in the session journal.
+
 Headless exit codes are semantic and fail closed — success must be proven by a terminal status:
 
 | Code | Meaning |
 | ---- | ------- |
 | 0 | completed turn |
 | 1 | error (bad flags, setup failure, provider error) |
-| 2 | budget exceeded (`--max-turns`, tool calls, wall time, tokens) |
+| 2 | budget exceeded (`--max-turns`, tool calls, wall time, tokens, USD spend) |
 | 3 | incomplete or unknown terminal state |
 | 4 | suspended awaiting tool approval; resume with `--approve`/`--reject`/`--edit` |
 | 130 | canceled by the user |

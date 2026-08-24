@@ -206,6 +206,14 @@ test('a gated tool suspends a headless run with exit 4, and a resume decision co
     }];\n`,
     'utf8',
   );
+  writeFileSync(
+    join(workspace, 'prices.json'),
+    JSON.stringify({
+      models: { 'fake-model': { inputUSDPerToken: 0.000001, outputUSDPerToken: 0.000002 } },
+      effectiveAt: '2026-08-24T00:00:00.000Z',
+    }),
+    'utf8',
+  );
   const env = {
     ...process.env,
     OPENAI_API_KEY: 'test-key',
@@ -225,6 +233,11 @@ test('a gated tool suspends a headless run with exit 4, and a resume decision co
     'rogue.mjs',
     '--require-approval',
     'write',
+    '--pricing',
+    'prices.json',
+    '--max-spend-usd',
+    '1',
+    '--usage',
   ];
   try {
     const suspended = await runCli([...base, '--json', 'write the file'], { cwd: workspace, env });
@@ -244,6 +257,16 @@ test('a gated tool suspends a headless run with exit 4, and a resume decision co
     assert.equal(terminal.type, 'turn_done');
     assert.equal(terminal.status, 'suspended');
     assert.equal(terminal.reason, 'awaiting_approval');
+    const suspendedUsage = JSON.parse(suspended.stderr.trim().split('\n').at(-1)!) as {
+      type: string;
+      cost: { actualUSD: number; pricedRequests: number; complete: boolean };
+      status: string;
+    };
+    assert.equal(suspendedUsage.type, 'usage_summary');
+    assert.ok(suspendedUsage.cost.actualUSD > 0);
+    assert.equal(suspendedUsage.cost.pricedRequests, 1);
+    assert.equal(suspendedUsage.cost.complete, true);
+    assert.equal(suspendedUsage.status, 'suspended');
 
     // A second invocation with no decision must refuse rather than start fresh work.
     const refused = await runCli([...base, '-p', 'anything else'], { cwd: workspace, env });
@@ -281,6 +304,13 @@ test('a gated tool suspends a headless run with exit 4, and a resume decision co
     );
     assert.equal(resumedRows.at(-1)?.event.type, 'turn_done');
     assert.equal(resumedRows.at(-1)?.event.status, 'completed');
+    const resumedUsage = JSON.parse(resumed.stderr.trim().split('\n').at(-1)!) as {
+      cost: { actualUSD: number; pricedRequests: number; complete: boolean };
+      status: string;
+    };
+    assert.equal(resumedUsage.status, 'completed');
+    assert.equal(resumedUsage.cost.pricedRequests, 2);
+    assert.equal(resumedUsage.cost.complete, true);
 
     const journal = Session.open(session.file);
     const kinds = journal.lifecycleEntries.map((entry) => entry.t);
@@ -288,6 +318,13 @@ test('a gated tool suspends a headless run with exit 4, and a resume decision co
     assert.ok(kinds.includes('tool_approval_decided'));
     assert.equal(journal.toolExecutions[0]?.status, 'completed');
     assert.equal(journal.runStatus?.status, 'completed');
+    const audit = await runCli([cli, '--audit', session.file], { cwd: workspace, env });
+    assert.equal(audit.status, 0, audit.stderr);
+    assert.match(audit.stdout, /total: .*\$[0-9]+\.[0-9]{6}/);
+    assert.match(
+      audit.stdout,
+      /pricing req 1: model=fake-model source=explicit revision=[0-9a-f]{64} currency=USD/,
+    );
   } finally {
     await provider.close();
   }

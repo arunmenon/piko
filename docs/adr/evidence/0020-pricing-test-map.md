@@ -1,0 +1,15 @@
+# ADR 0020 clause-to-test map
+
+Verified 2026-08-24 against the Phase 2a implementation. CI runs every named
+test through `npm test`.
+
+| ADR clause | Required property | Passing evidence |
+|---|---|---|
+| Decision 1 — pricing resolution | Exact model keys; explicit → fresh cache → fetch → stale cache → empty; 24-hour freshness; explicit/offline disables fetch; loader errors never block token-only runs; usage-dependent rates that cannot be reconstructed are left unpriced | `pricing parser accepts exact piko/LiteLLM rows and never invents aliases`; `pricing loader follows explicit, fresh-cache, network, stale-cache, empty without throwing` (`packages/core/tests/pricing.test.ts`). |
+| Decision 2 — accounting and provenance | Provider usage remains the token source; request cost records components plus source, revision, USD, and effective time; unknown/unpriced cost is not zero; session, turn, CLI JSON, audit, eval, and benchmark artifacts carry the result | `request costs preserve components/provenance and reservations are conservative`; `priced usage is journaled with provenance and exposed in the turn ledger` (`packages/core/tests`); the priced suspend/resume assertions in `a gated tool suspends a headless run with exit 4, and a resume decision completes it` (`packages/cli/tests/approvals.test.ts`); `parseUsageSummary ignores other JSON and validates counters` (`eval/result.test.ts`); benchmark comparison tests (`bench/test_compare_runs.py`). |
+| Decision 3 — enforcement | `maxSpendUSD` is positive/finite, reservation is durable before dispatch, every request has a hard output cap and one visible attempt, insufficient remaining spend stops with `budget_exceeded:spend` before another provider call | `spend reservation stops a later provider request before it can be billed`; expanded `run budgets reject fractional counts, timer overflow, and unusably small tool caps` (`packages/core/tests/budget.test.ts`); `a crash after priced dispatch retains conservative spend exposure on replay` (`packages/core/tests/pricing.test.ts`). |
+| Decision 4 — fail-closed pairing | A cap plus an unpriced exact model fails before provider dispatch/session mutation; without a cap, token accounting proceeds and cost completeness stays false | `a spend ceiling refuses an unpriceable model before provider dispatch` (`packages/core/tests/budget.test.ts`); `a CLI spend ceiling fails closed before session/provider setup when the model is unpriced` (`packages/cli/tests/cli.test.ts`); existing unpriced agent tests continue to pass with unchanged token ledgers. |
+| Suspension/lineage integration | A suspended run retains the dollar ceiling and actual spend; compaction/rotation checkpoints do not lose historical cost | The priced headless suspend/resume integration test (`packages/cli/tests/approvals.test.ts`); `cost checkpoints keep compacted lineage accounting bounded and self-contained` (`packages/core/tests/pricing.test.ts`). |
+
+Future changes to ADR 0020's pricing schema, reservation arithmetic, or cost
+completeness semantics must update this map and its executable evidence.

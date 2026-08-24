@@ -12,7 +12,6 @@ import {
   resolveProfile,
   type PiConfig,
   type Profile,
-  type Usage,
 } from '@pi/ai';
 import {
   Agent,
@@ -20,12 +19,17 @@ import {
   MAX_USER_INPUT_BYTES,
   SafeObserver,
   Session,
+  addCostSummary,
   buildSystemPrompt,
+  costComplete,
   defaultTools,
   discoverSkills,
+  emptyCostSummary,
   latestSessionFile,
+  loadPricingTable,
   loadAgentsMd,
   releaseSessionLock,
+  resolveModelPrice,
   sessionsDirFor,
   tryLockSession,
   validateToolSet,
@@ -33,6 +37,7 @@ import {
   type ApprovalDecisionInput,
   type Observer,
   type PendingApproval,
+  type PricingTable,
   type RunBudget,
   type Tool,
 } from '@pi/core';
@@ -51,6 +56,7 @@ import {
   cacheHitRate,
   cyan,
   dim,
+  formatCost,
   formatUsage,
   oneLine,
   red,
@@ -76,6 +82,7 @@ interface Setup {
   autoCompact: boolean;
   flailGuard: boolean;
   offload: boolean;
+  pricingTable: PricingTable;
 }
 
 class JsonRunFailure extends Error {
@@ -110,6 +117,10 @@ function openSession(args: CliArgs, cwd: string, model: string): Session {
 }
 
 function buildAgent(setup: Omit<Setup, 'agent'>, cwd: string, model: string): Agent {
+  const pricing = resolveModelPrice(setup.pricingTable, model);
+  if (setup.budget.maxSpendUSD !== undefined && !pricing) {
+    throw new Error(`maxSpendUSD requires an exact price for model ${model}`);
+  }
   return new Agent({
     client: new LLMClient(setup.profile),
     model,
@@ -130,6 +141,7 @@ function buildAgent(setup: Omit<Setup, 'agent'>, cwd: string, model: string): Ag
     ...(setup.maxIterations !== undefined ? { maxIterations: setup.maxIterations } : {}),
     ...(Object.keys(setup.budget).length > 0 ? { budget: setup.budget } : {}),
     ...(setup.thinkingBudget !== undefined ? { thinkingBudget: setup.thinkingBudget } : {}),
+    ...(pricing ? { pricing } : {}),
   });
 }
 
@@ -137,6 +149,20 @@ async function setup(args: CliArgs): Promise<Setup> {
   const cwd = process.cwd();
   const config = loadConfig();
   const profile = resolveProfile(config, args.profile, args.model);
+  const pricingTable = await loadPricingTable({
+    ...(args.pricingPath ? { explicitPath: args.pricingPath } : {}),
+    cachePath: join(dirname(configPath()), 'model-prices-cache.json'),
+    offline:
+      args.offlinePricing ||
+      process.env['PI_PRICING_OFFLINE'] === '1' ||
+      profile.baseUrl !== undefined,
+  });
+  for (const warning of pricingTable.warnings) process.stderr.write(dim(`pricing warning: ${warning}\n`));
+  if (args.maxSpendUSD !== undefined && !resolveModelPrice(pricingTable, profile.model)) {
+    throw new Error(
+      `--max-spend-usd requires an exact price for model ${profile.model}; add it to --pricing <path>`,
+    );
+  }
   const hasAgentsMd = existsSync(join(cwd, 'AGENTS.md'));
   const hasProjectTemplates = existsSync(join(cwd, '.agent', 'commands'));
   const agentsMd = args.trustProject ? loadAgentsMd(cwd) : undefined;
@@ -175,6 +201,7 @@ async function setup(args: CliArgs): Promise<Setup> {
   const partial: Omit<Setup, 'agent'> = {
     config,
     profile,
+    pricingTable,
     session,
     tools,
     contextWindow:
@@ -204,6 +231,7 @@ async function setup(args: CliArgs): Promise<Setup> {
       ...(args.maxInputTokens !== undefined ? { maxInputTokens: args.maxInputTokens } : {}),
       ...(args.maxOutputTokens !== undefined ? { maxOutputTokens: args.maxOutputTokens } : {}),
       ...(args.maxTotalTokens !== undefined ? { maxTotalTokens: args.maxTotalTokens } : {}),
+      ...(args.maxSpendUSD !== undefined ? { maxSpendUSD: args.maxSpendUSD } : {}),
     },
     ...(args.maxTurns !== undefined ? { maxIterations: args.maxTurns } : {}),
     ...(args.thinking !== undefined && args.thinking > 0 ? { thinkingBudget: args.thinking } : {}),
@@ -216,12 +244,24 @@ function printUsageSummary(
   session: Session,
   terminal?: Extract<AgentEvent, { type: 'turn_done' }>,
 ): void {
+  const totalCostComplete = agent.costHistoryComplete && costComplete(agent.costTotal);
+  const lastTurnCostComplete = costComplete(agent.lastTurnCost);
   process.stderr.write(
     `${JSON.stringify({
       v: 1,
       type: 'usage_summary',
       usage: agent.usageTotal,
       lastTurn: agent.lastTurnUsage,
+      cost: {
+        ...agent.costTotal,
+        ...(totalCostComplete ? { usd: agent.costTotal.actualUSD } : {}),
+        complete: totalCostComplete,
+      },
+      lastTurnCost: {
+        ...agent.lastTurnCost,
+        ...(lastTurnCostComplete ? { usd: agent.lastTurnCost.actualUSD } : {}),
+        complete: lastTurnCostComplete,
+      },
       requests: agent.requestCount,
       usageHistoryComplete: agent.usageHistoryComplete,
       unknownPriorRequests: agent.session?.modelRequests.filter((request) => request.status === 'outcome_unknown').length ?? 0,
@@ -437,7 +477,7 @@ function handleEvent(event: AgentEvent, state: ReplState): void {
       ensureNewline();
       process.stdout.write(
         dim(
-          `[${event.status}:${event.reason} | ${event.iterations} model call${event.iterations === 1 ? '' : 's'} | ${event.toolCalls} tool call${event.toolCalls === 1 ? '' : 's'} | ${formatUsage(event.usage)}]\n`,
+          `[${event.status}:${event.reason} | ${event.iterations} model call${event.iterations === 1 ? '' : 's'} | ${event.toolCalls} tool call${event.toolCalls === 1 ? '' : 's'} | ${formatUsage(event.usage)} | ${formatCost(event.cost)}]\n`,
         ),
       );
       break;
@@ -626,6 +666,7 @@ function handleSlash(
     case 'tokens':
       process.stdout.write(`total:     ${formatUsage(agent.usageTotal)}\n`);
       process.stdout.write(`last turn: ${formatUsage(agent.lastTurnUsage)}\n`);
+      process.stdout.write(`cost:      ${formatCost(agent.costTotal)}\n`);
       process.stdout.write(`requests:  ${agent.requestCount}\n`);
       return {};
     case 'model':
@@ -779,6 +820,7 @@ async function repl(args: CliArgs): Promise<number> {
                   relation: 'compaction',
                   priorUsage: structuredClone(agent.usageTotal),
                   priorUsageComplete: agent.usageHistoryComplete,
+                  priorCost: structuredClone(agent.costTotal),
                 },
               });
               const fresh = lockedChild.session;
@@ -961,7 +1003,8 @@ async function repl(args: CliArgs): Promise<number> {
 /**
  * Reconstructs a session's per-request economics from its JSONL — the local answer
  * to "what token usage did this run report": every number here is what the provider
- * reported at request time. Monetary cost requires a separate, versioned price table.
+ * reported at request time. Dollar rows retain the exact table provenance used
+ * at execution time; audit never re-prices history with today's table.
  */
 function auditSession(target: string, cwd: string): number {
   let file: string | undefined;
@@ -991,9 +1034,12 @@ function auditSession(target: string, cwd: string): number {
         : undefined;
   }
   const latest = chain.at(-1)!;
-  const rows: Usage[] = chain.flatMap((item) => [...item.usageEntries]);
+  const rows = chain.flatMap((item) => [...item.usageLedgerEntries]);
   const requests = chain.flatMap((item) => [...item.modelRequests]);
   const unknownRequests = requests.filter((request) => request.status === 'outcome_unknown');
+  const reservedRequests = requests.filter(
+    (request) => request.status !== 'completed' && request.spendReservation !== undefined,
+  );
   const failedCompactions = chain.flatMap((item) =>
     item.lifecycleEntries.filter((entry) => entry.t === 'compaction_failed'),
   );
@@ -1025,22 +1071,37 @@ function auditSession(target: string, cwd: string): number {
     );
   }
   if (unknownRequests.length > 10) process.stdout.write(`... ${unknownRequests.length - 10} more unknown requests\n`);
+  for (const request of reservedRequests.slice(0, 10)) {
+    const reservation = request.spendReservation!;
+    process.stdout.write(
+      `reserved exposure ${oneLine(request.requestId, 256)}: $${reservation.usd.toFixed(6)} model=${oneLine(reservation.model, 256)} source=${reservation.pricing.source} revision=${oneLine(reservation.pricing.revision, 128)} currency=${reservation.pricing.currency} effective=${reservation.pricing.effectiveAt}\n`,
+    );
+  }
   for (const compaction of failedCompactions.slice(-10)) {
     process.stdout.write(
       `failed compaction ${oneLine(compaction.compactionId, 256)}: ${oneLine(compaction.error, 512)}\n`,
     );
   }
   process.stdout.write('\n');
-  process.stdout.write('req      input  cache-read  cache-write  output  hit%\n');
+  process.stdout.write('req      input  cache-read  cache-write  output  hit%          USD\n');
   const total = emptyUsage();
+  const costTotal = emptyCostSummary();
+  for (const item of chain) addCostSummary(costTotal, item.costSummary);
   rows.forEach((row, index) => {
-    const hit = cacheHitRate(row);
+    const hit = cacheHitRate(row.usage);
     process.stdout.write(
-      `${String(index + 1).padStart(3)}  ${String(row.inputTokens).padStart(9)}  ${String(row.cacheReadTokens).padStart(10)}  ${String(row.cacheWriteTokens).padStart(11)}  ${String(row.outputTokens).padStart(6)}  ${hit !== undefined ? String(hit).padStart(3) + '%' : '    '}\n`,
+      `${String(index + 1).padStart(3)}  ${String(row.usage.inputTokens).padStart(9)}  ${String(row.usage.cacheReadTokens).padStart(10)}  ${String(row.usage.cacheWriteTokens).padStart(11)}  ${String(row.usage.outputTokens).padStart(6)}  ${hit !== undefined ? String(hit).padStart(3) + '%' : '    '}  ${row.cost ? `$${row.cost.usd.toFixed(6)}`.padStart(11) : '  unpriced'}\n`,
     );
-    addUsage(total, row);
+    addUsage(total, row.usage);
   });
-  process.stdout.write(`\ntotal: ${formatUsage(total)}\n`);
+  process.stdout.write(`\ntotal: ${formatUsage(total)} | ${formatCost(costTotal)}\n`);
+  rows.forEach((row, index) => {
+    if (!row.cost) return;
+    const pricing = row.cost.pricing;
+    process.stdout.write(
+      `pricing req ${index + 1}: model=${oneLine(row.cost.model, 256)} source=${pricing.source} revision=${oneLine(pricing.revision, 128)} currency=${pricing.currency} effective=${pricing.effectiveAt}\n`,
+    );
+  });
   const hit = cacheHitRate(total);
   if (hit === undefined && rows.length > 1) {
     process.stdout.write(

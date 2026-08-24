@@ -7,6 +7,15 @@ export interface UsageSummary {
     cacheReadTokens: number;
     cacheWriteTokens: number;
   };
+  cost?: {
+    usd?: number;
+    actualUSD: number;
+    reservedUSD: number;
+    pricedRequests: number;
+    unpricedRequests: number;
+    unknownRequests: number;
+    complete: boolean;
+  };
   requests: number;
   session?: string;
   status?: string;
@@ -40,6 +49,10 @@ function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
+function isMoney(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
 /** Parse only the CLI's structured --usage record, ignoring unrelated JSON log lines. */
 export function parseUsageSummary(stderr: string): UsageSummary | undefined {
   for (const line of stderr.trim().split('\n').reverse()) {
@@ -66,6 +79,26 @@ export function parseUsageSummary(stderr: string): UsageSummary | undefined {
     ) {
       continue;
     }
+    const cost = value['cost'];
+    if (
+      cost !== undefined &&
+      (!isRecord(cost) ||
+        !isMoney(cost['actualUSD']) ||
+        !isMoney(cost['reservedUSD']) ||
+        !isCount(cost['pricedRequests']) ||
+        !isCount(cost['unpricedRequests']) ||
+        !isCount(cost['unknownRequests']) ||
+        typeof cost['complete'] !== 'boolean')
+    ) {
+      continue;
+    }
+    if (
+      isRecord(cost) &&
+      ((cost['complete'] === true && !isMoney(cost['usd'])) ||
+        (cost['usd'] !== undefined && !isMoney(cost['usd'])))
+    ) {
+      continue;
+    }
     return {
       usage: {
         inputTokens: usage['inputTokens'],
@@ -74,6 +107,19 @@ export function parseUsageSummary(stderr: string): UsageSummary | undefined {
         cacheWriteTokens: usage['cacheWriteTokens'],
       },
       requests: value['requests'],
+      ...(cost !== undefined
+        ? {
+            cost: {
+              ...(cost['usd'] !== undefined ? { usd: cost['usd'] as number } : {}),
+              actualUSD: cost['actualUSD'] as number,
+              reservedUSD: cost['reservedUSD'] as number,
+              pricedRequests: cost['pricedRequests'] as number,
+              unpricedRequests: cost['unpricedRequests'] as number,
+              unknownRequests: cost['unknownRequests'] as number,
+              complete: cost['complete'] as boolean,
+            },
+          }
+        : {}),
       ...(typeof value['session'] === 'string' ? { session: value['session'] } : {}),
       ...(typeof value['status'] === 'string' ? { status: value['status'] } : {}),
       ...(typeof value['reason'] === 'string' ? { reason: value['reason'] } : {}),
