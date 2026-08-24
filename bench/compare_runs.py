@@ -42,8 +42,10 @@ def trial_dirs(run_dir: Path):
 def pi_tokens(trial: Path) -> Tokens | None:
     """Last typed terminal usage row; all counters come from that one record."""
     summary = None
-    panes = sorted(trial.glob("panes/*.txt"))
-    candidates = panes or sorted(trial.glob("sessions/*.log"))
+    # Session logs first: they carry unwrapped lines, while tmux pane captures
+    # truncate at terminal width and can cut a usage row mid-JSON. Panes remain
+    # as fallback for older runs that captured no session logs.
+    candidates = sorted(trial.glob("sessions/*.log")) + sorted(trial.glob("panes/*.txt"))
     for candidate in candidates:
         text = candidate.read_text(errors="replace")
         for line in text.splitlines():
