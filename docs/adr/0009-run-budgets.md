@@ -1,6 +1,7 @@
 # 0009 — Hard run budgets enforced in the loop
 
 Status: accepted (2026-08-19, implemented in the v0.2 tranche; backfilled same day)
+Amended-by: 0020
 
 ## Context
 
