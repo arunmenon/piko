@@ -97,7 +97,7 @@ export function validateConfig(value: unknown): PiConfig {
         ...(optionalString(raw['model'], `profiles.${name}.model`) ? { model: raw['model'] as string } : {}),
         ...(optionalString(raw['baseUrl'], `profiles.${name}.baseUrl`) ? { baseUrl: raw['baseUrl'] as string } : {}),
         ...(optionalString(raw['apiKeyEnv'], `profiles.${name}.apiKeyEnv`)
-          ? { apiKeyEnv: raw['apiKeyEnv'] as string }
+          ? { apiKeyEnv: validEnvironmentName(raw['apiKeyEnv'] as string, `profiles.${name}.apiKeyEnv`) }
           : {}),
         ...(contextWindow !== undefined ? { contextWindow: contextWindow as number } : {}),
       };
@@ -105,6 +105,20 @@ export function validateConfig(value: unknown): PiConfig {
     config.profiles = profiles;
   }
   return config;
+}
+
+/**
+ * Enforce a strict environment-variable-name grammar on config fields whose
+ * value later travels through names-only telemetry. Without this, apiKeyEnv is
+ * an unrestricted string and a hostile or broken config can smuggle value-like
+ * text ("not a name: Bearer ...") into an attribute the contract says holds
+ * names only (external review finding 5).
+ */
+function validEnvironmentName(value: string, path: string): string {
+  if (!/^[A-Z_][A-Z0-9_]{0,127}$/.test(value)) {
+    throw new TypeError(`${path} must be an environment variable name ([A-Z_][A-Z0-9_]*, max 128 chars)`);
+  }
+  return value;
 }
 
 /**
@@ -168,7 +182,14 @@ export function resolveProfile(
   if (!model) {
     throw new Error(`no model for profile "${name}": pass --model, set PI_MODEL, or set profiles.${name}.model in ${configPath()}`);
   }
-  const apiKeyEnv = merged.apiKeyEnv ?? (provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY');
+  // Enforced at the consumption site, not only at config parse: resolveProfile
+  // accepts raw objects, and apiKeyEnv later travels through names-only
+  // telemetry as the credential source, so it must be a real name here.
+  const apiKeyEnv = merged.apiKeyEnv
+    ? validEnvironmentName(merged.apiKeyEnv, `profiles.${name}.apiKeyEnv`)
+    : provider === 'anthropic'
+      ? 'ANTHROPIC_API_KEY'
+      : 'OPENAI_API_KEY';
   const apiKey = process.env[apiKeyEnv] ?? '';
   const baseUrl =
     merged.baseUrl ??

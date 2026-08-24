@@ -13,7 +13,7 @@ import {
   type Usage,
 } from '@pi/ai';
 import { Agent, type CompletionClient } from '../src/agent.js';
-import { SafeObserver, type EventSink, type RuntimeTelemetryEvent } from '../src/telemetry.js';
+import { SafeObserver, isCredentialShapedName, type EventSink, type RuntimeTelemetryEvent } from '../src/telemetry.js';
 import { bashTool } from '../src/tools/bash.js';
 import {
   defaultToolExecutionPolicy,
@@ -127,7 +127,7 @@ test('credential.attach reports the environment variable name for both providers
   }
 });
 
-test('credential.attach names a keyless endpoint as its source', async () => {
+test('a keyless endpoint emits no credential.attach: nothing was attached', async () => {
   const profile = await withEnvironment({ PI_TEST_ABSENT_KEY: undefined }, () =>
     resolveProfile(
       {
@@ -153,11 +153,11 @@ test('credential.attach names a keyless endpoint as its source', async () => {
     }),
   );
 
-  assert.deepEqual(eventsNamed(events, 'credential.attach')[0]?.attributes, {
-    provider: 'openai',
-    profile: 'local',
-    source: 'config:keyless',
-  });
+  assert.equal(
+    eventsNamed(events, 'credential.attach').length,
+    0,
+    'attach evidence must not be fabricated for keyless endpoints (review finding 15)',
+  );
 });
 
 test('the credential value never reaches telemetry even with redaction disabled', async () => {
@@ -355,4 +355,58 @@ test('a timed-out observer operation disables telemetry only while wedged', asyn
   await new Promise((resolve) => setTimeout(resolve, 10));
   await drain(agent);
   assert.ok(events.length > droppedCount, 'telemetry must resume once the slow operation settles');
+});
+
+test('credential-shaped matching requires delimited components, not bare substrings', () => {
+  for (const benign of ['MONKEY', 'HOTKEY', 'DONKEY', 'TURNKEY_MODE', 'BROKERAGE']) {
+    assert.equal(isCredentialShapedName(benign), false, `${benign} is a benign name and must not enter telemetry`);
+  }
+  for (const shaped of [
+    'AWS_SECRET_ACCESS_KEY',
+    'OPENAI_API_KEY',
+    'GITHUB_TOKEN',
+    'FOO_SECRET',
+    'DB_PASSWORD',
+    'X_KEY',
+    'MY_CREDENTIALS',
+  ]) {
+    assert.equal(isCredentialShapedName(shaped), true, `${shaped} must be classified credential-shaped`);
+  }
+});
+
+test('policy.env_sanitized carries exactly its contract attributes, redaction disabled', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'pi-env-exact-'));
+  const { observer, events } = collectingObserver(false);
+  const agent = new Agent({
+    client: toolThenEndClient('bash', { command: 'true' }),
+    model: 'm',
+    systemPrompt: 's',
+    tools: [bashTool],
+    cwd: root,
+    toolPolicy: { workspaceRoot: root, bash: { allowHostExecution: true } },
+    observer,
+  });
+  await withEnvironment({ PI_TEST_EXACT_TOKEN: 'v1', PI_TEST_EXACT_PLAIN: 'v2' }, () => drain(agent));
+  const sanitized = eventsNamed(events, 'policy.env_sanitized');
+  assert.equal(sanitized.length, 1);
+  const attributes = sanitized[0]?.attributes as Record<string, unknown>;
+  assert.deepEqual(
+    Object.keys(attributes).sort(),
+    ['allowlistCount', 'allowlistSource', 'credentialNames', 'strippedCount'],
+    'the event may carry only its contract attributes; a full allowlist fingerprints the machine',
+  );
+  assert.equal(typeof attributes['allowlistCount'], 'number');
+  assert.ok(!JSON.stringify(attributes).includes('PATH='), 'no environment values anywhere in the event');
+});
+
+test('apiKeyEnv rejects strings that are not environment variable names', () => {
+  // '' is excluded: an empty value is falsy, falls back to the provider
+  // default variable, and never reaches telemetry as a name.
+  for (const hostile of ['not an env name: Bearer TOP_SECRET', 'lower_case', 'A'.repeat(200), 'X Y']) {
+    assert.throws(
+      () => resolveProfile({ profiles: { p: { provider: 'openai', model: 'm', apiKeyEnv: hostile } } }, 'p'),
+      /apiKeyEnv/,
+      `apiKeyEnv must reject: ${JSON.stringify(hostile)}`,
+    );
+  }
 });

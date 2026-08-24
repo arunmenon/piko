@@ -849,6 +849,9 @@ export class Agent {
   private async observeCredentialAttach(context: TelemetryContext): Promise<void> {
     const credential = this.options.credential;
     if (!credential || !this.options.observer) return;
+    // A keyless endpoint attaches nothing; emitting attach evidence for it
+    // would assert a credential event that never happened.
+    if (credential.source === 'config:keyless') return;
     await this.observe(
       createRuntimeEvent(context, {
         name: 'credential.attach',
@@ -874,7 +877,10 @@ export class Agent {
           // list fingerprints the machine (plan Phase 2b); the credential subset
           // is the secret-access observability this event exists for.
           credentialNames: observation.strippedNames.filter((name) => isCredentialShapedName(name)),
-          allowlist: observation.allowlist,
+          // Count only: the full allowlist enumerates machine-specific
+          // environment names and fingerprints the host (external review
+          // finding 5). The observation object keeps the names for callers.
+          allowlistCount: observation.allowlist.length,
           allowlistSource: observation.allowlistSource,
         },
       }),

@@ -351,13 +351,15 @@ function normalizedKey(key: string): string {
  * Public form of the sensitive-key matcher so event producers can scope
  * name-bearing attributes to credential-shaped names only (plan Phase 2b:
  * full environment name lists fingerprint the machine and stay out of events).
- * Wider than redaction's matcher: env naming conventions use bare suffixes
- * (FOO_SECRET, BAR_TOKEN, X_KEY); over-inclusion is harmless because values
- * never enter the event path.
+ * Matches delimited name components (FOO_SECRET, BAR_TOKEN, X_KEY), not bare
+ * substrings: MONKEY and HOTKEY are benign machine-specific names and leaking
+ * them fingerprints the host even though values never enter the event path.
  */
 export function isCredentialShapedName(name: string): boolean {
   if (isSensitiveKey(name)) return true;
-  return /(secret|token|key|password|passwd|credential)s?$/.test(normalizedKey(name));
+  const components = name.split(/[^A-Za-z0-9]+/u).filter(Boolean);
+  const last = components.at(-1)?.toLowerCase() ?? '';
+  return /^(secret|token|key|password|passwd|credential)s?$/.test(last);
 }
 
 function isSensitiveKey(key: string): boolean {
