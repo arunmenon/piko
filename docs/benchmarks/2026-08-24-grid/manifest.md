@@ -28,9 +28,8 @@ Headline findings (honest):
 2. piko's gap concentrates in three places: create-bucket (0/3 vs 3/3 --
    piko quit after ~2 calls; root-caused and fixed post-grid, retest 3/3,
    see create-bucket-autopsy.md);
-   fix-git failure spend (both harnesses 0/3, but piko burned 64.5k mean
-   input per failure vs terminus 19.5k — flail thresholds tuned on
-   non-reasoning models look loose for reasoning models); openssl and
+   fix-git failure spend (both harnesses 0/3; see the correction below --
+   the original flail-threshold hypothesis was wrong); openssl and
    hello-world dropped attempts (timeout/no-usage trials).
 3. Where both harnesses solved, piko was cheaper on 4 of 7 matched tasks
    (e.g. simple-sheets-put 30.4k vs 49.8k) — the per-turn lean advantage is
@@ -42,6 +41,28 @@ Headline findings (honest):
 Known data gaps: 6 of 60 pi trials lack usage rows (killed before summary);
 their spend is uncounted, so pi totals are floors. Pane-capture truncation
 bug in the extractor was found and fixed during this grid (a52cf9a).
+
+Correction (post-grid forensics, 2026-08-24): the finding-2 claim that
+"flail thresholds look loose for reasoning models" is retracted. The flail
+guard never fired in the gpt-5.5 arm; fix-git trials were methodical
+(succeeding commands, wrong end state, model-initiated end_turn at 15-19
+requests), so a failure-counting guard had nothing to catch. The 64.5k
+"mean input per failure" was an accounting artifact: the worst trial was
+21.7k raw input plus 57.5k cache reads, and the USD method priced all
+input at the full $5/M list rate when cached input bills at $0.50/M. At
+real rates that trial's input side is $0.137, not $0.396 (about 3x
+overstated on cache-heavy tasks). Terminus results.json reports no cache
+split, so its input totals carry an unknown cached fraction and the arm
+cost comparison is asymmetric; treat both arms' USD as upper bounds.
+compare_runs.py now carries the cache split so future grids can price
+honestly. The actionable overhead found instead: ~5 of 19-23 calls per
+fix-git trial were PLAN.md bookkeeping issued as solo replies; the prompt
+now directs batching independent calls and folding plan updates into the
+same reply. Targeted fix-git remeasure (run 19-47-17, still 0/3 as with
+every harness): plan calls fell from 11 to 4 across the three trials,
+calls per request rose 1.24 to 1.40, and mean true-rate cost per failure
+moved $0.202 to $0.188. That cost delta is within noise at n=3; the
+behavioral shift is the confirmed part.
 
 Run dirs (local, ephemeral): 16-10-28 (arm 1), 17-31-14 (arm 2),
 19-10-52 (arm 3). Comparison artifact: gpt-5.5-comparison.json (committed).

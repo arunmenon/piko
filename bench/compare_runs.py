@@ -20,6 +20,13 @@ class Tokens(TypedDict):
     output: int
     requests: int | None
     cost_usd: float | None
+    # Cache split, where the source reports it. "input" stays the combined
+    # total (raw + cache read + cache write) for continuity, but cached reads
+    # are billed at a fraction of list rate, so pricing analysis must use the
+    # split. Terminus results.json reports no split; these stay None there.
+    input_uncached: int | None
+    cache_read: int | None
+    cache_write: int | None
 
 
 class Trial(TypedDict):
@@ -81,6 +88,9 @@ def pi_tokens(trial: Path) -> Tokens | None:
         "output": usage["outputTokens"],
         "requests": summary["requests"],
         "cost_usd": cost_usd,
+        "input_uncached": usage["inputTokens"],
+        "cache_read": usage["cacheReadTokens"],
+        "cache_write": usage["cacheWriteTokens"],
     }
 
 
@@ -94,7 +104,15 @@ def terminus_tokens(trial: Path) -> Tokens | None:
             input_tokens, output_tokens = int(data[in_key]), int(data[out_key])
             if input_tokens < 0 or output_tokens < 0:
                 raise ValueError(f"negative token count in {trial / 'results.json'}")
-            return {"input": input_tokens, "output": output_tokens, "requests": None, "cost_usd": None}
+            return {
+                "input": input_tokens,
+                "output": output_tokens,
+                "requests": None,
+                "cost_usd": None,
+                "input_uncached": None,
+                "cache_read": None,
+                "cache_write": None,
+            }
     return None
 
 
@@ -140,6 +158,8 @@ def summarize(name: str, rows: dict[str, list[Trial]], *, emit: bool = True) -> 
     solved_tasks = sum(1 for task_trials in rows.values() if any(trial["resolved"] for trial in task_trials))
     total_in = sum(token["input"] for token in tokens)
     total_out = sum(token["output"] for token in tokens)
+    cache_rows = [token["cache_read"] for token in tokens if token.get("cache_read") is not None]
+    total_cache_read = sum(cache_rows)
     cost_rows = [token["cost_usd"] for token in tokens if token["cost_usd"] is not None]
     summary: dict[str, int | float] = {
         "solved_trials": solved,
@@ -148,6 +168,7 @@ def summarize(name: str, rows: dict[str, list[Trial]], *, emit: bool = True) -> 
         "tasks": len(rows),
         "input_tokens": total_in,
         "output_tokens": total_out,
+        "cache_read_tokens": total_cache_read if cache_rows else None,
         "trials_with_token_data": len(tokens),
         "mean_input_per_measured_trial": total_in / len(tokens) if tokens else 0,
         "mean_output_per_measured_trial": total_out / len(tokens) if tokens else 0,
@@ -157,7 +178,8 @@ def summarize(name: str, rows: dict[str, list[Trial]], *, emit: bool = True) -> 
     }
     if emit:
         print(f"\n{name}: {solved}/{len(trials)} trials solved across {solved_tasks}/{len(rows)} tasks")
-        print(f"  total tokens: {total_in:,} in / {total_out:,} out ({len(tokens)}/{len(trials)} trials have data)")
+        cache_note = f" (cache reads {total_cache_read:,} of the input; bill them at the cached rate)" if cache_rows else ""
+        print(f"  total tokens: {total_in:,} in / {total_out:,} out ({len(tokens)}/{len(trials)} trials have data){cache_note}")
         if tokens:
             print(f"  mean per measured trial: {total_in / len(tokens):,.0f} in / {total_out / len(tokens):,.0f} out")
         if cost_rows:
