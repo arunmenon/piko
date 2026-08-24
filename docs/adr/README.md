@@ -30,3 +30,9 @@ new decisions get an ADR in the same change that implements them.
 
 Headers may carry `Amends` / `Amended-by` / `Depends on` lines; the records
 they link are never edited beyond those pointers and dated addenda.
+
+Status transitions are separated from implementation: the session or agent
+that implements an ADR never flips its status. `proposed -> accepted` is an
+act of the owner (or a reviewing session the owner has delegated), recorded
+in the status line — an implementer accepting its own governing decision is
+the rubber-stamp pattern 0017 warns against.

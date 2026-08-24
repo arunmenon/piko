@@ -1,6 +1,6 @@
 # 0020 — Dollar-denominated cost accounting and spend ceilings
 
-Status: accepted (2026-08-24; implemented and fault-verified same day)
+Status: accepted (2026-08-24; implemented and fault-verified same day; owner-ratified 2026-08-24)
 Amends: 0009
 
 ## Context
