@@ -80,11 +80,17 @@ unpriceable+cap error.
 Exit evidence: `docs/adr/evidence/0020-pricing-test-map.md`; USD is request-linked
 in the journal, unknown cost is never represented as zero, and `npm run verify`
 passes on the delivery tree.
-(b) Secret-access telemetry: add 0013 metadata-only events when a provider
-credential is attached and when sanitized child-environment policy excludes
-credential-shaped variables. Events contain provider/policy class and counts,
-never environment-variable names, headers, paths, or values; whole-event
-redaction tests prove this boundary.
+(b) Secret-access telemetry (landed 2026-08-24; posture reconciled in review):
+0013 metadata-only events when a provider credential is attached and when
+sanitized child-environment policy strips variables. `credential.attach`
+carries the credential's source NAME (the env var), which 0016 already treats
+as the safe-at-rest form; `policy.env_sanitized` carries the total stripped
+count plus names of credential-shaped variables only — full environment name
+lists fingerprint the machine and stay out. Values, headers, and paths never
+enter events; absence is by construction (types that cannot hold a value),
+proven with redaction disabled — strictly stronger than redaction tests. Any
+future remote/exported sink must not widen name exposure without explicit
+ADR 0021 treatment.
 (c) Bounded graceful drain: SIGTERM stops admission of new turns, grants the
 in-flight operation a configured grace period, then aborts it. Cooperative work
 may finish normally; otherwise provider/tool outcomes are journaled

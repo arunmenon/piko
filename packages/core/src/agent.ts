@@ -58,6 +58,7 @@ import {
   createSpanStarted,
   createTelemetryContext,
   createTelemetryId,
+  isCredentialShapedName,
   type Observer,
   type RuntimeTelemetryEvent,
   type TelemetryContext,
@@ -869,7 +870,10 @@ export class Agent {
         name: 'policy.env_sanitized',
         attributes: {
           strippedCount: observation.strippedCount,
-          strippedNames: observation.strippedNames,
+          // Names only for credential-shaped variables: the full stripped-name
+          // list fingerprints the machine (plan Phase 2b); the credential subset
+          // is the secret-access observability this event exists for.
+          credentialNames: observation.strippedNames.filter((name) => isCredentialShapedName(name)),
           allowlist: observation.allowlist,
           allowlistSource: observation.allowlistSource,
         },

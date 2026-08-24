@@ -347,6 +347,19 @@ function normalizedKey(key: string): string {
   return key.replace(/[^a-z0-9]/gi, '').toLowerCase();
 }
 
+/**
+ * Public form of the sensitive-key matcher so event producers can scope
+ * name-bearing attributes to credential-shaped names only (plan Phase 2b:
+ * full environment name lists fingerprint the machine and stay out of events).
+ * Wider than redaction's matcher: env naming conventions use bare suffixes
+ * (FOO_SECRET, BAR_TOKEN, X_KEY); over-inclusion is harmless because values
+ * never enter the event path.
+ */
+export function isCredentialShapedName(name: string): boolean {
+  if (isSensitiveKey(name)) return true;
+  return /(secret|token|key|password|passwd|credential)s?$/.test(normalizedKey(name));
+}
+
 function isSensitiveKey(key: string): boolean {
   const normalized = normalizedKey(key);
   if (defaultSensitiveKeys.has(normalized)) return true;

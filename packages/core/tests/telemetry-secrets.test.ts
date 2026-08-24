@@ -258,13 +258,19 @@ test('policy.env_sanitized reaches the sink with the tool execution correlation 
     toolPolicy: { workspaceRoot: root, bash: { allowHostExecution: true } },
     observer,
   });
-  await withEnvironment({ PI_TEST_AGENT_SECRET: 'must-not-reach-tool' }, () => drain(agent));
+  await withEnvironment(
+    { PI_TEST_AGENT_SECRET: 'must-not-reach-tool', PI_TEST_PLAIN_VALUE: 'not-credential-shaped' },
+    () => drain(agent),
+  );
 
   const sanitized = eventsNamed(events, 'policy.env_sanitized');
   assert.equal(sanitized.length, 1);
-  const attributes = sanitized[0]?.attributes as { strippedNames: string[]; strippedCount: number };
-  assert.ok(attributes.strippedNames.includes('PI_TEST_AGENT_SECRET'));
-  assert.equal(attributes.strippedCount, attributes.strippedNames.length);
+  const attributes = sanitized[0]?.attributes as { credentialNames: string[]; strippedCount: number };
+  // Names are scoped to credential-shaped variables; other stripped variables
+  // are counted but never named (a full name list fingerprints the machine).
+  assert.ok(attributes.credentialNames.includes('PI_TEST_AGENT_SECRET'));
+  assert.ok(!attributes.credentialNames.includes('PI_TEST_PLAIN_VALUE'));
+  assert.ok(attributes.strippedCount > attributes.credentialNames.length);
   assert.equal(sanitized[0]?.toolCallId, 'call-1');
   assert.ok(sanitized[0]?.toolExecutionId, 'the stripped environment is tied to one tool execution');
 });
