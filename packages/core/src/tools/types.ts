@@ -63,6 +63,23 @@ export function defaultToolExecutionPolicy(workspaceRoot: string): ToolExecution
   return { workspaceRoot: resolve(workspaceRoot), bash: { allowHostExecution: false } };
 }
 
+/**
+ * Names-only record of what the sanitized-environment policy withheld from a
+ * child process. Values never enter this path (0016 decision 3).
+ */
+export interface EnvironmentSanitizedObservation {
+  readonly kind: 'environment_sanitized';
+  readonly strippedCount: number;
+  /** Sorted parent-environment variable NAMES the child did not receive. */
+  readonly strippedNames: readonly string[];
+  /** Sorted allowlist of names permitted to be inherited, which decided the outcome. */
+  readonly allowlist: readonly string[];
+  /** `default` when the built-in allowlist applied unchanged, `policy` when this policy extended it. */
+  readonly allowlistSource: 'default' | 'policy';
+}
+
+export type ToolPolicyObservation = EnvironmentSanitizedObservation;
+
 export interface ToolContext {
   readonly cwd: string;
   setCwd(dir: string): void;
@@ -70,6 +87,12 @@ export interface ToolContext {
   signal?: AbortSignal;
   /** Optional execution policy. File tools stay cwd-confined; host bash requires an explicit allow policy. */
   readonly policy?: ToolExecutionPolicy;
+  /**
+   * Best-effort seam for reporting a policy outcome to telemetry. Absent when no
+   * observer is attached, which is the signal to skip building the payload at
+   * all. Like every observer path it must not change tool behavior.
+   */
+  readonly observePolicy?: (observation: ToolPolicyObservation) => void | Promise<void>;
 }
 
 export interface Tool {

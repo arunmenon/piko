@@ -59,6 +59,8 @@ export type RuntimeEventName =
   | 'model.response'
   | 'tool.planned'
   | 'policy.decision'
+  | 'policy.env_sanitized'
+  | 'credential.attach'
   | 'budget.exceeded'
   | 'context.offloaded'
   | 'context.preflight_failed'
@@ -227,6 +229,8 @@ const runtimeEventNames = new Set<RuntimeEventName>([
   'model.response',
   'tool.planned',
   'policy.decision',
+  'policy.env_sanitized',
+  'credential.attach',
   'budget.exceeded',
   'context.offloaded',
   'context.preflight_failed',

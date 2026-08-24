@@ -8,6 +8,7 @@ const profile = {
   provider: 'openai' as const,
   model: 'test-model',
   apiKey: 'key',
+  credentialSource: 'TEST_API_KEY',
   baseUrl: 'https://example.test/v1',
 };
 

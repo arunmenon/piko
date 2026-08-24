@@ -5,11 +5,21 @@ import { join } from 'node:path';
 /** Tool names gated behind a human decision, or "*" for every tool (ADR 0011). */
 export type ApprovalPolicy = readonly string[] | '*';
 
+/** Credential source recorded for an endpoint that is configured to need no auth. */
+export const KEYLESS_CREDENTIAL_SOURCE = 'config:keyless';
+
 export interface Profile {
   name: string;
   provider: 'anthropic' | 'openai';
   model: string;
   apiKey: string;
+  /**
+   * Name of the environment variable that supplied `apiKey`, or
+   * `KEYLESS_CREDENTIAL_SOURCE` when the endpoint is configured without auth.
+   * A name is not a secret (0016 decision 1) and is the only part of the
+   * credential that may be observed.
+   */
+  credentialSource: string;
   baseUrl?: string;
   /** context window in tokens (defaults to a per-model-family table) */
   contextWindow?: number;
@@ -97,6 +107,22 @@ export function validateConfig(value: unknown): PiConfig {
   return config;
 }
 
+/**
+ * Names-only description of the credential a provider request carries. The type
+ * deliberately has no field that could hold a key, so the value cannot reach an
+ * observer by construction rather than by later redaction (0013, 0016).
+ */
+export interface CredentialDescriptor {
+  readonly provider: 'anthropic' | 'openai';
+  readonly profile: string;
+  /** Environment variable NAME, or `KEYLESS_CREDENTIAL_SOURCE`. Never a value or a hash of one. */
+  readonly source: string;
+}
+
+export function credentialDescriptor(profile: Profile): CredentialDescriptor {
+  return { provider: profile.provider, profile: profile.name, source: profile.credentialSource };
+}
+
 export function configPath(): string {
   return join(homedir(), '.config', 'pi', 'config.json');
 }
@@ -159,6 +185,7 @@ export function resolveProfile(
     provider,
     model,
     apiKey,
+    credentialSource: apiKey ? apiKeyEnv : KEYLESS_CREDENTIAL_SOURCE,
     ...(baseUrl ? { baseUrl } : {}),
     ...(merged.contextWindow ? { contextWindow: merged.contextWindow } : {}),
     ...(approval !== undefined ? { approval } : {}),

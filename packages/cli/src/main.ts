@@ -7,6 +7,7 @@ import {
   addUsage,
   contextWindowFor,
   configPath,
+  credentialDescriptor,
   emptyUsage,
   loadConfig,
   resolveProfile,
@@ -123,6 +124,7 @@ function buildAgent(setup: Omit<Setup, 'agent'>, cwd: string, model: string): Ag
   }
   return new Agent({
     client: new LLMClient(setup.profile),
+    credential: credentialDescriptor(setup.profile),
     model,
     systemPrompt: setup.systemPrompt,
     tools: setup.tools,

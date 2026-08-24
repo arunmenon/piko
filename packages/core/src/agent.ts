@@ -6,6 +6,7 @@ import {
   estimateTokens,
   type AssistantMessage,
   type CompletionRequest,
+  type CredentialDescriptor,
   type Message,
   type StopReason,
   type StreamEvent,
@@ -46,6 +47,7 @@ import {
   type ToolContext,
   type ToolExecutionPolicy,
   type ToolOutput,
+  type ToolPolicyObservation,
 } from './tools/types.js';
 import { truncateMiddle } from './truncate.js';
 import { atomicWriteTextFile, resolveWorkspacePath, resolveWorkspaceRoot } from './tools/filesystem.js';
@@ -294,6 +296,14 @@ export interface AgentOptions {
   toolPolicy?: ToolExecutionPolicy;
   /** best-effort structured telemetry observer; never receives prompt/tool content from core */
   observer?: Observer;
+  /** observer wedge-detection timeout; test-oriented override, default 1000ms */
+  observerOperationTimeoutMs?: number;
+  /**
+   * Names-only description of the credential the client attaches to provider
+   * requests (0016). Supplied by the trusted controller that resolved the
+   * profile; the key itself never reaches the agent.
+   */
+  credential?: CredentialDescriptor;
   /** optional parent run correlation for embedded/subagent use */
   parentRunId?: string;
   /** cap on model calls per user input — the headless --max-turns guard */
@@ -560,7 +570,7 @@ export class Agent {
     return this.persistEntry({ t: 'msg', message });
   }
 
-  private toolContext(signal?: AbortSignal): ToolContext {
+  private toolContext(signal?: AbortSignal, telemetry?: TelemetryContext): ToolContext {
     const agent = this;
     return {
       get cwd() {
@@ -571,10 +581,19 @@ export class Agent {
       },
       policy: agent.toolPolicy,
       ...(signal ? { signal } : {}),
+      // Omitted rather than no-op'd when telemetry is off, so a tool can skip
+      // assembling an observation it has nowhere to send.
+      ...(telemetry && this.options.observer
+        ? { observePolicy: (observation: ToolPolicyObservation) => agent.observeToolPolicy(telemetry, observation) }
+        : {}),
     };
   }
 
-  private async executeCall(call: ToolCallBlock, signal?: AbortSignal): Promise<ToolCallExecution> {
+  private async executeCall(
+    call: ToolCallBlock,
+    signal?: AbortSignal,
+    telemetry?: TelemetryContext,
+  ): Promise<ToolCallExecution> {
     const tool = this.toolsByName.get(call.name);
     if (!tool) {
       return { result: { content: [{ type: 'text', text: `unknown tool "${call.name}"` }], isError: true } };
@@ -587,7 +606,7 @@ export class Agent {
 
     let execution: Promise<ToolOutput>;
     try {
-      execution = Promise.resolve(tool.execute(call.arguments, this.toolContext(signal)));
+      execution = Promise.resolve(tool.execute(call.arguments, this.toolContext(signal, telemetry)));
     } catch (error) {
       return { result: { content: [{ type: 'text', text: String(error) }], isError: true } };
     }
@@ -767,7 +786,7 @@ export class Agent {
     let timer: NodeJS.Timeout | undefined;
     let onAbort: (() => void) | undefined;
     const timeout = new Promise<typeof timedOut>((resolve) => {
-      timer = setTimeout(() => resolve(timedOut), OBSERVER_OPERATION_TIMEOUT_MS);
+      timer = setTimeout(() => resolve(timedOut), this.options.observerOperationTimeoutMs ?? OBSERVER_OPERATION_TIMEOUT_MS);
     });
     const signal = this.activeRunSignal;
     const interrupted = new Promise<typeof aborted>((resolve) => {
@@ -786,7 +805,21 @@ export class Agent {
     ]);
     if (timer) clearTimeout(timer);
     if (signal && onAbort) signal.removeEventListener('abort', onAbort);
-    if (outcome === timedOut) this.observerDisabled = true;
+    if (outcome === timedOut) {
+      // Disabled while wedged, not forever: a timeout under a starved event loop
+      // is not a wedged sink. The slow operation itself was not lost (its promise
+      // continues); if it ever settles, later events may flow again. A genuinely
+      // hung sink never settles and stays disabled.
+      this.observerDisabled = true;
+      void pending.then(
+        () => {
+          this.observerDisabled = false;
+        },
+        () => {
+          this.observerDisabled = false; // sink failures are SafeObserver's job; settled != wedged
+        },
+      );
+    }
   }
 
   private async observe(event: RuntimeTelemetryEvent): Promise<void> {
@@ -804,6 +837,43 @@ export class Agent {
   private async observeBudget(context: TelemetryContext, reason: string): Promise<void> {
     await this.observe(
       createRuntimeEvent(context, { name: 'budget.exceeded', level: 'warn', attributes: { reason } }),
+    );
+  }
+
+  /**
+   * Records that the request about to be dispatched will carry an auth credential.
+   * Both guards precede event construction so a disabled observer costs nothing,
+   * and only the descriptor's names are read — the key is not in scope here.
+   */
+  private async observeCredentialAttach(context: TelemetryContext): Promise<void> {
+    const credential = this.options.credential;
+    if (!credential || !this.options.observer) return;
+    await this.observe(
+      createRuntimeEvent(context, {
+        name: 'credential.attach',
+        attributes: {
+          provider: credential.provider,
+          profile: credential.profile,
+          source: credential.source,
+        },
+      }),
+    );
+  }
+
+  private async observeToolPolicy(
+    context: TelemetryContext,
+    observation: ToolPolicyObservation,
+  ): Promise<void> {
+    await this.observe(
+      createRuntimeEvent(context, {
+        name: 'policy.env_sanitized',
+        attributes: {
+          strippedCount: observation.strippedCount,
+          strippedNames: observation.strippedNames,
+          allowlist: observation.allowlist,
+          allowlistSource: observation.allowlistSource,
+        },
+      }),
     );
   }
 
@@ -1371,6 +1441,7 @@ export class Agent {
           });
           const requestStartedAt = Date.now();
           await this.observe(requestSpan);
+          await this.observeCredentialAttach(requestContext);
           const stream = this.options.client.stream(completionRequest, runController.signal);
           const streamIterator = stream[Symbol.asyncIterator]();
           let streamEnded = false;
@@ -1911,7 +1982,7 @@ export class Agent {
           // Dispatch before yielding the public start event. If the consumer
           // returns from the async iterator at that yield, the durable `started`
           // row truthfully means a side effect may already be in flight.
-          const executionPromise = this.executeCall(dispatchCall, runController.signal);
+          const executionPromise = this.executeCall(dispatchCall, runController.signal, toolContext);
           let resumedAfterToolStart = false;
           try {
             yield { type: 'tool_start', call: dispatchCall };
@@ -2596,6 +2667,7 @@ export class Agent {
     });
     const requestStartedAt = Date.now();
     await this.observe(requestSpan);
+    await this.observeCredentialAttach(telemetryContext);
     const stream = this.options.client.stream(summaryRequest, signal);
     const streamIterator = stream[Symbol.asyncIterator]();
     let requestCostTerminal = false;

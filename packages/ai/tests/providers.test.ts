@@ -618,6 +618,7 @@ test('LLMClient deadline covers a hanging response and does not retry it', async
     provider: 'openai',
     model: 'test-model',
     apiKey: 'key',
+    credentialSource: 'TEST_API_KEY',
     baseUrl: 'https://example.test/v1',
   });
   await assert.rejects(collect(client.stream({ ...request, timeoutMs: 20 })), RequestTimeoutError);

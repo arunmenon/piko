@@ -38,10 +38,27 @@ const SAFE_ENVIRONMENT_NAMES = [
   'PATHEXT',
 ] as const;
 
+/** Names this policy permits a child to inherit from the parent environment. */
+function inheritedNames(policy?: BashExecutionPolicy): Set<string> {
+  return new Set<string>([...SAFE_ENVIRONMENT_NAMES, ...(policy?.inheritEnvironment ?? [])]);
+}
+
+/**
+ * Parent-environment names the sanitized child does not receive. Derived from the
+ * child environment that was actually built rather than by re-deriving the policy,
+ * so an opt-in or an explicit override is reflected without a second rule to keep
+ * in step. Names only: no value is read.
+ */
+function strippedNames(childEnvironment: NodeJS.ProcessEnv): string[] {
+  return Object.keys(process.env)
+    .filter((name) => childEnvironment[name] === undefined)
+    .sort();
+}
+
 /** Construct the deliberately small environment inherited by bash tools. */
 export function sanitizedBashEnvironment(policy?: BashExecutionPolicy): NodeJS.ProcessEnv {
   const environment = Object.create(null) as NodeJS.ProcessEnv;
-  const inherit = new Set<string>([...SAFE_ENVIRONMENT_NAMES, ...(policy?.inheritEnvironment ?? [])]);
+  const inherit = inheritedNames(policy);
   for (const name of inherit) {
     const value = process.env[name];
     if (value !== undefined) environment[name] = value;
@@ -189,13 +206,25 @@ export const bashTool: Tool = {
     resolveWorkspaceRoot(context);
     const executionCwd = resolveWorkspacePath(context, context.cwd, { allowAbsolute: true });
     if (!statSync(executionCwd).isDirectory()) throw new Error(`bash cwd is not a directory: ${executionCwd}`);
-    const result = await runBash(
-      command,
-      executionCwd,
-      timeoutS * 1000,
-      sanitizedBashEnvironment(context.policy?.bash),
-      context.signal,
-    );
+    const bashPolicy = context.policy?.bash;
+    const environment = sanitizedBashEnvironment(bashPolicy);
+    if (context.observePolicy) {
+      const stripped = strippedNames(environment);
+      if (stripped.length > 0) {
+        await context.observePolicy({
+          kind: 'environment_sanitized',
+          strippedCount: stripped.length,
+          strippedNames: stripped,
+          allowlist: [...inheritedNames(bashPolicy)].sort(),
+          allowlistSource:
+            (bashPolicy?.inheritEnvironment?.length ?? 0) > 0 ||
+            Object.keys(bashPolicy?.environment ?? {}).length > 0
+              ? 'policy'
+              : 'default',
+        });
+      }
+    }
+    const result = await runBash(command, executionCwd, timeoutS * 1000, environment, context.signal);
 
     let stderr = result.stderr;
     let cwdPolicyError: string | undefined;
