@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   appendFileSync,
   existsSync,
+  linkSync,
   mkdtempSync,
   readFileSync,
   statSync,
@@ -563,4 +564,60 @@ test('0023 acceptance: no public API yields an unlocked mutable session', () => 
   const stale = Session.open(created.file);
   assert.throws(() => stale.setRunStatus('running'), /requires the lock/);
   relocked!.close();
+});
+
+test('hard-linked journal cannot bypass single-writer (owner review repro)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-hardlink-bypass-'));
+  const session = Session.create('/some/project', 'm', dir);
+  session.append({ t: 'msg', message: message('user', 'seed') });
+  session.close();
+
+  const alias = join(dir, `${randomUUID()}.jsonl`);
+  linkSync(session.file, alias);
+
+  // Neither name may open: the journal now has two links, so pathname-keyed
+  // locks could otherwise mint two writers for one inode.
+  assert.throws(() => Session.openLocked(session.file), /single-link/);
+  assert.throws(() => Session.openLocked(alias), /single-link/);
+  assert.throws(() => Session.open(session.file), /single-link/);
+
+  // Restore single-link state: the journal opens and appends again.
+  unlinkSync(alias);
+  const relocked = Session.openLocked(session.file);
+  assert.ok(relocked);
+  relocked!.append({ t: 'msg', message: message('user', 'after unlink') });
+  relocked!.close();
+});
+
+test('recovery refuses targets that are not real contained sessions (owner review)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-recover-target-'));
+  const notASession = join(dir, 'not-a-session');
+  writeFileSync(
+    `${notASession}.lock`,
+    `${JSON.stringify({ v: 2, pid: 2147483000, host: hostname(), token: 't', created: new Date().toISOString() })}\n`,
+    { encoding: 'utf8', mode: 0o600 },
+  );
+  const outcome = recoverStaleLock(notASession);
+  assert.equal(outcome.removed, false);
+  assert.match(outcome.reason, /refusing recovery/);
+  assert.ok(existsSync(`${notASession}.lock`), 'the lock file must not be deleted');
+});
+
+test('a crashed recovery does not disable recovery forever (owner review)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-recovery-selfheal-'));
+  const target = Session.create('/some/project', 'm', dir);
+  target.close();
+  writeFileSync(
+    `${target.file}.lock`,
+    `${JSON.stringify({ v: 2, pid: 2147483000, host: hostname(), token: 'dead', created: new Date().toISOString() })}\n`,
+    { encoding: 'utf8', mode: 0o600 },
+  );
+  // Simulate a doctor that died mid-recovery on this host.
+  writeFileSync(
+    join(dir, '.recovery.lock'),
+    `${JSON.stringify({ v: 2, pid: 2147483001, host: hostname(), token: 'crashed', created: new Date().toISOString() })}\n`,
+    { encoding: 'utf8', mode: 0o600 },
+  );
+  const outcome = recoverStaleLock(target.file);
+  assert.equal(outcome.removed, true, outcome.reason);
 });

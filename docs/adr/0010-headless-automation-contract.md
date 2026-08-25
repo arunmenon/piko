@@ -34,3 +34,15 @@ The headless contract is versioned and fail-closed:
 - Costs: exit-code and event-schema changes are now breaking changes requiring
   versioning discipline; a richer bidirectional RPC surface remains future
   work (roadmap v0.3) and must not fork this contract.
+
+## Amendment (2026-08-25, exit code 5 and typed lock-contention error)
+
+0024 adds one exit code to the headless contract: 5 means the newest
+resumable session is locked and nothing was resumed or created. It is a
+deliberate, versioned extension of the code set (0 success, 1 error,
+4 suspended awaiting approval, 5 locked newest head); scripts that treated
+all nonzero as failure keep working, scripts that react to lock contention
+can now distinguish it. In --json mode the run_error event carries
+code: "locked_session_head" for the same purpose, and pi doctor sessions
+emits doctor_session / doctor_recover / doctor_error rows under the same
+versioned envelope, keeping argument errors on the typed stdout channel.

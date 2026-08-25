@@ -204,7 +204,15 @@ function durableCreate(file: string, content: string): void {
 function durableAppend(file: string, content: string): void {
   const fd = openSync(file, constants.O_WRONLY | constants.O_APPEND | (constants.O_NOFOLLOW ?? 0));
   try {
-    if (!fstatSync(fd).isFile()) throw new TypeError(`session is not a regular file: ${file}`);
+    const stats = fstatSync(fd);
+    if (!stats.isFile()) throw new TypeError(`session is not a regular file: ${file}`);
+    // Locks are keyed by pathname; a hard link gives one inode two names and
+    // therefore two locks, bypassing single-writer (owner review). Checked on
+    // the descriptor actually written, not the path, so it cannot be raced.
+    if (stats.nlink !== 1) {
+      throw new SessionPersistenceError(
+        `session journal has ${stats.nlink} links; journals must be single-link files`, file);
+    }
     fchmodSync(fd, 0o600);
     writeFileSync(fd, content, 'utf8');
     fsyncSync(fd);
@@ -365,14 +373,15 @@ export function latestSessionFile(
 export class LockedSessionHeadError extends Error {
   readonly file: string;
   readonly lockPath: string;
-  readonly owner: LockOwner | undefined;
+  readonly owner: PublicLockOwner | undefined;
   readonly lockAgeMs: number | undefined;
   constructor(file: string) {
     const lockPath = `${file}.lock`;
-    let owner: LockOwner | undefined;
+    let owner: PublicLockOwner | undefined;
     let lockAgeMs: number | undefined;
     try {
-      owner = parseLockOwner(readFileSync(lockPath, 'utf8'));
+      const parsed = parseLockOwner(readFileSync(lockPath, 'utf8'));
+      owner = parsed ? publicOwner(parsed) : undefined;
       lockAgeMs = Date.now() - lstatSync(lockPath).mtimeMs;
     } catch {
       // A vanished or unreadable lock stays reported without owner detail.
@@ -393,10 +402,27 @@ export class LockedSessionHeadError extends Error {
   }
 }
 
+/** Owner facts safe to publish; the lock token stays module-private (owner review). */
+export interface PublicLockOwner {
+  pid: number;
+  host?: string;
+  created?: string;
+  legacy?: boolean;
+}
+
+function publicOwner(owner: LockOwner): PublicLockOwner {
+  return {
+    pid: owner.pid,
+    ...(owner.host !== undefined ? { host: owner.host } : {}),
+    ...(owner.created !== undefined ? { created: owner.created } : {}),
+    ...(owner.legacy !== undefined ? { legacy: owner.legacy } : {}),
+  };
+}
+
 export interface SessionLockReport {
   file: string;
   locked: boolean;
-  owner?: LockOwner;
+  owner?: PublicLockOwner;
   /** 'removable' only for a parsable local record whose pid is dead. */
   classification?: 'live' | 'removable' | 'remote' | 'malformed' | 'legacy';
 }
@@ -442,7 +468,7 @@ export function listSessionsWithLockState(dir: string): SessionLockReport[] {
       } catch {
         owner = undefined;
       }
-      reports.push({ file, locked: true, ...(owner ? { owner } : {}), classification: classifyLock(owner) });
+      reports.push({ file, locked: true, ...(owner ? { owner: publicOwner(owner) } : {}), classification: classifyLock(owner) });
     }
   } finally {
     directory.closeSync();
@@ -457,21 +483,85 @@ export function listSessionsWithLockState(dir: string): SessionLockReport[] {
  * serialization plus the re-check, never from a claimed atomic primitive.
  * Refuses live, remote-host, malformed, legacy, and unverifiable owners.
  */
+const MAX_LOCK_RECORD_BYTES = 4_096;
+
+/**
+ * The recovery target must be a real session journal (owner review): doctor
+ * must never become a generic file deleter for anything ending in .lock.
+ */
+function validateRecoveryTarget(file: string): string | undefined {
+  const name = file.split('/').at(-1) ?? '';
+  if (!name.endsWith('.jsonl') || !UUID_PATTERN.test(name.slice(0, -'.jsonl'.length))) {
+    return 'target is not a UUID-named .jsonl session file';
+  }
+  let stats;
+  try {
+    stats = lstatSync(file);
+  } catch {
+    return 'target session file does not exist';
+  }
+  if (!stats.isFile() || stats.nlink !== 1) return 'target session is not a single-link regular file';
+  try {
+    const view = Session.open(file);
+    if (`${view.id}.jsonl` !== name) return 'session meta id does not match its filename';
+  } catch (error) {
+    return `target does not parse as a session journal: ${String(error instanceof Error ? error.message : error)}`;
+  }
+  let lockStats;
+  try {
+    lockStats = lstatSync(`${file}.lock`);
+  } catch {
+    return undefined; // no lock is handled by the caller as already-gone
+  }
+  if (!lockStats.isFile() || lockStats.size > MAX_LOCK_RECORD_BYTES) {
+    return 'lock file is not a small regular file';
+  }
+  return undefined;
+}
+
+function takeRecoveryLock(recoveryLockPath: string): boolean {
+  try {
+    writeFileSync(
+      recoveryLockPath,
+      `${JSON.stringify({ v: 2, pid: process.pid, host: hostname(), token: randomUUID(), created: now() })}\n`,
+      { encoding: 'utf8', flag: 'wx', mode: 0o600 },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function recoverStaleLock(file: string): { removed: boolean; reason: string } {
+  const invalid = validateRecoveryTarget(file);
+  if (invalid) return { removed: false, reason: `refusing recovery: ${invalid}` };
   const lockPath = `${file}.lock`;
   const recoveryLockPath = join(dirname(file), '.recovery.lock');
   let recoveryTaken = false;
   try {
-    try {
-      writeFileSync(recoveryLockPath, `${JSON.stringify({ pid: process.pid, host: hostname(), created: now() })}\n`, {
-        encoding: 'utf8',
-        flag: 'wx',
-        mode: 0o600,
-      });
-      recoveryTaken = true;
-    } catch {
-      return { removed: false, reason: 'another recovery is in progress; retry after it finishes' };
+    if (!takeRecoveryLock(recoveryLockPath)) {
+      // A crashed doctor must not disable recovery forever (owner review):
+      // when the held recovery lock itself has a verifiably dead local owner,
+      // clear it and take over once; anything else stays refused with detail.
+      let holder: LockOwner | undefined;
+      try {
+        holder = parseLockOwner(readFileSync(recoveryLockPath, 'utf8'));
+      } catch {
+        holder = undefined;
+      }
+      if (holder && !holder.legacy && classifyLock(holder) === 'removable') {
+        try {
+          unlinkSync(recoveryLockPath);
+        } catch {
+          /* raced with the other recovery finishing; fall through to refusal */
+        }
+      }
+      if (!takeRecoveryLock(recoveryLockPath)) {
+        const detail = holder ? `held by pid ${holder.pid}${holder.host ? ` on ${holder.host}` : ''}` : 'held by an unreadable owner';
+        return { removed: false, reason: `another recovery is in progress (${detail}); retry after it finishes` };
+      }
     }
+    recoveryTaken = true;
     let owner: LockOwner | undefined;
     try {
       owner = parseLockOwner(readFileSync(lockPath, 'utf8'));
@@ -644,6 +734,10 @@ function parseFile(file: string): { entries: SessionEntry[]; tailRepair?: TailRe
   try {
     const stats = fstatSync(fd);
     if (!stats.isFile()) throw new TypeError(`session is not a regular file: ${file}`);
+    if (stats.nlink !== 1) {
+      throw new SessionCorruptionError(
+        `session journal has ${stats.nlink} links; journals must be single-link files`, file);
+    }
     if (stats.size > MAX_SESSION_FILE_BYTES) {
       throw new SessionCorruptionError(
         `session exceeds the ${MAX_SESSION_FILE_BYTES}-byte recovery limit; compact or archive it explicitly`,
@@ -883,7 +977,14 @@ export class Session {
     } else {
       const fd = openSync(this.file, constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0));
       try {
-        if (!fstatSync(fd).isFile()) throw new TypeError(`session is not a regular file: ${this.file}`);
+        const stats = fstatSync(fd);
+        if (!stats.isFile()) throw new TypeError(`session is not a regular file: ${this.file}`);
+        if (stats.nlink !== 1) {
+          throw new SessionPersistenceError(
+            `session journal has ${stats.nlink} links; journals must be single-link files`,
+            this.file,
+          );
+        }
         ftruncateSync(fd, repair.size);
         fsyncSync(fd);
       } finally {

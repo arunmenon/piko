@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, unlinkSync } from 'node:fs';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import {
   LLMClient,
@@ -124,23 +124,37 @@ function openSession(args: CliArgs, cwd: string, model: string): Session {
   return Session.createLocked(cwd, model).session;
 }
 
-/** `pi doctor sessions [--json] [--remove <session-file> --yes]` (0024). */
+/** `pi doctor sessions [--json] [--remove <session-id|file> --yes]` (0024). */
 function doctorSessions(argv: string[], cwd: string): number {
   const json = argv.includes('--json');
+  const fail = (error: string): number => {
+    // ADR 0010: --json keeps the versioned typed contract on stdout even for
+    // argument errors; prose is only for the human surface.
+    if (json) process.stdout.write(`${JSON.stringify({ v: 1, event: { type: 'doctor_error', error } })}\n`);
+    else process.stderr.write(`${red(error)}\n`);
+    return 1;
+  };
   const removeIndex = argv.indexOf('--remove');
   const target = removeIndex >= 0 ? argv[removeIndex + 1] : undefined;
   const confirmed = argv.includes('--yes');
   const dir = sessionsDirFor(cwd);
   if (removeIndex >= 0) {
     if (!target || target.startsWith('-')) {
-      process.stderr.write(`${red('doctor sessions --remove requires a session file path')}\n`);
-      return 1;
+      return fail('doctor sessions --remove requires a session id or file path');
     }
     if (!confirmed) {
-      process.stderr.write(`${red('removal is destructive; re-run with --yes to confirm')}\n`);
-      return 1;
+      return fail('removal is destructive; re-run with --yes to confirm');
     }
-    const outcome = recoverStaleLock(isAbsolute(target) ? target : join(dir, target));
+    // Containment (owner review): doctor only ever operates on this
+    // directory's sessions. A session id, a bare filename, or a path that
+    // canonicalizes into the inventory are accepted; anything else is refused
+    // before recoverStaleLock's own session-shape validation runs.
+    const candidate = target.endsWith('.jsonl') ? target : `${target}.jsonl`;
+    const resolvedTarget = resolve(dir, candidate);
+    if (dirname(resolvedTarget) !== dir) {
+      return fail(`refusing recovery: target is outside this directory's session inventory (${dir})`);
+    }
+    const outcome = recoverStaleLock(resolvedTarget);
     if (json) {
       process.stdout.write(`${JSON.stringify({ v: 1, event: { type: 'doctor_recover', ...outcome } })}\n`);
     } else {
@@ -1203,7 +1217,11 @@ async function main(): Promise<void> {
         `${JSON.stringify({
           v: 1,
           ...(failure.sessionId ? { sessionId: failure.sessionId } : {}),
-          event: { type: 'run_error', error: text },
+          event: {
+            type: 'run_error',
+            error: text,
+            ...(error instanceof LockedSessionHeadError ? { code: 'locked_session_head' } : {}),
+          },
         })}\n`,
       );
     } else {
