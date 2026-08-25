@@ -61,3 +61,24 @@ same stance 0004 takes for sub-agents and 0002 takes for MCP.
 - Explicitly out of scope: runtime hot-swap of the running process, guardian-
   style in-process rebuilds, and any self-modification path that bypasses the
   prove and park stages.
+
+## Proposed amendment (2026-08-25, token rent — awaiting owner ratification)
+
+The fitness function above (dollars per completed task) gains an enforcement
+rule for the fixed context specifically:
+
+1. Every line of the system prompt and every tool schema byte must keep
+   paying measurable rent against the fitness function. An addition ships
+   only with the benchmark evidence that justified it, cited in the commit
+   that raises scripts/budget-baseline.json (the ratcheted gate fails CI on
+   any unexplained growth).
+2. At each benchmark grid, existing additions are re-audited: an addition
+   whose measured benefit cannot be distinguished from noise is reverted
+   and its tokens returned to the baseline.
+3. Evidence for this rule, from the week it was drafted: the
+   investigate-first guidance line pays clear rent (create-bucket
+   0-for-history to 3/3 at 45 percent below the baseline harness's token
+   cost); the tool-batching line moved failure cost only $0.202 to $0.188
+   at n=3 and stands first for reversion if the next grid cannot validate
+   it. The prefix itself is under 6 percent of a real run's bill, so this
+   rule is about compounding discipline, not this week's dollars.

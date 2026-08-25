@@ -12,6 +12,9 @@ suite (Harbor port pending).
 
 ## Rerun result (dev set, post-fix)
 
+Headline metric first (ADR 0017): $0.106 per solved trial at real cached
+rates, fully self-priced, versus terminus's ~$0.136 upper-bound estimate.
+
 Run 2026-08-24__20-29-49, pi + gpt-5.5, 10 tasks x 3, same settings as the
 original arm: 24/30 (80.0%), up from 19/30. Terminus baseline (19-10-52)
 remains 25/30. Misses: fix-git 0/3 (terminus also 0/3), openssl 1 miss
@@ -76,8 +79,9 @@ not benchmark hacks.
 3. Bounded failure spend, with one finding: play-zork consumed the full 80
    max-turns in all three trials (~$2.06 mean per failure, $6.18 of the
    $11.69 rerun spend). The turn bound worked; a dollar bound would be
-   tighter. Follow-up filed: the bench adapter should pass
-   --max-spend-usd per trial now that in-container pricing works.
+   tighter. Follow-up landed 2026-08-25: the bench adapter now passes
+   --max-spend-usd 1.50 on every trial (bench/routing.py), sized from this
+   run's evidence (worst observed solve ~$0.25, zork failures ~$2.06).
 
 Solved-task efficiency stayed lean (2-10 requests per solve; extract-safely
 solves at ~$0.03). No terminus arm was run on the held-out set; these

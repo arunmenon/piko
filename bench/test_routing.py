@@ -53,6 +53,7 @@ class RoutingTests(unittest.TestCase):
             command,
             "pi -p --usage --allow-host-bash "
             "--pricing /opt/pi/model-prices.json "
+            "--max-spend-usd 1.50 "
             "--profile openai --model gpt-5.5 --max-turns 80 'do the task'",
         )
 

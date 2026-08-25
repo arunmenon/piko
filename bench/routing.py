@@ -49,12 +49,23 @@ def environment_for_route(route: ModelRoute, source: Mapping[str, str]) -> dict[
     return environment
 
 
-def command_for_route(route: ModelRoute, max_turns: int, instruction: str) -> str:
+# Per-trial spend ceiling. Held-out evidence: the worst failures (play-zork)
+# burned ~$2.06 each at the 80-turn ceiling while the most expensive observed
+# solve cost ~$0.25; $1.50 caps runaway failures with ample solve headroom.
+DEFAULT_MAX_SPEND_USD = "1.50"
+
+
+def command_for_route(
+    route: ModelRoute, max_turns: int, instruction: str, max_spend_usd: str = DEFAULT_MAX_SPEND_USD
+) -> str:
     if max_turns < 1:
         raise ValueError("max_turns must be >= 1")
+    if float(max_spend_usd) <= 0:
+        raise ValueError("max_spend_usd must be positive")
     return (
         "pi -p --usage --allow-host-bash "
         "--pricing /opt/pi/model-prices.json "
+        f"--max-spend-usd {shlex.quote(max_spend_usd)} "
         f"--profile {shlex.quote(route.profile)} --model {shlex.quote(route.model)} "
         f"--max-turns {max_turns} {shlex.quote(instruction)}"
     )

@@ -21,6 +21,11 @@ External anchor: terminus-2 + gpt-5.5 = 78.0% +/- 1.2 on the official
 Terminal-Bench 2.1 full suite (rank 7, tbench.ai, 2026-05-01). Local 83.3%
 on this easier-band 10-task subset is consistent with that anchor.
 
+Headline metric (ADR 0017 fitness function: dollars per completed task):
+post-fix piko $0.106 per solve, self-priced at real cached rates (24 solves,
+$2.54 total). Terminus ~$0.136 per solve remains an upper-bound estimate
+(its logs carry no cache split). Solve rates are the secondary metric.
+
 Headline findings (honest):
 1. At the gpt-5.5 tier on this subset, terminus-2 beat piko on solve rate
    (25 vs 19) AND cost per solve (~$0.136 vs ~$0.181). The gpt-4.1-era
