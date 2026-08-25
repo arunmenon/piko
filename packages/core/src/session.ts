@@ -17,7 +17,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { addUsage, emptyUsage, type Message, type ToolCallBlock, type Usage } from '@pi/ai';
 import {
@@ -301,30 +301,200 @@ export function latestSessionFile(
       .filter((id): id is string => id !== undefined && byId.has(id)),
   );
   const leaves = valid.filter((item) => !supersededParents.has(item.session.id));
-  const candidates = (leaves.length > 0 ? leaves : valid).filter(
-    (item) => !options.excludeActivelyLocked || !sessionLockExists(item.file),
-  );
+  const candidates = leaves.length > 0 ? leaves : valid;
   candidates.sort((a, b) => b.mtime - a.mtime || b.created - a.created || b.file.localeCompare(a.file));
-  return candidates[0]?.file;
+  const newest = candidates[0];
+  if (!newest) return undefined;
+  // Rank BEFORE filtering locks (0024): silently skipping a locked newer
+  // session resumes an older conversation or fabricates a blank one, hiding
+  // the newest history behind its stale lock. Fail loudly instead.
+  if (options.excludeActivelyLocked && sessionLockExists(newest.file)) {
+    throw new LockedSessionHeadError(newest.file);
+  }
+  return newest.file;
 }
 
-interface LockOwner {
+/**
+ * The newest resumable session is locked. Selection never silently falls back
+ * to an older session (0024); callers surface the owner and the recovery path.
+ */
+export class LockedSessionHeadError extends Error {
+  readonly file: string;
+  readonly lockPath: string;
+  readonly owner: LockOwner | undefined;
+  readonly lockAgeMs: number | undefined;
+  constructor(file: string) {
+    const lockPath = `${file}.lock`;
+    let owner: LockOwner | undefined;
+    let lockAgeMs: number | undefined;
+    try {
+      owner = parseLockOwner(readFileSync(lockPath, 'utf8'));
+      lockAgeMs = Date.now() - lstatSync(lockPath).mtimeMs;
+    } catch {
+      // A vanished or unreadable lock stays reported without owner detail.
+    }
+    const ownerText = owner
+      ? `pid ${owner.pid}${owner.host ? ` on ${owner.host}` : ''}${owner.created ? `, started ${owner.created}` : ''}${owner.legacy ? ' (legacy record)' : ''}`
+      : 'unreadable owner record';
+    super(
+      `newest session is locked: ${file}\n  lock: ${lockPath} (${ownerText}${
+        lockAgeMs !== undefined ? `, age ${Math.round(lockAgeMs / 1000)}s` : ''
+      })\n  run "pi doctor sessions" to inspect and recover; nothing was resumed or created`,
+    );
+    this.name = 'LockedSessionHeadError';
+    this.file = file;
+    this.lockPath = lockPath;
+    this.owner = owner;
+    this.lockAgeMs = lockAgeMs;
+  }
+}
+
+export interface SessionLockReport {
+  file: string;
+  locked: boolean;
+  owner?: LockOwner;
+  /** 'removable' only for a parsable local record whose pid is dead. */
+  classification?: 'live' | 'removable' | 'remote' | 'malformed' | 'legacy';
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the pid exists under another user: alive for our purposes.
+    return isErrno(error, 'EPERM');
+  }
+}
+
+function classifyLock(owner: LockOwner | undefined): NonNullable<SessionLockReport['classification']> {
+  if (!owner) return 'malformed';
+  if (owner.legacy) return 'legacy';
+  if (owner.host !== undefined && owner.host !== hostname()) return 'remote';
+  if (owner.host === undefined) return 'legacy'; // v1: no host, not safely attributable
+  return pidAlive(owner.pid) ? 'live' : 'removable';
+}
+
+/** Read-only survey for `pi doctor sessions` (0024). */
+export function listSessionsWithLockState(dir: string): SessionLockReport[] {
+  if (!existsSync(dir)) return [];
+  const reports: SessionLockReport[] = [];
+  const directory = opendirSync(dir);
+  let entries = 0;
+  try {
+    while (true) {
+      const entry = directory.readSync();
+      if (!entry) break;
+      if (++entries > MAX_DISCOVERY_ENTRIES) break;
+      if (!entry.name.endsWith('.jsonl')) continue;
+      const file = join(dir, entry.name);
+      if (!sessionLockExists(file)) {
+        reports.push({ file, locked: false });
+        continue;
+      }
+      let owner: LockOwner | undefined;
+      try {
+        owner = parseLockOwner(readFileSync(`${file}.lock`, 'utf8'));
+      } catch {
+        owner = undefined;
+      }
+      reports.push({ file, locked: true, ...(owner ? { owner } : {}), classification: classifyLock(owner) });
+    }
+  } finally {
+    directory.closeSync();
+  }
+  return reports.sort((a, b) => a.file.localeCompare(b.file));
+}
+
+/**
+ * Remove one verifiably dead lock (0024). Serialized through an exclusive
+ * recovery lock, with the target's owner re-read immediately before unlink:
+ * POSIX has no path-based compare-and-delete, so safety comes from
+ * serialization plus the re-check, never from a claimed atomic primitive.
+ * Refuses live, remote-host, malformed, legacy, and unverifiable owners.
+ */
+export function recoverStaleLock(file: string): { removed: boolean; reason: string } {
+  const lockPath = `${file}.lock`;
+  const recoveryLockPath = join(dirname(file), '.recovery.lock');
+  let recoveryTaken = false;
+  try {
+    try {
+      writeFileSync(recoveryLockPath, `${JSON.stringify({ pid: process.pid, host: hostname(), created: now() })}\n`, {
+        encoding: 'utf8',
+        flag: 'wx',
+        mode: 0o600,
+      });
+      recoveryTaken = true;
+    } catch {
+      return { removed: false, reason: 'another recovery is in progress; retry after it finishes' };
+    }
+    let owner: LockOwner | undefined;
+    try {
+      owner = parseLockOwner(readFileSync(lockPath, 'utf8'));
+    } catch (error) {
+      if (isErrno(error, 'ENOENT')) return { removed: false, reason: 'lock is already gone' };
+      return { removed: false, reason: `lock is unreadable: ${String(error)}` };
+    }
+    const classification = classifyLock(owner);
+    if (classification !== 'removable') {
+      return {
+        removed: false,
+        reason: `refusing cleanup: owner is ${classification} (only a parsable local record with a dead pid is removable)`,
+      };
+    }
+    // Re-read immediately before unlink: the owner could have exited and a new
+    // process could have re-locked between the survey and this call.
+    let recheck: LockOwner | undefined;
+    try {
+      recheck = parseLockOwner(readFileSync(lockPath, 'utf8'));
+    } catch {
+      return { removed: false, reason: 'lock changed during recovery; not removed' };
+    }
+    if (!recheck || recheck.token !== owner?.token || classifyLock(recheck) !== 'removable') {
+      return { removed: false, reason: 'lock changed during recovery; not removed' };
+    }
+    unlinkSync(lockPath);
+    return { removed: true, reason: `removed lock of dead pid ${recheck.pid}` };
+  } finally {
+    if (recoveryTaken) {
+      try {
+        unlinkSync(recoveryLockPath);
+      } catch {
+        // Leaving a stale recovery lock blocks future recoveries loudly, which is the safe direction.
+      }
+    }
+  }
+}
+
+export interface LockOwner {
   pid: number;
   token?: string;
   created?: string;
+  /** v2 records carry the owning host; cleanup is refused when it differs (0024). */
+  host?: string;
+  /** true for bare-pid records predating versioned lock payloads; diagnosable, never auto-removable. */
+  legacy?: boolean;
 }
 
 function parseLockOwner(text: string): LockOwner | undefined {
   const legacyPid = Number(text.trim());
-  if (Number.isSafeInteger(legacyPid) && legacyPid > 0) return { pid: legacyPid };
+  if (Number.isSafeInteger(legacyPid) && legacyPid > 0) return { pid: legacyPid, legacy: true };
   try {
     const value = JSON.parse(text) as unknown;
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
     const record = value as Record<string, unknown>;
-    if (record['v'] !== 1 || !Number.isSafeInteger(record['pid']) || (record['pid'] as number) <= 0) return undefined;
+    const version = record['v'];
+    if (version !== 1 && version !== 2) return undefined;
+    if (!Number.isSafeInteger(record['pid']) || (record['pid'] as number) <= 0) return undefined;
     if (typeof record['token'] !== 'string' || record['token'].length === 0) return undefined;
     if (typeof record['created'] !== 'string' || Number.isNaN(Date.parse(record['created']))) return undefined;
-    return { pid: record['pid'] as number, token: record['token'], created: record['created'] };
+    if (version === 2 && (typeof record['host'] !== 'string' || record['host'].length === 0)) return undefined;
+    return {
+      pid: record['pid'] as number,
+      token: record['token'],
+      created: record['created'],
+      ...(version === 2 ? { host: record['host'] as string } : {}),
+    };
   } catch {
     return undefined;
   }
@@ -380,7 +550,7 @@ export function releaseSessionLock(file: string): boolean {
 export function tryLockSession(file: string): (() => void) | undefined {
   const lockPath = `${file}.lock`;
   const token = randomUUID();
-  const payload = `${JSON.stringify({ v: 1, pid: process.pid, token, created: now() })}\n`;
+  const payload = `${JSON.stringify({ v: 2, pid: process.pid, host: hostname(), token, created: now() })}\n`;
 
   const take = (): boolean => {
     try {

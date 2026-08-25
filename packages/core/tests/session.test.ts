@@ -10,15 +10,18 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { synthesizeInterruptedResults } from '../src/agent.js';
 import {
+  LockedSessionHeadError,
   Session,
   SessionCorruptionError,
   SessionPersistenceError,
   latestSessionFile,
+  listSessionsWithLockState,
+  recoverStaleLock,
   tryLockSession,
   usageAcrossSessionLineageDetailed,
 } from '../src/session.js';
@@ -232,14 +235,19 @@ test('branch snapshot durability is bounded by bytes rather than per-message fsy
   locked.release();
 });
 
-test('locked branch is reserved before copying and a continued parent remains a latest-session candidate', () => {
+test('locked branch is reserved before copying and a locked newest head fails loudly (0024)', () => {
   const lineageDir = mkdtempSync(join(tmpdir(), 'pi-session-branch-head-'));
   const parent = Session.create('/some/project', 'test-model', lineageDir);
   parent.append({ t: 'msg', message: message('user', 'one') });
   const locked = parent.branchLocked(0, '/some/project', 'test-model');
   assert.equal(tryLockSession(locked.session.file), undefined);
   assert.equal(latestSessionFile(lineageDir), locked.session.file);
-  assert.equal(latestSessionFile(lineageDir, { excludeActivelyLocked: true }), parent.file);
+  // Rank before filtering locks: the newest head being locked is an error,
+  // never a silent fallback to the older parent.
+  assert.throws(
+    () => latestSessionFile(lineageDir, { excludeActivelyLocked: true }),
+    LockedSessionHeadError,
+  );
 
   parent.append({ t: 'msg', message: message('assistant', 'parent continued') });
   const future = new Date(Date.now() + 2_000);
@@ -438,9 +446,14 @@ test('latest-session discovery treats a dead-PID lock as contention', () => {
   writeFileSync(`${stale.file}.lock`, '2147483647', { encoding: 'utf8', mode: 0o600 });
 
   assert.equal(latestSessionFile(lockDir), stale.file);
-  assert.equal(latestSessionFile(lockDir, { excludeActivelyLocked: true }), unlocked.file);
+  // 0024: a locked newest head is reported, not skipped, and the legacy
+  // bare-pid record stays diagnosable but never auto-removable.
+  assert.throws(() => latestSessionFile(lockDir, { excludeActivelyLocked: true }), LockedSessionHeadError);
   assert.equal(tryLockSession(stale.file), undefined);
   assert.equal(readFileSync(`${stale.file}.lock`, 'utf8'), '2147483647');
+  const refused = recoverStaleLock(stale.file);
+  assert.equal(refused.removed, false);
+  assert.match(refused.reason, /legacy/);
   unlinkSync(`${stale.file}.lock`);
 });
 
@@ -450,4 +463,68 @@ test('session locks share one process exit hook instead of leaking listeners', (
   const locked = Array.from({ length: 16 }, () => Session.createLocked('/some/project', 'm', lockDir));
   assert.ok(process.listenerCount('exit') <= before + 1);
   for (const item of locked) item.release();
+});
+
+test('0024 acceptance: crash leaves a lock, selection fails loudly, doctor recovers, selection resumes', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-0024-acceptance-'));
+  const older = Session.create('/some/project', 'm', dir);
+  older.append({ t: 'msg', message: message('user', 'old work') });
+  const newest = Session.create('/some/project', 'm', dir);
+  newest.append({ t: 'msg', message: message('user', 'newest work') });
+  const future = new Date(Date.now() + 5_000);
+  utimesSync(newest.file, future, future);
+
+  // Simulate a SIGKILL crash: a v2 lock record whose pid is dead on this host.
+  const deadPid = 2147483_000;
+  writeFileSync(
+    `${newest.file}.lock`,
+    `${JSON.stringify({ v: 2, pid: deadPid, host: hostname(), token: 'tok-dead', created: new Date().toISOString() })}\n`,
+    { encoding: 'utf8', mode: 0o600 },
+  );
+
+  const error = (() => {
+    try {
+      latestSessionFile(dir, { excludeActivelyLocked: true });
+      return undefined;
+    } catch (thrown) {
+      return thrown as LockedSessionHeadError;
+    }
+  })();
+  assert.ok(error instanceof LockedSessionHeadError, 'a locked newest head must be an error, not a fallback');
+  assert.equal(error.file, newest.file);
+  assert.equal(error.owner?.pid, deadPid);
+  assert.match(error.message, /doctor sessions/);
+
+  const survey = listSessionsWithLockState(dir);
+  const lockedRow = survey.find((row) => row.file === newest.file);
+  assert.equal(lockedRow?.classification, 'removable');
+
+  const outcome = recoverStaleLock(newest.file);
+  assert.equal(outcome.removed, true, outcome.reason);
+  assert.equal(latestSessionFile(dir, { excludeActivelyLocked: true }), newest.file);
+});
+
+test('0024: recovery refuses live, remote, malformed, and serialized-out owners', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-0024-refusals-'));
+  const target = Session.create('/some/project', 'm', dir);
+  const lockPath = `${target.file}.lock`;
+  const record = (over: Record<string, unknown>) =>
+    `${JSON.stringify({ v: 2, pid: 2147483_000, host: hostname(), token: 't', created: new Date().toISOString(), ...over })}\n`;
+
+  writeFileSync(lockPath, record({ pid: process.pid }), { encoding: 'utf8', mode: 0o600 });
+  assert.match(recoverStaleLock(target.file).reason, /live/);
+
+  writeFileSync(lockPath, record({ host: 'some-other-host.example' }), { encoding: 'utf8', mode: 0o600 });
+  assert.match(recoverStaleLock(target.file).reason, /remote/);
+
+  writeFileSync(lockPath, 'not json and not a pid\n', { encoding: 'utf8', mode: 0o600 });
+  assert.match(recoverStaleLock(target.file).reason, /malformed/);
+
+  // Concurrent recovery: an existing recovery lock serializes us out.
+  writeFileSync(lockPath, record({}), { encoding: 'utf8', mode: 0o600 });
+  const recoveryLock = join(dir, '.recovery.lock');
+  writeFileSync(recoveryLock, 'held\n', { encoding: 'utf8', mode: 0o600 });
+  assert.match(recoverStaleLock(target.file).reason, /another recovery/);
+  unlinkSync(recoveryLock);
+  assert.equal(recoverStaleLock(target.file).removed, true);
 });

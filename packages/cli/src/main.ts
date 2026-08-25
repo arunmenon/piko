@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, unlinkSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import {
   LLMClient,
@@ -27,8 +27,11 @@ import {
   discoverSkills,
   emptyCostSummary,
   latestSessionFile,
+  listSessionsWithLockState,
+  LockedSessionHeadError,
   loadPricingTable,
   loadAgentsMd,
+  recoverStaleLock,
   releaseSessionLock,
   resolveModelPrice,
   sessionsDirFor,
@@ -112,9 +115,57 @@ function openSession(args: CliArgs, cwd: string, model: string): Session {
   if (file) {
     if (tryLockSession(file)) return Session.open(file);
     if (args.session) throw new Error(`requested session is already in use: ${file}`);
-    process.stderr.write(dim('that session is in use by another pi process; starting a new one\n'));
+    // A lock appeared between selection and acquisition. 0024: -c never
+    // silently falls back to a blank session over a locked newest head.
+    throw new LockedSessionHeadError(file);
   }
   return Session.createLocked(cwd, model).session;
+}
+
+/** `pi doctor sessions [--json] [--remove <session-file> --yes]` (0024). */
+function doctorSessions(argv: string[], cwd: string): number {
+  const json = argv.includes('--json');
+  const removeIndex = argv.indexOf('--remove');
+  const target = removeIndex >= 0 ? argv[removeIndex + 1] : undefined;
+  const confirmed = argv.includes('--yes');
+  const dir = sessionsDirFor(cwd);
+  if (removeIndex >= 0) {
+    if (!target || target.startsWith('-')) {
+      process.stderr.write(`${red('doctor sessions --remove requires a session file path')}\n`);
+      return 1;
+    }
+    if (!confirmed) {
+      process.stderr.write(`${red('removal is destructive; re-run with --yes to confirm')}\n`);
+      return 1;
+    }
+    const outcome = recoverStaleLock(isAbsolute(target) ? target : join(dir, target));
+    if (json) {
+      process.stdout.write(`${JSON.stringify({ v: 1, event: { type: 'doctor_recover', ...outcome } })}\n`);
+    } else {
+      process.stdout.write(`${outcome.removed ? outcome.reason : red(outcome.reason)}\n`);
+    }
+    return outcome.removed ? 0 : 1;
+  }
+  const reports = listSessionsWithLockState(dir);
+  if (json) {
+    for (const report of reports) {
+      process.stdout.write(`${JSON.stringify({ v: 1, event: { type: 'doctor_session', ...report } })}\n`);
+    }
+    return 0;
+  }
+  if (reports.length === 0) {
+    process.stdout.write('no sessions here\n');
+    return 0;
+  }
+  for (const report of reports) {
+    const owner = report.owner;
+    const detail = report.locked
+      ? ` LOCKED (${report.classification}${owner ? `: pid ${owner.pid}${owner.host ? ` on ${owner.host}` : ''}` : ''})`
+      : '';
+    process.stdout.write(`${report.file}${detail}\n`);
+  }
+  process.stdout.write(dim('\nremovable locks: pi doctor sessions --remove <file> --yes\n'));
+  return 0;
 }
 
 function buildAgent(setup: Omit<Setup, 'agent'>, cwd: string, model: string): Agent {
@@ -1116,7 +1167,12 @@ function auditSession(target: string, cwd: string): number {
 async function main(): Promise<void> {
   const jsonRequested = process.argv.slice(2).includes('--json');
   try {
-    const args = parseArgs(process.argv.slice(2));
+    const rawArgs = process.argv.slice(2);
+    if (rawArgs[0] === 'doctor' && rawArgs[1] === 'sessions') {
+      process.exitCode = doctorSessions(rawArgs.slice(2), process.cwd());
+      return;
+    }
+    const args = parseArgs(rawArgs);
     if (args.help) {
       process.stdout.write(`${HELP}\n`);
       return;
@@ -1151,7 +1207,8 @@ async function main(): Promise<void> {
     } else {
       process.stderr.write(`${red(text)}\n`);
     }
-    process.exitCode = 1;
+    // 5: the newest session is locked (0024); distinct so scripts can react.
+    process.exitCode = error instanceof LockedSessionHeadError ? 5 : 1;
   }
 }
 

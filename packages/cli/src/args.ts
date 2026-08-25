@@ -294,6 +294,8 @@ options:
   --reject <id>        reject one, with an optional following --reason "<text>"
   --edit <id> --args '<json>'  run one with replacement arguments (validated, and noted to the model)
   --audit [id|path]    print a per-request token-usage audit (default: latest here)
+  doctor sessions      list sessions and lock state (read-only; --json per 0010;
+                       --remove <file> --yes removes one verifiably dead local lock)
   --telemetry <path>   append redacted versioned runtime spans/events as owner-only JSONL
   --ext <path>         load a compiled JavaScript extension module (repeatable)
   --usage              print a JSON usage summary to stderr when done
