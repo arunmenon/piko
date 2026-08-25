@@ -1,0 +1,721 @@
+{
+ "schemaVersion": 1,
+ "dataset": "terminal-bench@2.0",
+ "agent": "piko@b42cab4",
+ "model": "gpt-5.5",
+ "maxSpendUSDPerTrial": 1.5,
+ "trials": [
+  {
+   "task": "adaptive-rejection-sampler",
+   "reward": 0.0,
+   "error": null,
+   "costUSD": 0.4128,
+   "requests": 18,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "bn-fit-modify",
+   "reward": null,
+   "error": "Docker compose command failed for environment bn-fit-modify. Command: docker com",
+   "costUSD": null,
+   "requests": null,
+   "stopStatus": null
+  },
+  {
+   "task": "break-filter-js-from-html",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.5966,
+   "requests": 39,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "build-cython-ext",
+   "reward": null,
+   "error": "Docker compose command failed for environment build-cython-ext. Command: docker ",
+   "costUSD": null,
+   "requests": null,
+   "stopStatus": null
+  },
+  {
+   "task": "build-pmars",
+   "reward": 1.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.5431,
+   "requests": 29,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "build-pov-ray",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.5104,
+   "requests": 19,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "caffe-cifar-10",
+   "reward": 0.0,
+   "error": "Agent execution timed out after 1200.0 seconds",
+   "costUSD": null,
+   "requests": null,
+   "stopStatus": null
+  },
+  {
+   "task": "cancel-async-tasks",
+   "reward": null,
+   "error": "Command failed (exit 1): bash /installed-agent/pi-setup.sh\nstdout: /installed-ag",
+   "costUSD": null,
+   "requests": null,
+   "stopStatus": null
+  },
+  {
+   "task": "chess-best-move",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.3563,
+   "requests": 16,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "circuit-fibsqrt",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.2712,
+   "requests": 7,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "cobol-modernization",
+   "reward": 1.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.6586,
+   "requests": 21,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "code-from-image",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.3706,
+   "requests": 20,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "compile-compcert",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.5425,
+   "requests": 28,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "configure-git-webserver",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.3759,
+   "requests": 23,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "constraints-scheduling",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.1013,
+   "requests": 5,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "count-dataset-tokens",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.2963,
+   "requests": 14,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "crack-7z-hash",
+   "reward": 0.0,
+   "error": "Agent execution timed out after 900.0 seconds",
+   "costUSD": null,
+   "requests": null,
+   "stopStatus": null
+  },
+  {
+   "task": "custom-memory-heap-crash",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.6189,
+   "requests": 33,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "db-wal-recovery",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.5122,
+   "requests": 21,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "distribution-search",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.2304,
+   "requests": 12,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "dna-assembly",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.7091,
+   "requests": 22,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "dna-insert",
+   "reward": 0.0,
+   "error": null,
+   "costUSD": 0.2727,
+   "requests": 17,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "extract-elf",
+   "reward": 0.0,
+   "error": null,
+   "costUSD": 0.4984,
+   "requests": 18,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "extract-moves-from-video",
+   "reward": 0.0,
+   "error": "Agent execution timed out after 1800.0 seconds",
+   "costUSD": 0.3018,
+   "requests": 26,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "feal-differential-cryptanalysis",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.3055,
+   "requests": 9,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "feal-linear-cryptanalysis",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.3599,
+   "requests": 11,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "filter-js-from-html",
+   "reward": 0.0,
+   "error": null,
+   "costUSD": 0.17,
+   "requests": 7,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "financial-document-processor",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.2582,
+   "requests": 11,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "fix-code-vulnerability",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.364,
+   "requests": 22,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "fix-git",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.1543,
+   "requests": 14,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "fix-ocaml-gc",
+   "reward": null,
+   "error": "Docker compose command failed for environment fix-ocaml-gc. Command: docker comp",
+   "costUSD": null,
+   "requests": null,
+   "stopStatus": null
+  },
+  {
+   "task": "gcode-to-text",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.3894,
+   "requests": 20,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "git-leak-recovery",
+   "reward": null,
+   "error": "Command failed (exit 1): bash /installed-agent/pi-setup.sh\nstdout: /installed-ag",
+   "costUSD": null,
+   "requests": null,
+   "stopStatus": null
+  },
+  {
+   "task": "git-multibranch",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.175,
+   "requests": 10,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "gpt2-codegolf",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.7083,
+   "requests": 38,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "headless-terminal",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.1092,
+   "requests": 5,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "hf-model-inference",
+   "reward": null,
+   "error": "Docker compose command failed for environment hf-model-inference. Command: docke",
+   "costUSD": null,
+   "requests": null,
+   "stopStatus": null
+  },
+  {
+   "task": "install-windows-3.11",
+   "reward": 0.0,
+   "error": "Agent execution timed out after 3600.0 seconds",
+   "costUSD": 0.4712,
+   "requests": 21,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "kv-store-grpc",
+   "reward": 0.0,
+   "error": null,
+   "costUSD": 0.1178,
+   "requests": 13,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "large-scale-text-editing",
+   "reward": 0.0,
+   "error": "Agent execution timed out after 1200.0 seconds",
+   "costUSD": null,
+   "requests": null,
+   "stopStatus": null
+  },
+  {
+   "task": "largest-eigenval",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.3756,
+   "requests": 23,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "llm-inference-batching-scheduler",
+   "reward": 1.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.6681,
+   "requests": 21,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "log-summary-date-ranges",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.0706,
+   "requests": 6,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "mailman",
+   "reward": 0.0,
+   "error": "Agent execution timed out after 1800.0 seconds",
+   "costUSD": 0.5577,
+   "requests": 31,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "make-doom-for-mips",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.7117,
+   "requests": 20,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "make-mips-interpreter",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.6106,
+   "requests": 23,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "mcmc-sampling-stan",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.4151,
+   "requests": 16,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "merge-diff-arc-agi-task",
+   "reward": 0.0,
+   "error": null,
+   "costUSD": 0.2115,
+   "requests": 16,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "model-extraction-relu-logits",
+   "reward": null,
+   "error": "Docker compose command failed for environment model-extraction-relu-logits. Comm",
+   "costUSD": null,
+   "requests": null,
+   "stopStatus": null
+  },
+  {
+   "task": "modernize-scientific-stack",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.0662,
+   "requests": 6,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "mteb-leaderboard",
+   "reward": null,
+   "error": "Docker compose command failed for environment mteb-leaderboard. Command: docker ",
+   "costUSD": null,
+   "requests": null,
+   "stopStatus": null
+  },
+  {
+   "task": "mteb-retrieve",
+   "reward": 0.0,
+   "error": null,
+   "costUSD": 0.2375,
+   "requests": 13,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "multi-source-data-merger",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.1137,
+   "requests": 9,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "nginx-request-logging",
+   "reward": null,
+   "error": "Docker compose command failed for environment nginx-request-logging. Command: do",
+   "costUSD": null,
+   "requests": null,
+   "stopStatus": null
+  },
+  {
+   "task": "openssl-selfsigned-cert",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.0425,
+   "requests": 3,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "overfull-hbox",
+   "reward": 0.0,
+   "error": null,
+   "costUSD": 0.1119,
+   "requests": 11,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "password-recovery",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.4194,
+   "requests": 18,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "path-tracing-reverse",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.6269,
+   "requests": 22,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "path-tracing",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.3415,
+   "requests": 10,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "polyglot-c-py",
+   "reward": null,
+   "error": "Command failed (exit 1): bash /installed-agent/pi-setup.sh\nstdout: /installed-ag",
+   "costUSD": null,
+   "requests": null,
+   "stopStatus": null
+  },
+  {
+   "task": "polyglot-rust-c",
+   "reward": 0.0,
+   "error": null,
+   "costUSD": 0.2816,
+   "requests": 10,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "portfolio-optimization",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.182,
+   "requests": 11,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "protein-assembly",
+   "reward": 0.0,
+   "error": null,
+   "costUSD": 0.6827,
+   "requests": 20,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "prove-plus-comm",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.0498,
+   "requests": 6,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "pypi-server",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.213,
+   "requests": 18,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "pytorch-model-cli",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.354,
+   "requests": 17,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "pytorch-model-recovery",
+   "reward": null,
+   "error": "Docker compose command failed for environment pytorch-model-recovery. Command: d",
+   "costUSD": null,
+   "requests": null,
+   "stopStatus": null
+  },
+  {
+   "task": "qemu-alpine-ssh",
+   "reward": 0.0,
+   "error": "Agent execution timed out after 900.0 seconds",
+   "costUSD": null,
+   "requests": null,
+   "stopStatus": null
+  },
+  {
+   "task": "qemu-startup",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.4526,
+   "requests": 30,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "query-optimize",
+   "reward": null,
+   "error": "Verifier execution timed out after 900.0 seconds",
+   "costUSD": 0.4877,
+   "requests": 23,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "raman-fitting",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.8003,
+   "requests": 20,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "regex-chess",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.6621,
+   "requests": 21,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "regex-log",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.1379,
+   "requests": 6,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "reshard-c4-data",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.453,
+   "requests": 17,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "rstan-to-pystan",
+   "reward": 0.0,
+   "error": "Agent execution timed out after 1800.0 seconds",
+   "costUSD": null,
+   "requests": null,
+   "stopStatus": null
+  },
+  {
+   "task": "sam-cell-seg",
+   "reward": null,
+   "error": "Docker compose command failed for environment sam-cell-seg. Command: docker comp",
+   "costUSD": null,
+   "requests": null,
+   "stopStatus": null
+  },
+  {
+   "task": "sanitize-git-repo",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.3407,
+   "requests": 7,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "schemelike-metacircular-eval",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.6704,
+   "requests": 25,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "sparql-university",
+   "reward": null,
+   "error": "Command failed (exit 1): bash /installed-agent/pi-setup.sh\nstdout: /installed-ag",
+   "costUSD": null,
+   "requests": null,
+   "stopStatus": null
+  },
+  {
+   "task": "sqlite-db-truncate",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.1205,
+   "requests": 7,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "sqlite-with-gcov",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.2853,
+   "requests": 16,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "torch-pipeline-parallelism",
+   "reward": 0.0,
+   "error": null,
+   "costUSD": 0.3372,
+   "requests": 9,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "torch-tensor-parallelism",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.4523,
+   "requests": 8,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "train-fasttext",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.3144,
+   "requests": 15,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "tune-mjcf",
+   "reward": null,
+   "error": "Agent execution timed out after 900.0 seconds",
+   "costUSD": 0.2432,
+   "requests": 12,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "video-processing",
+   "reward": 0.0,
+   "error": "Command failed (exit 2): pi -p --usage --allow-host-bash --pricing /opt/pi/model",
+   "costUSD": 0.4345,
+   "requests": 13,
+   "stopStatus": "budget_exceeded"
+  },
+  {
+   "task": "vulnerable-secret",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.1504,
+   "requests": 11,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "winning-avg-corewars",
+   "reward": 1.0,
+   "error": null,
+   "costUSD": 0.2542,
+   "requests": 15,
+   "stopStatus": "completed"
+  },
+  {
+   "task": "write-compressor",
+   "reward": 0.0,
+   "error": "Agent execution timed out after 900.0 seconds",
+   "costUSD": 0.5396,
+   "requests": 18,
+   "stopStatus": "completed"
+  }
+ ]
+}
