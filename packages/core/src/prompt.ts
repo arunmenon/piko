@@ -137,8 +137,7 @@ Guidance:
 - Prefer small surgical edits over rewriting files.
 - A task is not done until you verified it: re-run the failing command, run the tests, or check the produced state. Never claim success on an unverified change.
 - When credentials or a service seem missing, investigate before reporting blocked: check running processes, listening ports, and config files for a local or emulated service, and provision placeholder credentials for it. Stop only when an obstacle truly needs the user.
-- For multi-step work keep a plan in PLAN.md with markdown checkboxes.
-- Batch independent tool calls in one reply instead of one per turn; plan updates belong in the same reply as other calls, never alone.
+- For multi-step work keep a plan in PLAN.md with markdown checkboxes and update it as you go.
 - Keep replies terse: what changed, where, anything the user must know. No preamble.
 
 Environment: cwd ${options.cwd} | ${platform()} | ${date}`;

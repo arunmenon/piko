@@ -99,3 +99,19 @@ container completed cleanly. Open item: the terminal-bench 2.1 dataset ref
 resolves on the hub but returns zero tasks through this client; run the
 89-task terminal-bench@2.0 suite meanwhile, and note the public terminus
 anchor (78.0 +/- 1.2) is quoted against 2.1.
+
+## Token-rent audit and second rerun (2026-08-25)
+
+Second post-fix grid (run 13-31-06, spend-ceilinged): 25/30, exact solve
+parity with terminus (both 25/30 across 9/10 tasks, both losing 2
+simple-web-scraper trials to the same-task port collision), at $0.098 per
+solve self-priced versus terminus's ~$0.136 upper bound. create-bucket
+3/3 for the third consecutive run at 4,590 mean input versus terminus
+6,651. No trial reached the $1.50 ceiling (max observed $0.382).
+
+Token-rent audit: the tool-batching prompt line failed. fix-git failure
+cost across three grids: $0.202 (pre-line) -> $0.188 -> $0.227 per
+failure; no consistent benefit at n=3 each. Reverted per the ADR 0017
+token-rent rule; the fixed prefix returns to 815 tokens and the ratchet
+baseline is lowered accordingly. The investigate-first line keeps paying
+rent (create-bucket) and stays.

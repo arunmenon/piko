@@ -1,4 +1,4 @@
 {
-  "totalTokens": 843,
+  "totalTokens": 815,
   "note": "Ratchet baseline for the fixed-context gate. Raising this number requires measured-benefit evidence in the same commit (token-rent rule, ADR 0017 amendment). Lower it freely."
 }
