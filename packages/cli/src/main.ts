@@ -42,6 +42,7 @@ import {
   type Observer,
   type PendingApproval,
   type PricingTable,
+  type SessionView,
   type RunBudget,
   type Tool,
 } from '@pi/core';
@@ -1072,7 +1073,7 @@ function auditSession(target: string, cwd: string): number {
     process.stderr.write(`no session found for "${oneLine(target, 4096)}"\n`);
     return 1;
   }
-  const chain: Session[] = [];
+  const chain: SessionView[] = [];
   const seen = new Set<string>();
   let cursor: string | undefined = file;
   while (cursor && !seen.has(cursor)) {

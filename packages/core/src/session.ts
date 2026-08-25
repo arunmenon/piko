@@ -101,6 +101,40 @@ export class SessionCorruptionError extends Error {
 
 /** The in-memory journal can no longer prove which bytes reached durable storage.
  * Reopen and reconcile the file under its lock before attempting another append. */
+/** Every method that writes the journal; SessionView omits them at the type level (0023). */
+type SessionMutator =
+  | 'append'
+  | 'appendMany'
+  | 'beginCompaction'
+  | 'beginModelRequest'
+  | 'branch'
+  | 'branchLocked'
+  | 'completeCompaction'
+  | 'completeModelRequest'
+  | 'completeTool'
+  | 'decideToolApproval'
+  | 'failCompaction'
+  | 'failModelRequest'
+  | 'failTool'
+  | 'markInterruptedCompactionsFailed'
+  | 'markInterruptedModelRequestsOutcomeUnknown'
+  | 'markInterruptedToolsOutcomeUnknown'
+  | 'markModelRequestOutcomeUnknown'
+  | 'markReady'
+  | 'markToolOutcomeUnknown'
+  | 'planTool'
+  | 'requestToolApproval'
+  | 'setRunStatus'
+  | 'skipTool'
+  | 'startTool';
+
+/**
+ * Read-only session: what Session.open() returns (0023). Compile-time absence
+ * of mutators is the first line; the module-private lock capability checked in
+ * appendMany is the second, so casting back to Session still cannot write.
+ */
+export type SessionView = Omit<Session, SessionMutator>;
+
 /** A mutation was attempted on a session instance that does not hold the live lock (0023). */
 export class SessionLockError extends Error {
   constructor(file: string) {
@@ -230,7 +264,7 @@ export function latestSessionFile(
   // parent receives the final commit row. Resolve the lineage graph and choose
   // its newest leaf instead. Preserve fail-closed behavior for a corrupt newest
   // file; older unrelated corruption must not make every project unresumable.
-  const sessions: { session: Session; file: string; mtime: number; created: number }[] = [];
+  const sessions: { session: SessionView; file: string; mtime: number; created: number }[] = [];
   let discoveryBytes = 0;
   const boundedFiles = files.slice(0, MAX_DISCOVERY_FILES);
   for (let index = 0; index < boundedFiles.length; index++) {
@@ -258,7 +292,7 @@ export function latestSessionFile(
   if (sessions.length === 0) return undefined;
 
   const byId = new Map(sessions.map((item) => [item.session.id, item]));
-  const parentCache = new Map<string, Session>();
+  const parentCache = new Map<string, SessionView>();
   const committedCompactionParent = (item: (typeof sessions)[number], parentFile: string): boolean => {
     const known = byId.get(item.session.lineage!.parentSessionId)?.session;
     let parent = known ?? parentCache.get(parentFile);
@@ -760,12 +794,20 @@ export class Session {
     throw new Error(`could not allocate and lock a unique session after ${CREATE_ATTEMPTS} attempts`);
   }
 
-  /** Read-only view: reading never needs the lock; every mutation on it throws SessionLockError. */
-  static open(file: string): Session {
+  private static openInternal(file: string): Session {
     const { entries, tailRepair } = parseFile(file);
     const meta = entries[0]!;
     if (meta.t !== 'meta') throw new SessionCorruptionError('session must begin with a meta entry', file, 1);
     return new Session(file, meta.id, entries, tailRepair);
+  }
+
+  /**
+   * Read-only view (0023): reading never needs the lock. The declared type has
+   * no mutators, and the runtime capability check backs the type up, so a cast
+   * still fails at append time.
+   */
+  static open(file: string): SessionView {
+    return Session.openInternal(file);
   }
 
   /**
@@ -777,7 +819,7 @@ export class Session {
     const acquired = acquireSessionLock(file);
     if (!acquired) return undefined;
     try {
-      const session = Session.open(file);
+      const session = Session.openInternal(file);
       adoptSessionLock(session, acquired.token);
       return session;
     } catch (error) {
@@ -1255,11 +1297,11 @@ export interface LineageCost {
 }
 
 /** Durable request costs across a compacted/continued lineage, without re-pricing history. */
-export function costAcrossSessionLineageDetailed(session: Session, maxDepth = 64): LineageCost {
+export function costAcrossSessionLineageDetailed(session: SessionView, maxDepth = 64): LineageCost {
   if (!Number.isSafeInteger(maxDepth) || maxDepth < 1) throw new RangeError('maxDepth must be a positive safe integer');
   const total = emptyCostSummary();
   const seen = new Set<string>();
-  let current: Session | undefined = session;
+  let current: SessionView | undefined = session;
   let traversed = 0;
   let ancestryComplete = true;
   for (; current && traversed < maxDepth; traversed++) {
@@ -1287,11 +1329,11 @@ export function costAcrossSessionLineageDetailed(session: Session, maxDepth = 64
 }
 
 /** Provider-reported usage across a compacted/continued session lineage. */
-export function usageAcrossSessionLineageDetailed(session: Session, maxDepth = 64): LineageUsage {
+export function usageAcrossSessionLineageDetailed(session: SessionView, maxDepth = 64): LineageUsage {
   if (!Number.isSafeInteger(maxDepth) || maxDepth < 1) throw new RangeError('maxDepth must be a positive safe integer');
   const total = emptyUsage();
   const seen = new Set<string>();
-  let current: Session | undefined = session;
+  let current: SessionView | undefined = session;
   let traversed = 0;
   for (; current && traversed < maxDepth; traversed++) {
     if (seen.has(current.file)) throw new SessionCorruptionError('session lineage contains a cycle', current.file);
@@ -1318,6 +1360,6 @@ export function usageAcrossSessionLineageDetailed(session: Session, maxDepth = 6
 }
 
 /** Compatibility helper for callers that need only the bounded numeric total. */
-export function usageAcrossSessionLineage(session: Session, maxDepth = 64): Usage {
+export function usageAcrossSessionLineage(session: SessionView, maxDepth = 64): Usage {
   return usageAcrossSessionLineageDetailed(session, maxDepth).usage;
 }

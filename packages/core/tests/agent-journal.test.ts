@@ -140,7 +140,8 @@ test('resume marks a started side effect unknown and never claims it did not run
   const executionId = session.planTool(call);
   session.startTool(executionId);
 
-  const reopened = Session.open(session.file);
+  session.close();
+  const reopened = Session.openLocked(session.file)!;
   const client: CompletionClient = {
     async *stream(): AsyncGenerator<StreamEvent, void, void> {
       throw new Error('not called');
@@ -159,7 +160,8 @@ test('resume records a planned but unstarted call as skipped', () => {
   session.append({ t: 'msg', message: { role: 'user', content: [{ type: 'text', text: 'go' }] } });
   session.append({ t: 'msg', message: { role: 'assistant', content: [call] } });
   session.planTool(call);
-  const reopened = Session.open(session.file);
+  session.close();
+  const reopened = Session.openLocked(session.file)!;
   const client: CompletionClient = {
     async *stream(): AsyncGenerator<StreamEvent, void, void> {
       throw new Error('not called');
@@ -175,7 +177,8 @@ test('resume marks an interrupted provider request and run outcome unknown/incom
   const session = Session.create(dir, 'model', dir);
   session.setRunStatus('running');
   const requestId = session.beginModelRequest('model', { messageCount: 1 });
-  const reopened = Session.open(session.file);
+  session.close();
+  const reopened = Session.openLocked(session.file)!;
   const client: CompletionClient = {
     async *stream(): AsyncGenerator<StreamEvent, void, void> {
       throw new Error('not called');
@@ -198,7 +201,8 @@ test('resume terminates an interrupted compaction before starting new work', () 
   const dir = mkdtempSync(join(tmpdir(), 'pi-agent-compaction-resume-'));
   const session = Session.create(dir, 'model', dir);
   const compactionId = session.beginCompaction('auto', { keepFromMessage: 2 });
-  const reopened = Session.open(session.file);
+  session.close();
+  const reopened = Session.openLocked(session.file)!;
   const client: CompletionClient = {
     async *stream(): AsyncGenerator<StreamEvent, void, void> {
       throw new Error('not called');

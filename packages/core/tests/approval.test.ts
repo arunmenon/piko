@@ -268,7 +268,8 @@ test('crash while awaiting approval: reopen keeps awaiting_approval and does not
   await drain(agent.run('go'));
 
   // A new process opens the same file: this is the crash-repair path.
-  const reopened = Session.open(session.file);
+  session.close();
+  const reopened = Session.openLocked(session.file)!;
   const resumedAgent = new Agent({
     client: neverCalled,
     model: 'model',
@@ -308,7 +309,8 @@ test('decided(approved) with no started row dispatches exactly once on resume', 
   session.decideToolApproval(executionId, 'approved');
   session.setRunStatus('suspended', 'awaiting_approval');
 
-  const reopened = Session.open(session.file);
+  session.close();
+  const reopened = Session.openLocked(session.file)!;
   const client = scriptedClient(() => ({ role: 'assistant', content: [{ type: 'text', text: 'deployed' }] }));
   const agent = new Agent({
     client,
@@ -341,7 +343,8 @@ test('a started call with no terminal row is still outcome_unknown beside a pend
   session.startTool(startedId);
   session.requestToolApproval(gatedId);
 
-  const reopened = Session.open(session.file);
+  session.close();
+  const reopened = Session.openLocked(session.file)!;
   new Agent({ client: neverCalled, model: 'model', systemPrompt: 's', tools: [], cwd: workspace, session: reopened });
   const states = reopened.toolExecutions;
   assert.equal(states.find((state) => state.executionId === startedId)?.status, 'outcome_unknown');
@@ -566,7 +569,8 @@ test('a resumed run inherits the suspended ceilings and journals an explicit rai
   assert.equal(suspendedRow?.t === 'run_status' && suspendedRow.budget?.maxToolCalls, 3);
 
   // A new process with no budget flags must not silently widen the ceiling.
-  const reopened = Session.open(session.file);
+  session.close();
+  const reopened = Session.openLocked(session.file)!;
   const inherited = new Agent({ ...base, session: reopened });
   await drain(inherited.resume([{ executionId: inherited.pendingApprovals[0]!.executionId, decision: 'approved' }]));
   const inheritedRow = Session.open(session.file)
@@ -578,10 +582,11 @@ test('a resumed run inherits the suspended ceilings and journals an explicit rai
   const raisedSession = Session.create(raisedWorkspace, 'model', raisedWorkspace);
   const raisedAgent = new Agent({ ...base, cwd: raisedWorkspace, session: raisedSession, budget: { maxToolCalls: 3 } });
   await drain(raisedAgent.run('go'));
+  raisedSession.close();
   const widened = new Agent({
     ...base,
     cwd: raisedWorkspace,
-    session: Session.open(raisedSession.file),
+    session: Session.openLocked(raisedSession.file)!,
     budget: { maxToolCalls: 9 },
   });
   await drain(widened.resume([{ executionId: widened.pendingApprovals[0]!.executionId, decision: 'approved' }]));
@@ -612,7 +617,8 @@ test('a cross-process resume reports honestly on results whose payload was never
   await drain(new Agent({ ...base, session }).run('go'));
   assert.equal(safe.calls.length, 1);
 
-  const resumed = new Agent({ ...base, session: Session.open(session.file) });
+  session.close();
+  const resumed = new Agent({ ...base, session: Session.openLocked(session.file)! });
   const terminal = terminalOf(
     await drain(resumed.resume([{ executionId: resumed.pendingApprovals[0]!.executionId, decision: 'approved' }])),
   );

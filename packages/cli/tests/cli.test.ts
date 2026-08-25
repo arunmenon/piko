@@ -150,9 +150,8 @@ test('headless stdin is byte bounded before setup', () => {
 test('an explicitly requested locked session fails instead of silently starting fresh', () => {
   const cli = resolve(import.meta.dirname, '..', 'dist', 'main.js');
   const dir = mkdtempSync(join(tmpdir(), 'pi-cli-session-lock-'));
+  // create() itself holds the lock (0023); the spawned pi must refuse it.
   const session = Session.create(dir, 'test-model', dir);
-  const release = tryLockSession(session.file);
-  assert.ok(release);
   try {
     const result = spawnSync(process.execPath, [cli, '--json', '--model', 'test-model', '--session', session.file, 'hello'], {
       cwd: dir,
@@ -165,7 +164,7 @@ test('an explicitly requested locked session fails instead of silently starting 
     assert.equal(row.event.type, 'run_error');
     assert.match(row.event.error, /requested session is already in use/);
   } finally {
-    release?.();
+    session.close();
   }
 });
 

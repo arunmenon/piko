@@ -65,7 +65,8 @@ test('an append failure poisons that Session object until the journal is reopene
   );
   assert.equal(readFileSync(session.file, 'utf8'), original);
 
-  const reconciled = Session.open(session.file);
+  session.close();
+  const reconciled = Session.openLocked(session.file)!;
   reconciled.setRunStatus('completed');
   assert.equal(Session.open(session.file).runStatus?.status, 'completed');
 });
@@ -124,7 +125,8 @@ test('a resumed append repairs malformed and valid unterminated tails', () => {
   const malformed = Session.create('/some/project', 'test-model', dir);
   malformed.append({ t: 'msg', message: message('user', 'kept') });
   appendFileSync(malformed.file, '{"t":', 'utf8');
-  const recovered = Session.open(malformed.file);
+  malformed.close();
+  const recovered = Session.openLocked(malformed.file)!;
   recovered.setRunStatus('running');
   assert.equal(Session.open(malformed.file).messages.length, 1);
   assert.match(readFileSync(malformed.file, 'utf8'), /"run_status"/);
@@ -132,7 +134,8 @@ test('a resumed append repairs malformed and valid unterminated tails', () => {
   const valid = Session.create('/some/project', 'test-model', dir);
   const unterminated = JSON.stringify({ t: 'msg', message: message('user', 'valid tail') });
   appendFileSync(valid.file, unterminated, 'utf8');
-  const resumed = Session.open(valid.file);
+  valid.close();
+  const resumed = Session.openLocked(valid.file)!;
   resumed.setRunStatus('completed', 'end_turn');
   const reopened = Session.open(valid.file);
   assert.equal(reopened.messages.length, 1);
@@ -175,7 +178,10 @@ test('UUID creation is exclusive and session files are owner-only', () => {
   assert.equal(statSync(session.file).mode & 0o777, 0o600);
   assert.throws(
     () => Session.create('/some/project', 'other-model', dir, { id }),
-    (error: unknown) => error instanceof Error && 'code' in error && error.code === 'EEXIST',
+    (error: unknown) =>
+      error instanceof Error &&
+      (('code' in error && (error as { code?: string }).code === 'EEXIST') ||
+        /could not reserve session lock/.test(error.message)),
   );
   assert.equal(Session.open(session.file).messages.length, 1, 'exclusive create must not truncate an existing session');
 
@@ -332,7 +338,9 @@ test('v2 lifecycle journal distinguishes planned, started, completed, and unknow
   assert.equal(skippedState?.status, 'skipped');
   assert.equal(skippedState?.reason, 'tool-call budget exhausted');
   assert.equal(skippedState?.startedAt, undefined);
-  assert.deepEqual(reopened.markInterruptedToolsOutcomeUnknown('crashed after dispatch'), [interrupted]);
+  session.close();
+  const relocked = Session.openLocked(session.file)!;
+  assert.deepEqual(relocked.markInterruptedToolsOutcomeUnknown('crashed after dispatch'), [interrupted]);
 
   const recovered = Session.open(session.file);
   assert.equal(recovered.toolExecutions.find((state) => state.executionId === interrupted)?.status, 'outcome_unknown');
@@ -400,6 +408,7 @@ test('invalid lifecycle transitions fail before they are appended', () => {
 
 test('session locks are exclusive, owner-token protected, and owner-only', () => {
   const session = Session.create('/some/project', 'test-model', dir);
+  session.close(); // create() holds its lock (0023); this test drives the primitive directly
   const firstRelease = tryLockSession(session.file);
   assert.ok(firstRelease);
   assert.equal(statSync(`${session.file}.lock`).mode & 0o777, 0o600);
@@ -527,4 +536,31 @@ test('0024: recovery refuses live, remote, malformed, and serialized-out owners'
   assert.match(recoverStaleLock(target.file).reason, /another recovery/);
   unlinkSync(recoveryLock);
   assert.equal(recoverStaleLock(target.file).removed, true);
+});
+
+test('0023 acceptance: no public API yields an unlocked mutable session', () => {
+  const capabilityDir = mkdtempSync(join(tmpdir(), 'pi-0023-acceptance-'));
+
+  // Session.create() is not an unlocked escape hatch: it holds its own lock.
+  const created = Session.create('/some/project', 'm', capabilityDir);
+  assert.equal(tryLockSession(created.file), undefined, 'create() must already hold the lock');
+  assert.equal(Session.openLocked(created.file), undefined, 'a second locked opener must fail');
+
+  // A read-only open cannot mutate, even when cast around the type system.
+  const view = Session.open(created.file);
+  assert.throws(() => view.append({ t: 'msg', message: message('user', 'forged') }), /requires the lock/);
+
+  // close() is idempotent and hands the capability off cleanly.
+  created.close();
+  created.close();
+  assert.throws(() => created.append({ t: 'msg', message: message('user', 'after close') }), /requires the lock/);
+  const relocked = Session.openLocked(created.file);
+  assert.ok(relocked, 'the lock is available after close');
+  relocked!.append({ t: 'msg', message: message('user', 'locked append works') });
+
+  // The review's double-open interleave: a second mutable handle cannot exist.
+  assert.equal(Session.openLocked(created.file), undefined);
+  const stale = Session.open(created.file);
+  assert.throws(() => stale.setRunStatus('running'), /requires the lock/);
+  relocked!.close();
 });
