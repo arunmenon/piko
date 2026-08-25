@@ -1,6 +1,6 @@
 # 0024 - Explicit stale-lock recovery
 
-Status: proposed (2026-08-24; drafted from external review finding 3, owner ratification pending)
+Status: accepted (2026-08-25; ratified with owner amendments, recorded below)
 Amends: 0015
 
 ## Context
@@ -18,16 +18,24 @@ data-loss illusion.
 
 Never silently skip the newest candidate:
 
-- When session selection would skip a locked newer session, fail with a
-  non-zero exit that names the locked session file, its lock age, and the
-  recorded owner (pid, host, started-at), and points at the recovery
-  command. No automatic takeover, ever; 0015's no-takeover stance stands.
-- Add `pi doctor sessions`: lists sessions with lock state; for a lock
-  whose recorded owner is verifiably dead (pid absent AND lock inode
-  matches the record, checked immediately before unlink), offers removal
-  with an explicit confirmation. The check-and-unlink is documented as
-  best-effort protection against races with a reviving owner: the unlink
-  binds to the inspected inode, not the path.
+- Session selection ranks candidates BEFORE filtering locks (owner
+  amendment): when the newest head is locked, `pi -c` fails non-zero,
+  naming the locked session file, lock age, and recorded owner (pid,
+  host, started-at) and pointing at the recovery command. It never
+  silently resumes an older session or creates a blank one. No automatic
+  takeover, ever; 0015's no-takeover stance stands.
+- Add `pi doctor sessions`: read-only by default, listing sessions with
+  lock state; JSON output follows ADR 0010. Removal requires an explicit
+  confirmation flag.
+- Recovery is serialized through a separate exclusive recovery lock
+  (owner amendment): acquire it, then re-read the target lock's token and
+  owner record immediately before deletion. POSIX path-based unlink is
+  not an atomic compare-and-delete, so safety comes from serialization,
+  not from any claimed inode binding. Cleanup is refused for owners that
+  are live, on a remote host, malformed, or otherwise unverifiable.
+- The lock record is versioned and expanded to carry host and start time.
+  Legacy (unversioned) records remain diagnosable in doctor output but
+  are never automatically removable.
 - `--continue` gains no force flag; recovery is a deliberate separate act.
 
 ## Acceptance regression

@@ -1,6 +1,6 @@
 # 0023 - Lock-capability session API
 
-Status: proposed (2026-08-24; drafted from external review finding 2, owner ratification pending)
+Status: accepted (2026-08-25; ratified with owner amendments, recorded below)
 Amends: 0015
 
 ## Context
@@ -28,15 +28,27 @@ Split the session API by capability:
 - `Session.open()` returns `SessionView`. This is a breaking change for
   any `@pi/core` consumer that mutated through it; the CLI already follows
   the locked path and needs only type-level migration.
-- Journal repair and reconciliation tools take `LockedSession` too; there
-  is no unlocked mutation path left in the public surface.
+- The capability requirement covers EVERY path that yields a mutable
+  session (owner amendment): creation, branching, compaction, and
+  continuation as well as open. No public API may create an unlocked
+  mutable session; `Session.create()` returns a `LockedSession` that
+  already holds the lock it created.
+- The lock is acquired BEFORE parsing, repairing, or publishing a journal
+  and retained through the entire mutation lifecycle; repair and
+  reconciliation tools take `LockedSession` too. There is no unlocked
+  mutation path left in the public surface.
+- The owner token is private to the module and runtime-verified on every
+  append; `close()` is idempotent.
 
 ## Acceptance regression
 
 Two `openLocked()` calls on one journal: the second fails. A `SessionView`
 has no append methods (compile-time). A forged token (constructed rather
 than obtained from `openLocked`) is rejected at append time. The review's
-double-open interleaving scenario becomes impossible to express.
+double-open interleaving scenario becomes impossible to express, and a
+dedicated test proves `Session.create()` is not an unlocked mutation
+escape hatch: the session it returns holds the lock, and a second
+opener against the fresh journal fails until it is closed.
 
 ## Consequences
 
