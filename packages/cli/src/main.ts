@@ -113,7 +113,8 @@ function openSession(args: CliArgs, cwd: string, model: string): Session {
     if (!file) process.stderr.write(dim('no previous session here; starting a new one\n'));
   }
   if (file) {
-    if (tryLockSession(file)) return Session.open(file);
+    const locked = Session.openLocked(file);
+    if (locked) return locked;
     if (args.session) throw new Error(`requested session is already in use: ${file}`);
     // A lock appeared between selection and acquisition. 0024: -c never
     // silently falls back to a blank session over a locked newest head.

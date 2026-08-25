@@ -101,6 +101,16 @@ export class SessionCorruptionError extends Error {
 
 /** The in-memory journal can no longer prove which bytes reached durable storage.
  * Reopen and reconcile the file under its lock before attempting another append. */
+/** A mutation was attempted on a session instance that does not hold the live lock (0023). */
+export class SessionLockError extends Error {
+  constructor(file: string) {
+    super(
+      `session mutation requires the lock: open this journal with Session.openLocked() or create it with Session.create(); a read-only Session.open() view cannot write (${file})`,
+    );
+    this.name = 'SessionLockError';
+  }
+}
+
 export class SessionPersistenceError extends Error {
   constructor(
     message: string,
@@ -548,6 +558,11 @@ export function releaseSessionLock(file: string): boolean {
  * stale-lock decision delete a live owner's lock. Cleanup must be deliberate.
  */
 export function tryLockSession(file: string): (() => void) | undefined {
+  return acquireSessionLock(file)?.release;
+}
+
+/** Module-internal acquisition that also exposes the token for capability adoption (0023). */
+function acquireSessionLock(file: string): { token: string; release: () => void } | undefined {
   const lockPath = `${file}.lock`;
   const token = randomUUID();
   const payload = `${JSON.stringify({ v: 2, pid: process.pid, host: hostname(), token, created: now() })}\n`;
@@ -572,7 +587,19 @@ export function tryLockSession(file: string): (() => void) | undefined {
     released = true;
     releaseOwnedLock(lockPath, token);
   };
-  return release;
+  return { token, release };
+}
+
+/**
+ * Capability registry (0023): a session instance may mutate only while it
+ * holds the token of the live lock on its own file. The WeakMap is module
+ * private, so the token cannot be read or forged from outside; a cast to a
+ * mutable type still fails at append time.
+ */
+const mutationTokens = new WeakMap<Session, string>();
+
+function adoptSessionLock(session: Session, token: string): void {
+  mutationTokens.set(session, token);
 }
 
 type TailRepair = { kind: 'truncate'; size: number } | { kind: 'newline' };
@@ -665,7 +692,8 @@ export class Session {
     private tailRepair?: TailRepair,
   ) {}
 
-  static create(cwd: string, model: string, dir = sessionsDirFor(cwd), options: SessionCreateOptions = {}): Session {
+  /** Journal creation without a lock: internal only; every public factory locks (0023). */
+  private static createCore(cwd: string, model: string, dir: string, options: SessionCreateOptions): Session {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     if (options.id && !UUID_PATTERN.test(options.id)) throw new TypeError('session id must be a UUID');
     const attempts = options.id ? 1 : CREATE_ATTEMPTS;
@@ -693,6 +721,14 @@ export class Session {
     throw new Error(`could not allocate a unique session id after ${CREATE_ATTEMPTS} attempts`);
   }
 
+  /**
+   * Create a new journal and return it holding its own lock (0023): no public
+   * API yields an unlocked mutable session. Callers release with close().
+   */
+  static create(cwd: string, model: string, dir = sessionsDirFor(cwd), options: SessionCreateOptions = {}): Session {
+    return Session.createLocked(cwd, model, dir, options).session;
+  }
+
   /** Reserve the advisory lock before publishing a new session file. */
   static createLocked(
     cwd: string,
@@ -706,16 +742,17 @@ export class Session {
     for (let attempt = 0; attempt < attempts; attempt++) {
       const id = options.id ?? randomUUID();
       const file = join(dir, `${id}.jsonl`);
-      const release = tryLockSession(file);
-      if (!release) {
+      const acquired = acquireSessionLock(file);
+      if (!acquired) {
         if (options.id) throw new Error(`could not reserve session lock ${file}`);
         continue;
       }
       try {
-        const session = Session.create(cwd, model, dir, { ...options, id });
-        return { session, release };
+        const session = Session.createCore(cwd, model, dir, { ...options, id });
+        adoptSessionLock(session, acquired.token);
+        return { session, release: acquired.release };
       } catch (error) {
-        release();
+        acquired.release();
         if (!options.id && isErrno(error, 'EEXIST')) continue;
         throw error;
       }
@@ -723,6 +760,7 @@ export class Session {
     throw new Error(`could not allocate and lock a unique session after ${CREATE_ATTEMPTS} attempts`);
   }
 
+  /** Read-only view: reading never needs the lock; every mutation on it throws SessionLockError. */
   static open(file: string): Session {
     const { entries, tailRepair } = parseFile(file);
     const meta = entries[0]!;
@@ -730,25 +768,38 @@ export class Session {
     return new Session(file, meta.id, entries, tailRepair);
   }
 
-  /** New session containing legacy messages/usage up to message `atMessage` (0-based). */
-  branch(atMessage: number, cwd: string, model: string): Session {
-    if (!Number.isInteger(atMessage) || atMessage < 0) throw new RangeError('branch message index must be non-negative');
-    const branched = Session.create(cwd, model, dirname(this.file), {
-      lineage: { parentSessionId: this.id, parentFile: this.file, relation: 'branch', atMessage },
-    });
-    let messageIndex = -1;
-    const copied: SessionEntry[] = [];
-    for (const entry of this.entries) {
-      if (entry.t === 'meta' || ('v' in entry && entry.v === 2)) continue;
-      if (entry.t === 'msg') {
-        messageIndex++;
-        if (messageIndex > atMessage) break;
-      }
-      copied.push(entry);
+  /**
+   * Acquire the lock FIRST, then parse (0023): repair-on-append and every
+   * later mutation happen under the same capability. Returns undefined when
+   * another owner holds the lock.
+   */
+  static openLocked(file: string): Session | undefined {
+    const acquired = acquireSessionLock(file);
+    if (!acquired) return undefined;
+    try {
+      const session = Session.open(file);
+      adoptSessionLock(session, acquired.token);
+      return session;
+    } catch (error) {
+      acquired.release();
+      throw error;
     }
-    branched.appendMany(copied);
-    branched.markReady();
-    return branched;
+  }
+
+  /** Idempotently release this instance's lock; the mutation capability dies with it. */
+  close(): void {
+    const token = mutationTokens.get(this);
+    if (token === undefined) return;
+    mutationTokens.delete(this);
+    releaseOwnedLock(`${this.file}.lock`, token);
+  }
+
+  /**
+   * New session containing legacy messages/usage up to message `atMessage`
+   * (0-based). The child holds its own lock (0023); callers close() it.
+   */
+  branch(atMessage: number, cwd: string, model: string): Session {
+    return this.branchLocked(atMessage, cwd, model).session;
   }
 
   /** Like branch(), but the child is locked before it becomes visible. */
@@ -811,6 +862,12 @@ export class Session {
    */
   appendMany(entries: readonly SessionEntry[]): void {
     if (entries.length === 0) return;
+    // Every mutation funnels through here; the capability check is runtime,
+    // not only type-level, so a cast around SessionView still fails (0023).
+    const token = mutationTokens.get(this);
+    if (token === undefined || ownedSessionLocks.get(`${this.file}.lock`) !== token) {
+      throw new SessionLockError(this.file);
+    }
     if (this.writeFailure !== undefined) {
       throw new SessionPersistenceError(
         'session writes are disabled after an ambiguous persistence failure; release the lock and reopen the journal before continuing',
