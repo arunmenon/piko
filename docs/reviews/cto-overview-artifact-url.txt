@@ -4,3 +4,5 @@ Piko executive overview (CTO audience). Published artifact; private until
 shared from the page's share menu. Content extracts and the fact-check
 trail live beside this file in docs/reviews/. The artifact updates in
 place at this URL when republished.
+
+PDF export of the same content: cto-overview-2026-08-31.pdf (this directory).
