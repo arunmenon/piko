@@ -1,0 +1,6 @@
+https://claude.ai/code/artifact/86d069c9-1f04-43aa-9281-436d15bee9a4
+
+Piko executive overview (CTO audience). Published artifact; private until
+shared from the page's share menu. Content extracts and the fact-check
+trail live beside this file in docs/reviews/. The artifact updates in
+place at this URL when republished.
