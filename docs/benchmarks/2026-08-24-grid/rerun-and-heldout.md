@@ -115,3 +115,14 @@ failure; no consistent benefit at n=3 each. Reverted per the ADR 0017
 token-rent rule; the fixed prefix returns to 815 tokens and the ratchet
 baseline is lowered accordingly. The investigate-first line keeps paying
 rent (create-bucket) and stays.
+
+## Data-lifecycle note (2026-08-31)
+
+The 25/30 second rerun (13-31-06) was recorded above as narrative the day
+it ran, but its per-trial comparison artifact was never committed and the
+run directory has since been lost with the session scratchpad. Its figures
+(25/30, $0.098 per solve) are therefore narrative-only and must not be
+used where machine-traceable evidence is required; the committed
+machine-readable dev-set artifact remains rerun-comparison.json (24/30,
+$0.106 per solve). This is exactly the artifact-retention gap the reserved
+data-lifecycle ADR exists to close.
