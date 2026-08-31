@@ -124,5 +124,6 @@ run directory has since been lost with the session scratchpad. Its figures
 (25/30, $0.098 per solve) are therefore narrative-only and must not be
 used where machine-traceable evidence is required; the committed
 machine-readable dev-set artifact remains rerun-comparison.json (24/30,
-$0.106 per solve). This is exactly the artifact-retention gap a future
-data-lifecycle ADR should close.
+$0.106 per solve). This is exactly the artifact-retention gap ADR 0021 (artifact data
+lifecycle, proposed) exists to close; this incident is cited in its
+Context section.

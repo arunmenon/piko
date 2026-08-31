@@ -27,6 +27,7 @@ new decisions get an ADR in the same change that implements them.
 | 0018 | Container sandbox executor behind a provider seam | **proposed** |
 | 0019 | Release and compatibility contract | **proposed** |
 | 0020 | Dollar-denominated cost accounting and spend ceilings (amends 0009) | accepted |
+| 0021 | Artifact data lifecycle | **proposed** |
 | 0022 | Descriptor-anchored workspace containment (amends 0006) | accepted |
 | 0023 | Lock-capability session API (amends 0015) | accepted |
 | 0024 | Explicit stale-lock recovery (amends 0015) | accepted |
