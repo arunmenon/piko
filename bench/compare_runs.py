@@ -218,12 +218,19 @@ def summarize(name: str, rows: dict[str, list[Trial]], *, emit: bool = True) -> 
         "cost_usd": sum(cost_rows),
         "trials_with_cost_data": len(cost_rows),
         "infrastructure_failures": infrastructure_failures,
-        # Null unless every solved trial is priced: dividing a partial cost sum
-        # by all solves understates the ratio (external review finding 11).
-        "cost_per_solved_trial_usd": (
+        # Two distinct per-solve metrics, named to match what they measure
+        # (fact-check 2026-08-31): the mean cost of the solved trials alone,
+        # and total spend (failures included) amortized per solve. The former
+        # is null unless every solved trial is priced; the latter is null
+        # unless every trial with data is priced, since missing failure costs
+        # understate it.
+        "mean_cost_of_solved_trials_usd": (
             sum(cost for cost in solved_costs if cost is not None) / solved
             if solved and solved_costs and all(cost is not None for cost in solved_costs)
             else None
+        ),
+        "total_spend_per_solve_usd": (
+            sum(cost_rows) / solved if solved and tokens and len(cost_rows) == len(tokens) else None
         ),
     }
     if emit:

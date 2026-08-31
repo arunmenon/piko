@@ -113,4 +113,4 @@ class ExpectedTrialsTests(unittest.TestCase):
             rows = collect(root, pi_tokens)
             summary = summarize("pi", rows, emit=False)
             self.assertEqual(summary["solved_trials"], 2)
-            self.assertIsNone(summary["cost_per_solved_trial_usd"])
+            self.assertIsNone(summary["mean_cost_of_solved_trials_usd"])
