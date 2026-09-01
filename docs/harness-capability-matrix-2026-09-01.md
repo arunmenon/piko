@@ -55,3 +55,20 @@ Claude Code (print-mode --max-budget-usd) and mini-swe-agent (enforced
 cost_limit) both ship hard dollar caps: the "only harness with a dollar
 ceiling" claim is retired. Isolation (0022/0018) is now assessed as
 existential rather than roadmap.
+
+## Independent replication and adjudication (2026-09-01, same day)
+
+A parallel blind investigation (protocol:
+capability-matrix-parallel-investigation-prompt.md) agreed on 90/143 cells
+(62.9%) and killed the residual exclusivity claims: OpenHands documents a
+per-task dollar stop (MAX_BUDGET_PER_TASK) and process-safe locked
+event-log appends — both re-verified by us against its documentation
+before acceptance. Adjudication record:
+docs/reviews/2026-09-01-capability-matrix-replication.md (accepted
+findings, rejected findings with reasons, adopted rubric splits for cost
+enforcement and durability). Published matrix regraded post-adjudication;
+piko's surviving differentiation is stated as composition (pre-dispatch
+spend reservation + durable lifecycle accounting + lock-capability
+sessions + stale-lock recovery + evidence ratchets in one runtime), with
+piko sub-agents regraded absent -> partial and several peer cells moved
+in both directions under the tightened rubric.
