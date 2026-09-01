@@ -34,3 +34,24 @@ Limitation: compiled without a fresh web sweep (session search budget
 exhausted); external claims reflect session research and public docs as of
 Aug-Sep 2026. DeepSeek cells explicitly unverified; a ~$2 benchmark arm
 through the existing adapter would convert that row to measured.
+
+## Grounding pass (2026-09-01, same day)
+
+The draft matrix was verified by a 13-agent workflow (run wf_eb2809e6-9a2):
+one adversarial verifier per harness row, primary sources only, no-guess
+rule. 38 of 143 cells were revised, including two of piko's own downward
+(isolation partial -> absent; benchmark evidence strong -> partial).
+Full per-cell verdicts with sources:
+docs/reviews/capability-matrix-grounding-2026-09-01.json.
+
+Verdict rewritten accordingly: piko tops no column alone at glyph
+resolution. Its surviving edge is mechanism depth (reservation-based spend
+enforcement in every mode; lock-enforced session integrity vs Claude
+Code's documented double-resume interleaving; the CI-ratcheted footprint
+and evidence-governance loop). Key strategic finding: the DeepSeek harness
+is a governance competitor in piko's own specialty (fail-closed approvals,
+append-only session log, OS sandbox backends), not a price story.
+Claude Code (print-mode --max-budget-usd) and mini-swe-agent (enforced
+cost_limit) both ship hard dollar caps: the "only harness with a dollar
+ceiling" claim is retired. Isolation (0022/0018) is now assessed as
+existential rather than roadmap.

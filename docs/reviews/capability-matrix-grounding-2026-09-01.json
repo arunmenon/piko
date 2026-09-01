@@ -1,0 +1,1177 @@
+{
+ "schemaVersion": 1,
+ "study": "harness-capability-matrix-2026-09-01",
+ "method": "one adversarial verifier agent per harness row; primary sources only (WebFetch of vendor docs/repos, local reads for A-grade rows); rubric strong/partial/absent/unverified; no-guess rule (failed fetch => unverified)",
+ "workflowRunId": "wf_eb2809e6-9a2",
+ "rows": [
+  {
+   "harness": "Claude Code",
+   "cells": [
+    {
+     "dimension": "context management (compaction/caching/footprint)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "https://code.claude.com/docs/en/context-window and /docs/en/costs: auto-compaction with a configurable auto-compact window, /compact with custom preservation instructions, tool-result clearing counted as 'expected rebuilds', per-session prompt-cache statistics line (e.g. '91% of input tokens from cache', warm/cold TTL tracking), deferred MCP tool schemas loaded on demand via tool search, and subagent context isolation so only a summary returns to the main window."
+    },
+    {
+     "dimension": "cost enforcement (accounting vs hard per-run limits)",
+     "currentGrade": "partial",
+     "verdict": "revise",
+     "proposedGrade": "strong",
+     "evidence": "https://code.claude.com/docs/en/cli-reference: --max-budget-usd is 'Maximum dollar amount to spend on API calls before stopping (print mode only)'; once spend reaches the cap, 'spawning another subagent fails with Budget limit reached, and Claude Code stops background subagents that are still running' (enforcement requires v2.1.217+). /docs/en/costs adds workspace spend limits, org/group/member spend limits, contracted-rate modelPricing, OTel per-user cost export, and the status line comparing session cost against --max-budget-usd. Caveat: the hard per-run cap applies to print (headless) mode only; interactive sessions have accounting but no per-run dollar stop."
+    },
+    {
+     "dimension": "tools & extensibility (MCP, plugins, skills)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "https://code.claude.com/docs/en/costs documents MCP servers with tool definitions 'deferred by default' via MCP tool search, skills that 'load on-demand only when invoked', code intelligence plugins, and PreToolUse hooks that can rewrite tool input (worked filter-test-output.sh example). https://github.com/anthropics/claude-code contains plugins/ and examples/ directories. All shipped and documented, not config-gated."
+    },
+    {
+     "dimension": "sub-agents / orchestration",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "https://code.claude.com/docs/en/context-window (interactive simulation) documents subagents with a fresh separate context window, own system prompt, per-subagent model selection ('model: haiku'), recursion prevention, and only the final summary returning to the parent. /docs/en/costs documents background subagents and multi-instance agent teams (experimental, behind CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1, ~7x tokens in plan mode). Core subagent orchestration is shipped and documented; only agent teams are experimental."
+    },
+    {
+     "dimension": "approvals & permission control",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "https://code.claude.com/docs/en/permissions: deny\u2192ask\u2192allow precedence, wildcard Bash rules with shell-operator-aware compound-command splitting, wrapper stripping (timeout/nice/xargs), parameter-match rules like Bash(run_in_background:true), gitignore-syntax Read/Edit path rules, seven permission modes including a classifier-backed auto mode, PreToolUse hook extension, and managed settings that can disable bypassPermissions org-wide."
+    },
+    {
+     "dimension": "isolation & sandboxing (OS/container level)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "https://code.claude.com/docs/en/sandboxing: OS-enforced sandbox built in \u2014 Seatbelt on macOS, bubblewrap+socat (optional seccomp) on Linux/WSL2 \u2014 with filesystem allow/deny paths, network egress via a proxy with domain allowlists, TLS-terminating credential masking with SigV4 re-signing, protected paths, and managed-settings enforcement (failIfUnavailable, allowUnsandboxedCommands:false). Documented limits: native Windows unsupported; by default, if the sandbox can't start, commands run unsandboxed with a warning unless failIfUnavailable is set."
+    },
+    {
+     "dimension": "session durability (resume, crash honesty, locking)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "https://code.claude.com/docs/en/sessions: sessions 'saved continuously to local transcript files' (JSONL) so crash recovery via --resume/--continue is engineered (cross-project ID search, picker, branching, resume-from-summary). But there is no session locking: 'If you resume the same session in two terminals without forking, messages from both interleave into one transcript', and the JSONL format 'is internal... and changes between versions'. Resume is strong; the locking gap keeps this partial."
+    },
+    {
+     "dimension": "automation contract (headless/JSON/SDK/exit codes)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "https://code.claude.com/docs/en/cli-reference and /docs/en/sessions: claude -p headless mode with --output-format text|json|stream-json, structured outputs validated against a JSON Schema (print mode), Agent SDK for TypeScript/Python, documented exit codes ('claude auth status' exits 0/1; failed resume 'exits with code 1'; --max-turns 'exits with an error'), claude -p --resume for scripted follow-ups, hooks receiving transcript_path, and --no-session-persistence for ephemeral runs."
+    },
+    {
+     "dimension": "provider/model breadth",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "https://code.claude.com/docs/en/costs and /docs/en/sessions: supported providers are the Claude API/Console, Amazon Bedrock, Google Cloud's Agent Platform, and Microsoft Foundry (provider-specific deployment IDs), plus LLM gateways such as LiteLLM. All routes serve Anthropic Claude models only (Opus/Sonnet/Haiku tiers via /model); no non-Anthropic model support appears anywhere in the primary docs. Multi-cloud but single-vendor models = partial."
+    },
+    {
+     "dimension": "benchmark evidence & transparency",
+     "currentGrade": "partial",
+     "verdict": "revise",
+     "proposedGrade": "absent",
+     "evidence": "https://github.com/anthropics/claude-code README makes no benchmark claims (no SWE-bench or other scores), and none of the docs pages consulted (sandboxing, permissions, context-window, costs, cli-reference, sessions) publish any harness-level benchmark results. Anthropic's model-card SWE-bench numbers are model-level claims, not Claude Code harness evidence, and were not reachable from the designated primary sources. Harness benchmark evidence is not offered."
+    },
+    {
+     "dimension": "maturity & adoption",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "https://github.com/anthropics/claude-code: 143.6k stars, 23.0k forks, CHANGELOG.md, first-party install channels (curl installer, Homebrew cask, WinGet, npm deprecated in favor of native binary). https://code.claude.com/docs/en/costs cites fleet-scale enterprise data: 'Across enterprise deployments, the average cost is around $13 per developer per active day and $150-250 per developer per month', plus enterprise analytics APIs, MDM/managed settings, and admin tooling."
+    }
+   ],
+   "corrections": [
+    "Any claim that Claude Code's cost controls are 'accounting only' or lack hard per-run limits is contradicted: the CLI reference documents --max-budget-usd as a hard cap that stops the run, fails further subagent spawns with 'Budget limit reached', and terminates running background subagents (v2.1.217+). If our prose keeps a caveat, it should be that the cap applies to print/headless mode only, not that no cap exists.",
+    "Any claim that Claude Code sessions are lost on crash or lack resume is contradicted: docs state sessions are 'saved continuously to local transcript files' and resumable by ID/name from any directory, including after crashes or forced exits. The correct durability gap is locking: two terminals resuming the same session interleave messages into one transcript (documented, not prevented).",
+    "If our prose credits Claude Code with 'partial' benchmark evidence based on SWE-bench numbers, note those are Anthropic model-card claims about the models, not published benchmarks of the Claude Code harness; the claude-code README and official docs contain no benchmark claims at all.",
+    "Any claim that sandboxing is on by default is contradicted: the sandbox must be enabled (/sandbox or sandbox.enabled), and by default 'if the sandbox cannot start... Claude Code shows a warning and runs commands without sandboxing' unless sandbox.failIfUnavailable is set. Also, native Windows is not supported (WSL2 required).",
+    "Any claim that Claude Code supports non-Anthropic models is contradicted: provider breadth covers Claude API, Bedrock, Google Cloud Agent Platform, Microsoft Foundry, and LLM gateways, but all serve Claude models only."
+   ]
+  },
+  {
+   "harness": "Codex CLI",
+   "cells": [
+    {
+     "dimension": "context management (compaction/caching/footprint)",
+     "currentGrade": "partial",
+     "verdict": "revise",
+     "proposedGrade": "strong",
+     "evidence": "learn.chatgpt.com Codex config reference: `model_auto_compact_token_limit` (token threshold that triggers automatic history compaction) with `model_auto_compact_token_limit_scope` (total | body_after_prefix), `compact_prompt` (inline override for the history compaction prompt), `model_context_window`, and `tool_output_token_limit` (token budget for storing individual tool outputs in history); /compact command exists per developer-commands page. Auto-compaction is engineered, configurable, documented, and shipped, so 'partial' underrates it."
+    },
+    {
+     "dimension": "cost enforcement (accounting vs hard per-run limits)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "Codex config reference: `features.rollout_budget.enabled` \u2014 'Enable rollout budget tracking. This feature is under development and off by default. When enabled, features.rollout_budget.limit_tokens is required' (a positive per-rollout token limit). A hard per-run limit exists only as an off-by-default under-development flag; spend/rate limits are otherwise org/plan-level docs, so partial is exactly right."
+    },
+    {
+     "dimension": "tools & extensibility (MCP, plugins, skills)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "learn.chatgpt.com/codex/skills-and-plugins: skills are reusable workflows invoked via `$` mentions in Codex; plugins are 'an installable bundle that can include skills, connectors, or both' with 'one universal plugin directory' shared by ChatGPT and Codex; /codex/extend/mcp documents adding local or remote MCP servers; config reference adds per-app/per-tool enable and approval_mode overrides plus lifecycle hooks."
+    },
+    {
+     "dimension": "sub-agents / orchestration",
+     "currentGrade": "partial",
+     "verdict": "revise",
+     "proposedGrade": "strong",
+     "evidence": "learn.chatgpt.com/codex/agent-configuration/subagents: built-in agents (default, worker, explorer) plus custom agents as TOML files in ~/.codex/agents/ or .codex/agents/ that can override model, model_reasoning_effort, sandbox_mode, and mcp_servers per agent; parallel orchestration with `agents.max_concurrent_threads_per_session` cap; page states subagents are not experimental and enabled by default in current releases. This is engineered, documented, shipped \u2014 upgrade from partial."
+    },
+    {
+     "dimension": "approvals & permission control",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "learn.chatgpt.com/codex/agent-approvals-security: four approval policies (untrusted, on-request default, on-failure, never), granular `approval_policy = { granular = ... }`, /permissions mid-session switching, permission_profiles, protected read-only paths (.git, .agents, .codex); codex-rs/execpolicy README: Starlark prefix rules classifying commands as allow/prompt/forbidden with load-time validated match/not_match examples."
+    },
+    {
+     "dimension": "isolation & sandboxing (OS/container level)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "learn.chatgpt.com/codex/sandboxing: macOS uses the built-in Seatbelt framework 'out of the box'; Linux/WSL2 uses bubblewrap via unprivileged user namespaces; native Windows sandbox for PowerShell; three modes (read-only, workspace-write default, danger-full-access) with `sandbox_workspace_write.writable_roots`; network off by default, enabled via `network_access = true` plus `features.network_proxy` domain allow/deny rules with DNS-rebinding and local-binding protections on by default."
+    },
+    {
+     "dimension": "session durability (resume, crash honesty, locking)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "learn.chatgpt.com/codex/developer-commands: sessions auto-saved to disk; `codex resume` by session ID or --last (cwd-scoped unless --all, `tui.resume_cwd` config); /archive removes from active lists without deleting transcript, /delete permanently deletes; non-interactive-mode doc adds `codex exec resume --last` / `resume <SESSION_ID>` and `--ephemeral` opt-out. Caveat: cross-process session locking and crash-recovery semantics are not documented, but the resume/persistence machinery itself is engineered, documented, shipped."
+    },
+    {
+     "dimension": "automation contract (headless/JSON/SDK/exit codes)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "learn.chatgpt.com/codex/non-interactive-mode: `codex exec` streams progress to stderr and final message to stdout; `--json` makes stdout 'a JSON Lines (JSONL) stream so you can capture every event Codex emits'; `--output-schema <path>` enforces JSON Schema structured output; `-o/--output-last-message`; CODEX_API_KEY and openai/codex-action for CI; TypeScript Codex SDK; codex-rs/app-server README documents a JSON-RPC 2.0 thread/turn/item API (thread/start, thread/resume, turn/start) over stdio/websocket/unix socket. Exit codes are the only undocumented corner."
+    },
+    {
+     "dimension": "provider/model breadth",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "Codex config reference: custom `model_providers.<id>` with env_key/base-URL, built-in provider IDs limited to openai, ollama, lmstudio (reserved), plus a built-in amazon-bedrock provider (aws.profile/aws.region) and `oss_provider` for --oss; but `model_providers.<id>.wire_api`: 'responses is the only supported value', so custom providers must speak OpenAI's Responses API \u2014 non-OpenAI use is config-dependent with real gaps, matching partial."
+    },
+    {
+     "dimension": "benchmark evidence & transparency",
+     "currentGrade": "partial",
+     "verdict": "unknown",
+     "proposedGrade": "unverified",
+     "evidence": "learn.chatgpt.com/codex/models contains 'no benchmark results, SWE-bench scores, or evaluation evidence'; the GitHub README contains none; the OpenAI blog (openai.com/index/introducing-upgrades-to-codex/) returned HTTP 403 and WebSearch was unavailable, so I could not establish what benchmark evidence (if any) OpenAI publishes for the Codex harness from primary sources."
+    },
+    {
+     "dimension": "maturity & adoption",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "github.com/openai/codex (fetched 2026-09-01): 120.5k stars, 18.4k forks, distributed via install script, npm, Homebrew, and binaries for macOS and Linux, with ChatGPT Plus/Pro/Business/Edu/Enterprise sign-in; app-server README notes it powers the Codex VS Code extension and integrates with the OpenAI Compliance Logs Platform for enterprise."
+    }
+   ],
+   "corrections": [
+    "Any claim that Codex CLI lacks sub-agent support or that its sub-agents are experimental/built-in-only is contradicted: learn.chatgpt.com/codex/agent-configuration/subagents documents built-in (default/worker/explorer) plus custom TOML-defined subagents with per-agent model/sandbox/MCP overrides, parallel execution capped by agents.max_concurrent_threads_per_session, described as not experimental and enabled by default.",
+    "Any claim that Codex CLI has no automatic context compaction is contradicted: the config reference documents model_auto_compact_token_limit (automatic history compaction threshold), model_auto_compact_token_limit_scope, a compact_prompt override, and tool_output_token_limit.",
+    "Any claim that Codex CLI offers no per-run token/cost limit needs qualification: features.rollout_budget.limit_tokens is a per-rollout token limit, though under development and off by default.",
+    "Any claim that Codex custom providers can use the Chat Completions wire API is contradicted by the current config reference: model_providers.<id>.wire_api lists 'responses' as the only supported value (the models page still says 'Chat Completions or Responses', so OpenAI's own docs conflict; the config reference is the newer, authoritative source).",
+    "Any claim that Linux sandboxing uses Landlock/seccomp or that Windows has no native sandbox is contradicted: the sandboxing page documents bubblewrap (unprivileged user namespaces) on Linux/WSL2 and a native Windows sandbox for PowerShell.",
+    "Any prose asserting specific published benchmark numbers for Codex should be re-sourced: the models docs page and GitHub README contain no benchmark results, and the OpenAI blog was unreachable (403) for verification."
+   ]
+  },
+  {
+   "harness": "Gemini CLI",
+   "cells": [
+    {
+     "dimension": "context management (compaction/caching/footprint)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "geminicli.com/docs/cli/token-caching: caching is automatic for API-key/Vertex auth but 'the Code Assist API does not support cached content creation' (no caching for default OAuth users); geminicli.com/docs/reference/commands: /compress manually 'replaces the entire chat context with a summary'; hierarchical GEMINI.md memory. Real machinery, but auth-dependent caching and manual compaction = partial."
+    },
+    {
+     "dimension": "cost enforcement (accounting vs hard per-run limits)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "geminicli.com/docs/resources/quota-and-pricing lists provider-side daily request quotas (e.g. 1,000 req/day free) but 'does not mention any built-in hard cost caps, spend limits, or budget enforcement'; only /stats tracks token usage (informational). Headless docs show exit code 53 'Turn limit exceeded' \u2014 a turn limit exists, but no cost/token budget. Accounting yes, cost limits no."
+    },
+    {
+     "dimension": "tools & extensibility (MCP, plugins, skills)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "geminicli.com/docs navigation: MCP servers (/docs/tools/mcp-server), full extensions framework with writing/best-practices/releasing guides (/docs/extensions/), custom commands, hooks (/docs/hooks/), and Agent Skills (/docs/cli/skills/). All shipped and documented."
+    },
+    {
+     "dimension": "sub-agents / orchestration",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "geminicli.com/docs/core/subagents: subagents are production, 'enabled by default', defined as Markdown+YAML in .gemini/agents/ with tool scoping, model override, max_turns; built-ins plus remote subagents (/docs/core/remote-agents). But delegation is sequential only, no parallel orchestration documented, and 'subagents cannot call other subagents' \u2014 orchestration depth is the gap."
+    },
+    {
+     "dimension": "approvals & permission control",
+     "currentGrade": "partial",
+     "verdict": "revise",
+     "proposedGrade": "strong",
+     "evidence": "geminicli.com/docs/reference/policy-engine: TOML policy rules with allow/deny/ask_user, regex argument matching, command prefixes, 5 priority tiers including OS-level Admin policy dirs (/etc/gemini-cli/policies etc.) with ownership checks, plus approval modes default/autoEdit/plan/yolo and trusted folders. Engineered, documented, shipped \u2014 exceeds 'partial' (known gaps: workspace tier disabled per issue #18186, plan mode experimental)."
+    },
+    {
+     "dimension": "isolation & sandboxing (OS/container level)",
+     "currentGrade": "partial",
+     "verdict": "revise",
+     "proposedGrade": "strong",
+     "evidence": "geminicli.com/docs/cli/sandbox: macOS Seatbelt via sandbox-exec with 6 profiles (incl. network-proxied variants), Docker/Podman container isolation with custom images (GEMINI_SANDBOX_IMAGE, BUILD_SANDBOX=1), gVisor/runsc ('strongest isolation available'), Windows native (icacls Low Mandatory Level), experimental LXC. Opt-in via -s/GEMINI_SANDBOX, but the shipped matrix is at least as broad as peers we graded strong."
+    },
+    {
+     "dimension": "session durability (resume, crash honesty, locking)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "geminicli.com/docs/cli/tutorials/session-management: 'All conversations are automatically saved', gemini -r resumes latest, /resume opens a searchable session browser, --list-sessions/--delete-session manage sessions. But file-state checkpointing is 'disabled by default' (docs/cli/checkpointing), and no crash-recovery semantics or session locking are documented \u2014 1 of 3 sub-criteria (resume) is solid."
+    },
+    {
+     "dimension": "automation contract (headless/JSON/SDK/exit codes)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "geminicli.com/docs/cli/headless: -p headless mode, --output-format json (response/stats/error schema), stream-json event stream (init/message/tool_use/tool_result/error/result), documented exit codes 0/1/42/53; official Gemini CLI GitHub Action (repo README). Gap: no documented programmatic SDK ('only the CLI itself is documented'), and ask_user policies degrade to deny in headless. Borderline strong; the missing SDK keeps it partial per the dimension definition."
+    },
+    {
+     "dimension": "provider/model breadth",
+     "currentGrade": "absent",
+     "verdict": "confirmed",
+     "proposedGrade": "absent",
+     "evidence": "geminicli.com/docs/cli/model lists only Google Gemini models (gemini-3-pro/flash-preview, gemini-2.5-pro/flash, Auto routing between them); no third-party providers or local models anywhere in the docs. Multiple auth channels (OAuth/API key/Vertex) all target the same single model family."
+    },
+    {
+     "dimension": "benchmark evidence & transparency",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "github.com/google-gemini/gemini-cli/tree/main/evals: open behavioral-eval harness (40+ .eval.ts files, llm-judge.ts, ALWAYS_PASSES/USUALLY_PASSES policies) run in nightly CI, plus /perf-tests \u2014 but 'no published benchmark scores are visible' and README/docs publish no agentic benchmark results. Infrastructure public, results not."
+    },
+    {
+     "dimension": "maturity & adoption",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "github.com/google-gemini/gemini-cli: 106.8k stars, 14.5k forks, Apache-2.0, weekly release cadence (stable + preview channels on Tuesdays, nightly builds), official GitHub Action, Google-maintained with Homebrew/MacPorts/npm distribution."
+    }
+   ],
+   "corrections": [
+    "'capability posture broad but less contract-governed' (One honest paragraph, capability-matrix-content-2026-09-01.md) \u2014 contradicted: Gemini CLI ships a TOML policy engine (allow/deny/ask_user rules, regex arg matching, 5 priority tiers with OS-level admin enforcement) and a documented headless contract (JSON/stream-JSON output schemas, typed exit codes 0/1/42/53). It is contract-governed in both permissions and automation.",
+    "'Massive-context strategy (the model's window does the work)' \u2014 understates engineered context management documented at geminicli.com: a /compress compaction command, automatic token caching for API-key/Vertex auth with /stats cached-token reporting, and hierarchical GEMINI.md memory. The window is not the whole strategy.",
+    "Matrix row grades Gemini CLI \u25d0 on approvals and \u25d0 on isolation while Claude Code/Codex get \u25cf \u2014 primary sources show mechanisms at least as broad (Seatbelt 6 profiles + Docker/Podman + gVisor + Windows sandbox; policy engine with four approval modes and admin policy tiers); for cross-row consistency both cells should rise to \u25cf.",
+    "'Provider-locked in practice' \u2014 mildly imprecise: model docs offer only Gemini models, so it is provider-locked by design/documentation, not merely in practice."
+   ]
+  },
+  {
+   "harness": "OpenCode",
+   "cells": [
+    {
+     "dimension": "context management (compaction/caching/footprint)",
+     "currentGrade": "partial",
+     "verdict": "revise",
+     "proposedGrade": "strong",
+     "evidence": "https://opencode.ai/docs/config/ documents a `compaction` block: `auto` (default true, \"Automatically compact the session when context is full\"), `prune` (drop old tool outputs), and `reserved` (default 10000-token buffer); https://opencode.ai/docs/agents/ documents hidden system agents (Compaction, Title, Summary) that handle context management automatically, and provider config exposes `setCacheKey` for caching. Shipped on by default, engineered, documented \u2014 meets the rubric's bar for strong."
+    },
+    {
+     "dimension": "cost enforcement (accounting vs hard per-run limits)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "https://opencode.ai/docs/config/ \u2014 no cost or spend-limit settings exist in the harness config schema; https://opencode.ai/docs/zen/ \u2014 the Zen gateway offers pay-as-you-go billing with configurable auto-reload and \"a monthly usage limit for the entire workspace and for each member\", i.e. cost caps exist only provider-side via Zen (config-dependent), with no hard per-run limit in the harness itself."
+    },
+    {
+     "dimension": "tools & extensibility (MCP, plugins, skills)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "https://opencode.ai/docs/mcp-servers/ (local and remote MCP servers, OAuth via Dynamic Client Registration RFC 7591, per-agent enable/disable with glob patterns); https://opencode.ai/docs/plugins/ (JS/TS plugins with hooks incl. tool.execute.before/after, permission.asked, session.compacted, plus custom tools via Zod-schema `tool()` helper, npm plugin auto-install); https://opencode.ai/docs/skills/ (SKILL.md Agent Skills with Claude-compatible discovery of `.claude/skills/` and pattern-based skill permissions)."
+    },
+    {
+     "dimension": "sub-agents / orchestration",
+     "currentGrade": "partial",
+     "verdict": "revise",
+     "proposedGrade": "strong",
+     "evidence": "https://opencode.ai/docs/agents/ \u2014 primary agents (build, plan) plus built-in subagents (general, explore, scout); subagents invoked automatically by primary agents based on descriptions or manually via @-mention; custom agents defined in opencode.json or markdown with per-agent model, temperature, prompt, tools, permissions, and max_steps; subagents run as child sessions navigable from the TUI, and the task tool takes per-subagent permission controls. This is a complete, shipped orchestration system, not a partial one."
+    },
+    {
+     "dimension": "approvals & permission control",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "https://opencode.ai/docs/permissions/ \u2014 granular allow/ask/deny with wildcard patterns (e.g. bash: {\"git *\": \"allow\", \"rm *\": \"deny\"}), per-agent overrides, doom_loop and external_directory guards, .env reads denied by default; BUT \"If unspecified, most permissions default to allow\" (default is approval-free), and SECURITY.md (repo root) states the permission system \"exists as a UX feature ... not designed to provide security isolation\". Present but config-dependent \u2192 partial stands."
+    },
+    {
+     "dimension": "isolation & sandboxing (OS/container level)",
+     "currentGrade": "absent",
+     "verdict": "confirmed",
+     "proposedGrade": "absent",
+     "evidence": "https://raw.githubusercontent.com/sst/opencode/dev/SECURITY.md \u2014 explicit \"No Sandbox\" section: \"OpenCode does not sandbox the agent\" and \"If you need true isolation, run OpenCode inside a Docker container or VM\"; sandbox escapes are declared out of scope. https://opencode.ai/docs/config/ has no sandbox settings and no sandbox page exists in the docs navigation."
+    },
+    {
+     "dimension": "session durability (resume, crash honesty, locking)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "https://opencode.ai/docs/cli/ \u2014 `opencode run --continue` (resume most recent), `--session <id>`, and `--fork` for branching; https://opencode.ai/docs/sdk/ \u2014 session create/list/update/delete plus revert/restore of messages and abort of running sessions. But no primary source documents crash-recovery guarantees, integrity checks, or concurrent-session locking \u2192 partial stands."
+    },
+    {
+     "dimension": "automation contract (headless/JSON/SDK/exit codes)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "https://opencode.ai/docs/cli/ \u2014 `opencode run` non-interactive with `--format json` (raw JSON events) and attach-to-server support; https://opencode.ai/docs/server/ \u2014 `opencode serve` exposes an OpenAPI 3.1 spec at /doc with sessions/messages/files/events (SSE) endpoints and basic auth; https://opencode.ai/docs/sdk/ \u2014 typed `@opencode-ai/sdk` generated from the OpenAPI spec, including prompts with JSON-schema structured output. Only exit codes are undocumented; the rest is engineered and shipped."
+    },
+    {
+     "dimension": "provider/model breadth",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "https://opencode.ai/docs/providers/ \u2014 \"75+ LLM providers\" via the AI SDK and Models.dev catalog; dedicated guides for Anthropic, OpenAI, Google Vertex, Bedrock, Azure, OpenRouter, and local models (Ollama, LM Studio, llama.cpp); custom OpenAI-compatible endpoints via `@ai-sdk/openai-compatible`; per-provider model whitelist/blacklist."
+    },
+    {
+     "dimension": "benchmark evidence & transparency",
+     "currentGrade": "partial",
+     "verdict": "revise",
+     "proposedGrade": "absent",
+     "evidence": "No published benchmark results anywhere in primary sources: README, https://opencode.ai/docs/, and https://opencode.ai/ contain no SWE-bench or other scores; the repo root has no bench/eval directory. The only benchmarking mention is the Zen marketing claim that models were \"tested and benchmarked specifically for coding agents\" (opencode.ai, opencode.ai/docs/zen/) with zero published numbers or methodology \u2014 that is a claim, not evidence, so 'partial' was generous."
+    },
+    {
+     "dimension": "maturity & adoption",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "GitHub API (api.github.com/repositories/975734319, i.e. sst/opencode \u2192 anomalyco/opencode): 202,893 stars, 26,396 forks, MIT license, created 2025-04-30, latest release v1.18.25 published 2026-08-28, pushed same day; https://opencode.ai/ claims \"950 contributors\", \"13,000 commits\", \"16M monthly developers\"; repo STATS.md tracks daily download counts (280k+ cumulative by Aug 2025)."
+    }
+   ],
+   "corrections": [
+    "Any claim that OpenCode lacks automatic context compaction or that its context management is rudimentary is contradicted: docs/config documents `compaction.auto` (default true), `prune`, and `reserved` token buffer, plus hidden Compaction/Title/Summary system agents.",
+    "Any claim that OpenCode's sub-agent support is limited to a single helper or lacks orchestration is contradicted: docs/agents documents custom agents, automatic delegation by description, @-mention invocation, per-agent models/permissions/max_steps, and navigable child sessions.",
+    "Any claim that OpenCode publishes benchmark results or transparent evals is contradicted: no scores or methodology appear in the README, docs, or homepage \u2014 only an unquantified marketing claim that Zen models were 'tested and benchmarked'.",
+    "Any claim that OpenCode has no cost controls at all is imprecise: the harness config has none, but the Zen gateway supports workspace-level and per-member monthly usage limits and configurable auto-reload.",
+    "Any claim that OpenCode's permission system provides security isolation is contradicted by its own SECURITY.md: 'The permission system exists as a UX feature... it is not designed to provide security isolation', and 'OpenCode does not sandbox the agent'.",
+    "If the prose cites the repo as sst/opencode, note it now redirects to anomalyco/opencode (GitHub API repository 975734319).",
+    "If the prose cites a specific star count, update it: 202,893 stars as of 2026-09-01 (GitHub API), with latest release v1.18.25 on 2026-08-28.",
+    "Any claim that OpenCode lacks headless/JSON automation is contradicted: `opencode run --format json`, `opencode serve` with an OpenAPI 3.1 spec and SSE event stream, and the typed @opencode-ai/sdk npm package all exist; only exit codes are undocumented."
+   ]
+  },
+  {
+   "harness": "OpenHands",
+   "cells": [
+    {
+     "dimension": "context management (compaction/caching/footprint)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "https://docs.openhands.dev/sdk/guides/context-condenser.md documents LLMSummarizingCondenser (max_size, keep_first, 'Up to 2x reduction in per-turn API costs') and https://docs.openhands.dev/sdk/arch/condenser.md documents NoOpCondenser/PipelineCondenser and View mechanics \u2014 but neither page states the condenser is enabled by default (it is 'presented as an optional feature to configure'), and the condenser arch page contains no information on prompt-caching integration (metrics.md only tracks cache_read/write tokens). Engineered and documented, but config-dependent \u2192 partial per rubric."
+    },
+    {
+     "dimension": "cost enforcement (accounting vs hard per-run limits)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "https://docs.openhands.dev/sdk/guides/metrics.md documents rich accounting (accumulated_cost, prompt/completion/cache/reasoning tokens, per-usage_id via conversation.conversation_stats) but 'does not mention hard budget limits... No max_budget_per_task or similar enforcement'. https://docs.openhands.dev/openhands/usage/cli/command-reference.md: 'No flags or commands related to budget or cost limits are documented', and no iteration-limit flags. Hard caps exist only in Cloud (https://docs.openhands.dev/openhands/usage/cloud/organizations/budgets.md: monthly org cap that blocks new conversations, lifetime per-user budgets) \u2014 cloud-only and monthly, not per-run. Accounting strong, per-run enforcement absent \u2192 partial."
+    },
+    {
+     "dimension": "tools & extensibility (MCP, plugins, skills)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "https://docs.openhands.dev/sdk/guides/mcp.md: stdio and HTTP MCP servers, automated OAuth flows (FastMCP token cache, auto-refresh), regex-based selective tool filtering. https://docs.openhands.dev/llms.txt lists a full skills subsystem (overview/skills: adding, creating, repo, public, keyword-trigger, path-trigger, org skills) plus sdk/guides/skill.md; SDK README (github.com/OpenHands/software-agent-sdk) documents AgentContext(load_public_skills=True) auto-recognizing uv.lock/deno.json and a 'composable architecture' with customizable tools."
+    },
+    {
+     "dimension": "sub-agents / orchestration",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "https://docs.openhands.dev/sdk/guides/task-tool-set.md: TaskToolSet lets a parent agent delegate to registered sub-agent types (register_agent() factories; prompt/subagent_type/resume params; resumed tasks reload full conversation history; runnable example shipped) \u2014 but 'execution is synchronous\u2014the parent blocks until the sub-agent finishes'; no parallel fan-out or background sub-agent orchestration is documented. Shipped delegation with a real orchestration gap \u2192 partial stands."
+    },
+    {
+     "dimension": "approvals & permission control",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "https://docs.openhands.dev/sdk/guides/security.md + /sdk/arch/security.md: confirmation policies (AlwaysConfirm/NeverConfirm/ConfirmRisky; default ConfirmRisky with HIGH threshold and confirm_unknown=True), four security analyzers (LLM, Pattern, PolicyRail, Ensemble), custom Jinja2 security policies; CLI exposes --llm-approve and /confirm. Real gaps keep it partial: https://docs.openhands.dev/openhands/usage/cli/headless.md \u2014 'Headless mode always runs in always-approve mode. The agent will execute all actions without any confirmation' (--llm-approve unavailable); MEDIUM-risk actions auto-execute under the default policy; no per-tool/per-command allow/deny rule system is documented."
+    },
+    {
+     "dimension": "isolation & sandboxing (OS/container level)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "https://docs.openhands.dev/openhands/usage/sandboxes/docker: Docker sandbox is the default/recommended provider \u2014 'runs the agent server inside a Docker container' for 'Isolation: reduces risk when the agent runs commands', with SANDBOX_VOLUMES host:container[:mode] mount control. llms.txt shows additional shipped options: Apptainer sandbox, API sandbox, local server, remote sandboxes, custom sandbox images, docker-in-sandbox; SDK README lists ephemeral Docker/Kubernetes environments via the Agent Server."
+    },
+    {
+     "dimension": "session durability (resume, crash honesty, locking)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "https://docs.openhands.dev/sdk/guides/convo-persistence.md: automatic persistence (base_state.json + sequential events/event-*.json, auto-serialization via custom __setattr__), resume by re-instantiating with the same conversation_id/persistence_dir; CLI has --resume [ID] and --last (command-reference.md); pause/resume and fork guides exist. But 'The documentation does not explicitly address locking mechanisms or concurrency protections' and gives 'no explicit warnings about concurrent access... or data consistency guarantees under failure scenarios' \u2014 locking/crash honesty unverified \u2192 partial stands."
+    },
+    {
+     "dimension": "automation contract (headless/JSON/SDK/exit codes)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "https://docs.openhands.dev/openhands/usage/cli/headless.md: openhands --headless -t/-f with --json JSONL event streaming for CI/CD; https://docs.openhands.dev/openhands/usage/cli/command-reference.md documents exit codes 0 (success), 1 (error/task failed), 2 (invalid args); SDK README: Python, TypeScript, and REST API surfaces, remote agent-server (WebSocket) mode, and examples/03_github_workflows for CI integration. All four contract elements documented and shipped."
+    },
+    {
+     "dimension": "provider/model breadth",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "https://docs.openhands.dev/llms.txt lists dedicated provider docs: OpenAI, Azure, AWS Bedrock, Google, Groq, OpenRouter, Moonshot, local LLMs, LiteLLM proxy, custom LLM configs, plus SDK guides for llm-fallback, llm-routing, llm-registry, llm-streaming, llm-reasoning \u2014 broad multi-provider support with routing/fallback engineering."
+    },
+    {
+     "dimension": "benchmark evidence & transparency",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "https://openhands.dev/blog/sota-on-swe-bench-verified-with-inference-time-scaling-and-critic-model (linked from docs.openhands.dev/sdk/guides/critic.md) publishes SWE-Bench Verified 60.6% single-trajectory / 66.4% with critic, with methodology and critic model released on HuggingFace, plus technical report arxiv.org/abs/2603.03800; github.com/OpenHands/benchmarks is an open harness with 6 benchmarks (SWE-Bench, SWE-Bench Pro, GAIA, Commit0, OpenAgentSafety, ProgramBench) and reproduction instructions. Caveat noted: that repo is 'currently migrating' to V1 and hosts no results tables; current main README and website carry no benchmark numbers."
+    },
+    {
+     "dimension": "maturity & adoption",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "https://github.com/OpenHands/OpenHands: 85.8k stars, 11.2k forks, 485 watchers, MIT license, latest release v1.16.0 (though badged 'beta'); SDK repo has 2,253 commits, 1.0k stars, 473 forks, MIT, and active Slack/GitHub communities."
+    }
+   ],
+   "corrections": [
+    "Any claim that OpenHands enforces a hard per-run budget (e.g. max_budget_per_task) in the current V1 CLI/SDK is contradicted: the CLI command reference documents no budget or iteration-limit flags, and the SDK metrics docs describe accounting only; hard spend caps exist solely as Cloud org/user budgets (monthly/lifetime, blocking new conversations), not per-run limits.",
+    "Any claim that OpenHands approvals apply in automated runs is contradicted for the CLI: 'Headless mode always runs in always-approve mode. The agent will execute all actions without any confirmation' and --llm-approve is unavailable there (docs.openhands.dev/openhands/usage/cli/headless.md).",
+    "Any claim that OpenHands has no approval system or defaults to unrestricted execution is contradicted: the SDK's default confirmation policy is ConfirmRisky (HIGH threshold, confirm_unknown=True) backed by LLM/Pattern/PolicyRail/Ensemble security analyzers (docs.openhands.dev/sdk/arch/security.md).",
+    "Any claim that OpenHands sub-agents run in parallel is contradicted: TaskToolSet delegation is synchronous \u2014 'the parent blocks until the sub-agent finishes' (docs.openhands.dev/sdk/guides/task-tool-set.md).",
+    "Any claim that OpenHands sandboxing is Docker-only is contradicted: docs also ship Apptainer, API/remote sandboxes, a local server mode, custom sandbox images, and Docker/Kubernetes environments via the Agent Server.",
+    "Any claim that the main OpenHands README publishes SWE-bench scores is contradicted: the current README (v1.16.0, 'developer control center' positioning) contains no benchmark numbers or paper citation; published scores (60.6%/66.4% SWE-Bench Verified) live on the openhands.dev blog and arxiv.org/abs/2603.03800.",
+    "Any claim that OpenHands lacks a headless exit-code contract is contradicted: the CLI documents exit codes 0 (success), 1 (error/task failed), 2 (invalid arguments) plus --json JSONL event streaming.",
+    "Any stars/adoption figure materially below 85.8k stars / 11.2k forks for github.com/OpenHands/OpenHands is out of date.",
+    "Any claim that the OpenHands condenser is enabled by default could not be verified: both the condenser guide and architecture docs present it as an optional configuration and never state default-on."
+   ]
+  },
+  {
+   "harness": "Aider",
+   "cells": [
+    {
+     "dimension": "context management (compaction/caching/footprint)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "https://aider.chat/docs/usage/caching.html and https://aider.chat/docs/config/options.html \u2014 engineered repo map (--map-tokens, --map-refresh) and auto-summarization (--max-chat-history-tokens 'soft limit on tokens for chat history, after which summarization begins'), but prompt caching is opt-in (--cache-prompts) and provider-limited ('Anthropic provides caching for Sonnet and Haiku, and DeepSeek provides caching for Chat'), and 'caching statistics and costs are not available when streaming responses'. Config-dependent with real gaps = partial."
+    },
+    {
+     "dimension": "cost enforcement (accounting vs hard per-run limits)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "https://aider.chat/docs/usage/commands.html (/tokens 'report on the number of tokens used by the current chat context') provides accounting, but https://aider.chat/docs/config/options.html has no max-cost/budget-cap flag of any kind, and cost stats break under streaming+caching (caching.html requires --no-stream to see costs). Accounting without hard limits = partial."
+    },
+    {
+     "dimension": "tools & extensibility (MCP, plugins, skills)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "MCP, plugins, and skills appear nowhere in https://aider.chat/docs/config/options.html, https://aider.chat/docs/faq.html, or https://aider.chat/HISTORY.html (checked all three). Aider does ship real tool integration: /run and /test shell commands (commands.html), configurable lint/test commands, and an unofficial Python API \u2014 tools present, no extensibility mechanism = partial (borderline; a stricter read of 'MCP/plugins/skills' could argue absent)."
+    },
+    {
+     "dimension": "sub-agents / orchestration",
+     "currentGrade": "absent",
+     "verdict": "confirmed",
+     "proposedGrade": "absent",
+     "evidence": "https://aider.chat/docs/usage/modes.html \u2014 architect mode 'sends your requests to two models' in a sequential proposal-then-edit pipeline (architect model proposes, editor model applies); no sub-agents, task delegation, or parallel agents are documented anywhere. A two-model pipeline is not orchestration = absent."
+    },
+    {
+     "dimension": "approvals & permission control",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "https://aider.chat/docs/config/options.html \u2014 confirmations exist and are controllable via --yes-always ('always say yes to every confirmation') and --suggest-shell-commands (default True), but control is binary all-or-nothing; no granular permission policies, per-command allowlists, or approval scopes are documented = partial."
+    },
+    {
+     "dimension": "isolation & sandboxing (OS/container level)",
+     "currentGrade": "absent",
+     "verdict": "confirmed",
+     "proposedGrade": "absent",
+     "evidence": "No sandbox flags exist in https://aider.chat/docs/config/options.html; the docker page (docs/install/docker.html) is an install method only. Aider's own benchmark README (https://github.com/Aider-AI/aider/tree/main/benchmark) mandates docker because 'the benchmarking harness will be taking code written by an LLM and executing it without any human review' \u2014 an implicit admission the tool itself provides no sandbox = absent."
+    },
+    {
+     "dimension": "session durability (resume, crash honesty, locking)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "https://aider.chat/docs/config/options.html \u2014 --restore-chat-history ('restore the previous chat history messages, default: False') plus .aider.chat.history.md; commands.html /save 'save commands to a file that can reconstruct the current chat session's files' and /load. Resume is opt-in and file-list-only for /save; no locking or crash-recovery semantics documented anywhere = partial."
+    },
+    {
+     "dimension": "automation contract (headless/JSON/SDK/exit codes)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "https://aider.chat/docs/scripting.html \u2014 headless one-shot via --message ('process reply then exit') with --yes, --dry-run, --commit; but the Python API 'is not officially supported or documented, and could change in future releases without providing backwards compatibility', and no JSON output mode or documented exit codes exist = partial."
+    },
+    {
+     "dimension": "provider/model breadth",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "https://aider.chat/docs/ lists 16 dedicated provider pages (OpenAI, Anthropic, Gemini, Azure, Bedrock, Vertex, Ollama, OpenRouter, GitHub Copilot, DeepSeek, xAI, Cohere, GROQ, LM Studio, etc.) plus OpenAI-compatible and 'Other LLMs'; releases continuously added new models (GPT-5, Gemini 2.5, Claude 4.x per HISTORY.html). Engineered, documented, shipped = strong."
+    },
+    {
+     "dimension": "benchmark evidence & transparency",
+     "currentGrade": "partial",
+     "verdict": "revise",
+     "proposedGrade": "strong",
+     "evidence": "https://aider.chat/docs/leaderboards/ \u2014 polyglot benchmark of '225 challenging Exercism coding exercises across C++, Go, Java, JavaScript, Python, and Rust', per-run costs published (e.g. GPT-5 high $29.08), 60+ models; https://github.com/Aider-AI/aider/tree/main/benchmark \u2014 open-source harness with documented reproduction ('the model, edit_format and commit_hash should be enough to reliably reproduce any benchmark run') and community submissions via PR. This exceeds the transparency of nearly every competitor = strong (caveat: newest leaderboard entries are Aug 25, 2025, ~1 year stale)."
+    },
+    {
+     "dimension": "maturity & adoption",
+     "currentGrade": "strong",
+     "verdict": "revise",
+     "proposedGrade": "partial",
+     "evidence": "https://github.com/Aider-AI/aider \u2014 adoption is real (48.6k stars, 4.9k forks, 13k commits, Apache-2.0), but maintenance has stalled: last tagged release is v0.86.x from Aug 2025 (releases page: v0.86.0 '09 Aug', ~13 months before today), latest commit on main is May 22, 2026 (~3 months old, mostly model-list updates), with 1.4k open issues and 483 open PRs. Widely adopted but no longer actively released = partial."
+    }
+   ],
+   "corrections": [
+    "Any claim that Aider's benchmark evidence is self-reported or opaque is contradicted: the polyglot harness is open source in the repo, reproducible ('model, edit_format and commit_hash should be enough to reliably reproduce any benchmark run'), publishes per-run costs, and accepts community results via PR.",
+    "Any claim that Aider is 'actively maintained' or has a frequent release cadence is contradicted: the last tagged release (v0.86.x) is Aug 2025, ~13 months before today, and the latest main-branch commit is May 22, 2026.",
+    "Any claim that Aider's leaderboard is current is contradicted: its newest entries are dated Aug 25, 2025, roughly a year stale.",
+    "Any claim that Aider supports MCP is contradicted: MCP appears nowhere in the CLI options reference, FAQ, or full release history.",
+    "Any characterization of architect mode as sub-agent orchestration is contradicted: docs describe a sequential two-model pipeline (architect proposes, editor model applies edits), with no delegation or parallel agents.",
+    "Any claim that Aider's cost figures are always reliable is contradicted: caching docs state 'caching statistics and costs are not available when streaming responses' (requires --no-stream)."
+   ]
+  },
+  {
+   "harness": "pi-mono (badlogic/pi-mono, now earendil-works/pi)",
+   "cells": [
+    {
+     "dimension": "context management (compaction/caching/footprint)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "docs/compaction.md: automatic compaction triggers when 'contextTokens > contextWindow - reserveTokens' with configurable compaction.enabled/reserveTokens (16384)/keepRecentTokens (20000) settings, split-turn dual-summary merging, iterative summaries passed as context, and cache-aware behavior (compaction requests 'use fresh routing session IDs and ... disable prompt-cache writes'); docs/settings.md adds branchSummary settings and showCacheMissNotices. Engineered, documented, shipped."
+    },
+    {
+     "dimension": "cost enforcement (accounting vs hard per-run limits)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "docs/usage.md: footer shows 'token/cache usage, cost, context usage' and /session shows 'messages, tokens, and cost'; docs/json.md exposes a cumulative usage field. But no max-spend, max-turns, or max-tokens caps exist anywhere: docs/settings.md has no budget keys and docs/index.md confirms no cost-budget page. Accounting yes, hard per-run enforcement no."
+    },
+    {
+     "dimension": "tools & extensibility (MCP, plugins, skills)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "docs/extensions.md: pi.registerTool(), event interception ('Block or modify tool calls, inject context, customize compaction'), custom commands, TUI rendering; docs/packages.md: installable packages from npm/git with a gallery at pi.dev/packages; skills and prompt templates documented. MCP is not mentioned anywhere in extensions.md or the docs index \u2014 a real interop gap, so partial rather than strong despite the deep native plugin system."
+    },
+    {
+     "dimension": "sub-agents / orchestration",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "sdk.md mentions 'custom tools that spawn sub-agents' as a use case only; the docs index has no subagents page. GitHub API listing of packages/coding-agent/examples/extensions shows an official subagent/ example extension (index.ts ~35.7KB, agents.ts, README.md) \u2014 shipped as an example extension, not core orchestration with accounting or built-in delegation."
+    },
+    {
+     "dimension": "approvals & permission control",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "docs/security.md: no per-tool confirmation prompts by default \u2014 'trust decisions gate resource loading, not tool execution'; docs/containerization.md: 'Pi runs with all permissions by default'. Gating exists only via the extension tool_call event ('return { block: true, reason: ... }' per docs/extensions.md) and the shipped permission-gate.ts example, plus defaultProjectTrust ('ask'/'always'/'never') for loading project resources. Present but extension/config-dependent."
+    },
+    {
+     "dimension": "isolation & sandboxing (OS/container level)",
+     "currentGrade": "absent",
+     "verdict": "revise",
+     "proposedGrade": "partial",
+     "evidence": "docs/containerization.md documents three supported isolation patterns \u2014 Gondolin local Linux micro-VM routing built-in tools through /workspace (needs QEMU + Node 23.6+), plain Docker (caveat 'Provider API keys enter the container'), and OpenShell policy-controlled sandbox (filesystem/process/network/credential controls) \u2014 and the repo ships gondolin/ and sandbox/ example extensions. docs/security.md still states 'Pi does not include a built-in sandbox', so this is config-dependent (partial), not absent: the rubric's 'absent = not offered' no longer fits."
+    },
+    {
+     "dimension": "session durability (resume, crash honesty, locking)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "docs/sessions.md: JSONL sessions in ~/.pi/agent/sessions/ with -c, -r, --session, --fork, /tree, /clone; docs/session-format.md: versioned format (v1\u2192v3) with auto-migration. But session-format.md and sessions.md contain no crash recovery, locking, partial-write handling, atomicity, or integrity guarantees. Rich resume/branch, no durability engineering documented."
+    },
+    {
+     "dimension": "automation contract (headless/JSON/SDK/exit codes)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "Three engineered, documented surfaces: docs/json.md 'pi --mode json' JSONL event stream with versioned session header ({\"type\":\"session\",\"version\":3,...}) and delta-only message_update events; docs/rpc.md JSON-RPC subprocess mode (pi --mode rpc --no-session); sdk.md createAgentSession()/SessionManager programmatic API. One gap: semantic exit codes are not documented anywhere \u2014 worth a footnote but does not defeat 'strong'."
+    },
+    {
+     "dimension": "provider/model breadth",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "docs/providers.md: 30+ API-key providers (Anthropic, OpenAI, Azure OpenAI, Gemini, Bedrock, Vertex AI, DeepSeek, Groq, Mistral, Cerebras, Fireworks, Together, MiniMax, Kimi, ZAI...), OAuth subscription auth (ChatGPT Plus/Pro, Claude Pro/Max, GitHub Copilot, xAI, OpenRouter), OpenAI-compatible custom endpoints (Ollama, LM Studio, vLLM) via models.json, and dedicated llama.cpp support with /llama commands."
+    },
+    {
+     "dimension": "benchmark evidence & transparency",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "github.com/badlogic/pi-mono README: 'No explicit benchmarks, evaluations, or adoption numbers are cited'; docs index has no benchmarks/evals page \u2014 zero published benchmark evidence. Transparency artifacts do exist: MIT open source and a public session-sharing pipeline (pi-share-hf publishing real work sessions to a Hugging Face dataset, 'Public OSS session data helps improve coding agents'). Partial holds only on the transparency half; the benchmark half is empty."
+    },
+    {
+     "dimension": "maturity & adoption",
+     "currentGrade": "partial",
+     "verdict": "revise",
+     "proposedGrade": "strong",
+     "evidence": "GitHub API and repo page (both fetched 2026-09-01) for the transferred repo earendil-works/pi: 100,103 stars, 12,433 forks, created 2025-08-09, pushed 2026-09-01, MIT; npm-published packages (@earendil-works/pi-coding-agent etc.), pi.dev docs portal and package gallery, Discord community, and README-documented supply-chain hardening (pinned direct deps, shrinkwrap, minimum release age, pre-release npm and Bun smoke tests). This is top-tier adoption and release engineering, not 'partial'."
+    }
+   ],
+   "corrections": [
+    "The matrix grades pi-mono isolation as absent (\u25cb): contradicted by packages/coding-agent/docs/containerization.md, which documents three supported isolation patterns (Gondolin micro-VM, Docker, OpenShell policy sandbox) with shipped gondolin/ and sandbox/ example extensions \u2014 the prose should say 'no built-in OS sandbox; documented opt-in micro-VM/container/OpenShell routes', grade partial.",
+    "The matrix grades pi-mono maturity/adoption as partial (\u25d0): the repo (transferred to earendil-works/pi) shows 100.1k stars, 12.4k forks, daily pushes as of 2026-09-01, npm-published packages, and documented supply-chain hardening \u2014 any prose implying modest adoption or an experimental project is contradicted.",
+    "Any prose citing the project as 'badlogic/pi-mono' as its current home is stale: GitHub now redirects to earendil-works/pi (description 'AI agent toolkit: unified LLM API, agent loop, TUI, coding agent CLI'); references and links should note the transfer.",
+    "The prose claim 'No cost enforcement' for pi-mono is accurate for hard limits but should not be read as no cost visibility: docs/usage.md documents per-session cost display in the footer and /session; phrase as 'accounting only, no hard per-run caps'.",
+    "If any prose states pi-mono has no sub-agent support at all: the repo ships an official subagent example extension (examples/extensions/subagent/, ~35KB implementation) \u2014 support exists at extension level, though there is no core orchestration or docs page."
+   ]
+  },
+  {
+   "harness": "Exo",
+   "cells": [
+    {
+     "dimension": "context management (compaction/caching/footprint)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "Clone @0a929fe: exoharness/docs/spec.md says 'Compaction itself does not need to exist as a first-class exoharness concept' (executor policy, not shipped); shipped footprint mechanisms are real \u2014 large tool results compacted to previews with full output offloaded to artifacts (exoharness/docs/design/architecture.md:242, docs/tools.md:134) and a memory tool with a fixed cap \u2014 but provider prompt caching is plumbed and never enabled (cache_control: None at crates/executor/src/harness_runtime.rs:726 and adapter/runtime.rs:829) and no conversation summarization/auto-compaction exists in the shipped executor."
+    },
+    {
+     "dimension": "cost enforcement (accounting vs hard per-run limits)",
+     "currentGrade": "absent",
+     "verdict": "revise",
+     "proposedGrade": "partial",
+     "evidence": "Clone @0a929fe: accounting IS engineered and shipped \u2014 crates/cost/src/table.rs computes USD per call ('compute_cost_usd') from LiteLLM's model_prices_and_context_window.json (loader with cache/TTL), and cached-token usage is tracked in crates/executor/src/basic.rs; enforcement remains absent (max_tool_round_trips: None at crates/executor/src/agent_sandbox.rs:204; no spend/token/wall-clock ceiling anywhere). If the cell grades only hard limits, 'absent' stands; since the dimension parenthetical includes accounting, accounting-only = partial."
+    },
+    {
+     "dimension": "tools & extensibility (MCP, plugins, skills)",
+     "currentGrade": "strong",
+     "verdict": "revise",
+     "proposedGrade": "partial",
+     "evidence": "Clone @0a929fe: no MCP client exists \u2014 zero imports of @modelcontextprotocol anywhere (only a transitive pnpm-lock entry); MCP appears only as a binding config type (exoharness/typescript/harness/index.ts:59, type 'env'|'mcp'|'llm') and as a design-doc roadmap line 'support MCP and native tools' (exoharness/docs/design/local-sandbox.md:427). No plugin or skills system. Tool registry + runtime tool creation (opt-in enableAgentToolCreation) + adapters (IRC/Discord/Slack/WhatsApp/Signal/email) are real, so partial, not strong."
+    },
+    {
+     "dimension": "sub-agents / orchestration",
+     "currentGrade": "strong",
+     "verdict": "revise",
+     "proposedGrade": "partial",
+     "evidence": "Clone @0a929fe: conversation fork() is shipped (exoharness/typescript/harness/runner.ts:1423, THREAD_FORKED event in crates/executor/src/conversation_events.rs:42), but docs/SELF-CONTROL.md says of agent cloning/reproduction 'Nothing implements this today', and README.md:252-257 lists 'High-level multi-agent orchestration' (when to clone, how children report, lineage stop) as an open early-stage work area. Primitive shipped, orchestration not \u2014 partial."
+    },
+    {
+     "dimension": "approvals & permission control",
+     "currentGrade": "partial",
+     "verdict": "revise",
+     "proposedGrade": "absent",
+     "evidence": "Clone @0a929fe: rg 'approv|permission' over crates/cli/src and crates/executor/src returns zero hits \u2014 no approval flow, permission modes, or allowlists exist in Exo's own executor/CLI; exoharness/docs/spec.md assigns 'approvals UX' to executors but none is shipped, and the codex-harness example auto-accepts sandbox approval requests ('{ decision: \"accept\" }', exoharness/examples/typescript/codex-harness.ts:608). Only a single enableAgentToolCreation opt-in flag and the adapter never-auto-post convention exist; permissioning is delegated to sandbox isolation by design."
+    },
+    {
+     "dimension": "isolation & sandboxing (OS/container level)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "Clone @0a929fe: crates/exoharness/src/sandbox_provider/ ships docker, firecracker (with fsync'd image handling, flock-based claim/lease files, a fuzz target), firecracker_lima, daytona, e2b, sprites, vercel, aws_agentcore, and smolvm \u2014 now more providers than the study's seven \u2014 plus snapshot/rewind ('rewind_sandbox') documented in SELF-CONTROL.md. Caveat for prose: local quickstart bind-mounts the repo (incl. .exo) rw into the sandbox (exo.sh:647)."
+    },
+    {
+     "dimension": "session durability (resume, crash honesty, locking)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "Clone @0a929fe: resume is engineered (canonical state outside the sandbox, reconnect via CLI/ExoChat across restarts, drain-marker restarts with journaled outcomes), but the event/conversation store is not crash-durable \u2014 sync_all appears only in secrets.rs and firecracker code, never in the storage path, and flock only in firecracker.rs; docs/SELF-CONTROL.md self-admits scheduler/REPL host events are missing from the log."
+    },
+    {
+     "dimension": "automation contract (headless/JSON/SDK/exit codes)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "Clone @0a929fe: pieces exist \u2014 CLI 'one-shot sends' (crates/cli/src/main.rs:568) with non-interactive stdin/stdout handling (main.rs:1339) and some JSON output (serde_json::to_string_pretty, main.rs:2287), a typed TypeScript harness client, an HTTP API, and an agent-cli adapter \u2014 but no documented headless/JSON/exit-code contract, no published SDK package (no releases), and the HTTP server has no auth check (rg 'bearer|authoriz' in crates/exoharness/src/http/server.rs: no hits)."
+    },
+    {
+     "dimension": "provider/model breadth",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "Clone @0a929fe: exoharness/typescript/model-runtime/responses.ts routes native Anthropic Messages API (via @anthropic-ai/sdk, isAnthropicModel at :292), OpenAI Responses API, OpenRouter (OpenAI-compatible chat completions, :295-297), and custom baseURL/OPENAI_BASE_URL endpoints; .env.example lists OPENAI/OPENROUTER/ANTHROPIC keys; per-agent and per-conversation 'llm' bindings are a first-class concept (spec.md). OpenRouter + base-URL override gives wide effective model breadth; no native Bedrock/Vertex/Gemini."
+    },
+    {
+     "dimension": "benchmark evidence & transparency",
+     "currentGrade": "absent",
+     "verdict": "confirmed",
+     "proposedGrade": "absent",
+     "evidence": "Clone @0a929fe + GitHub README: rg for 'benchmark|swe-bench|terminal-bench' across README.md, docs/, and website/docs-src returns nothing; no releases exist (api.github.com/repos/exoharness/exo/releases: empty); Braintrust tracing integration exists in code but no published eval results. The 'Discord 96%' story is secondary-source anecdote only."
+    },
+    {
+     "dimension": "maturity & adoption",
+     "currentGrade": "absent",
+     "verdict": "confirmed",
+     "proposedGrade": "absent",
+     "evidence": "api.github.com/repos/exoharness/exo: created 2026-05-20 (~3.5 months old), 909 stars, 79 forks, 8 watchers, 84 open issues; zero releases, workspace version 0.1.0 (Cargo.toml:16, package.json:3), and README.md:239 says Exo 'is still in the early stages of development'. Star buzz without releases or documented production use does not clear the partial bar."
+    }
+   ],
+   "corrections": [
+    "Any claim that Exo ships MCP support: the repo has no MCP client \u2014 no @modelcontextprotocol import anywhere; MCP exists only as a binding config type (harness/index.ts:59) and a design-doc roadmap item ('support MCP and native tools', exoharness/docs/design/local-sandbox.md:427).",
+    "Any claim of strong/working sub-agent orchestration: docs/SELF-CONTROL.md states of agent cloning/reproduction 'Nothing implements this today', and README lists multi-agent orchestration among early-stage open work areas; only conversation fork() is shipped.",
+    "Any claim that Exo has no cost accounting at all: crates/cost/src/table.rs ships compute_cost_usd against LiteLLM's public pricing DB and cached-token usage is recorded \u2014 cost is measured (accounting shipped); only enforcement/budgets are absent.",
+    "Any claim that Exo supports only OpenAI and OpenRouter: .env.example includes ANTHROPIC_API_KEY and the model runtime natively routes Anthropic's Messages API (responses.ts:292-293).",
+    "Any claim of an approval or permission-gating flow: no approval/permission code exists in the executor or CLI, and the codex-harness example auto-accepts sandbox approval requests (codex-harness.ts:608).",
+    "Study line-number pins drifted at current HEAD 0a929fe: 'max_tool_round_trips: None' is now agent_sandbox.rs:204 (was :203) and default_value \".exo\" is now cli/src/main.rs:76 (was :75); exo.sh:647 is unchanged. The sandbox provider matrix now also includes smolvm (an eighth provider), so 'seven-provider matrix' undercounts."
+   ]
+  },
+  {
+   "harness": "terminus-2",
+   "cells": [
+    {
+     "dimension": "context management (compaction/caching/footprint)",
+     "currentGrade": "partial",
+     "verdict": "revise",
+     "proposedGrade": "strong",
+     "evidence": "docs/content/docs/agents/terminus-2.mdx documents both proactive summarization (pauses when free tokens < configurable 8000 threshold, 3-step summary/question/answer subagent process) and passive summarization (4-level fallback on ContextLengthExceededError); harbor source src/harbor/llms/utils.py implements add_anthropic_caching managing Anthropic cache_control breakpoints (max 4, newest-first) applied on every request in src/harbor/llms/lite_llm.py:300, with cache-token accounting in src/harbor/llms/chat.py. Compaction+caching+footprint are all engineered, documented, shipped."
+    },
+    {
+     "dimension": "cost enforcement (accounting vs hard per-run limits)",
+     "currentGrade": "absent",
+     "verdict": "revise",
+     "proposedGrade": "partial",
+     "evidence": "Accounting is real: terminus_2.py tracks per-step cost_usd, cumulative chat.total_cost plus subagent costs (lines 1281-1651), cache tokens, and terminus-2.mdx documents LiteLLM model_info registration (input_cost_per_token/output_cost_per_token) 'for metrics tracking'; harbor job results aggregate 'cost in USD' (docs/content/docs/usage-stats.mdx). But no hard per-run cost cap exists anywhere in src/harbor (rg for max_cost/cost_limit/budget finds none for terminus-2); only max_turns (default 1,000,000) and wall-clock timeouts bound a run. Accounting without enforcement = partial."
+    },
+    {
+     "dimension": "tools & extensibility (MCP, plugins, skills)",
+     "currentGrade": "absent",
+     "verdict": "revise",
+     "proposedGrade": "partial",
+     "evidence": "harbor source contradicts 'absent': src/harbor/agents/terminus_2/terminus_2.py:1596-1604 injects configured MCP servers (stdio command or url transport) into the task instruction, and _build_skills_section (lines 426-459) discovers SKILL.md directories per the Agent Skills spec into an <available_skills> block; harbor --skill injects local/git skills into the sandbox with lockfile provenance (docs/content/docs/run-jobs/skills.mdx). Gaps keeping it partial: MCP is prompt-advertisement only (no client-side tool integration; the model must call servers itself from the tmux terminal), and the mono-tool design offers no custom-tool/plugin API \u2014 the terminus-2.mdx doc documents a single tmux tool."
+    },
+    {
+     "dimension": "sub-agents / orchestration",
+     "currentGrade": "absent",
+     "verdict": "confirmed",
+     "proposedGrade": "absent",
+     "evidence": "terminus-2.mdx and terminus_2.py show subagents exist only as internal summarization machinery (summary/question/answer subagents, SubagentMetrics, trajectory.summarization-N-*.json files); there is no user-facing sub-agent delegation or task orchestration \u2014 the agent cannot spawn workers, and AgentCapabilities in terminus_2.py:82 declares only atif=True. Parallelism in Harbor is trial-level eval fan-out, not in-task orchestration."
+    },
+    {
+     "dimension": "approvals & permission control",
+     "currentGrade": "absent",
+     "verdict": "confirmed",
+     "proposedGrade": "absent",
+     "evidence": "terminus-2.mdx: 'Will never ask for user input during task execution' and 'Currently recommended only for sandboxed environments due to full autonomy'; rg over src/harbor/agents/terminus_2/ finds no approval/permission mechanism (the only 'confirmation' is the agent's own task-completion double-check). Approvals are explicitly out of scope by design."
+    },
+    {
+     "dimension": "isolation & sandboxing (OS/container level)",
+     "currentGrade": "partial",
+     "verdict": "revise",
+     "proposedGrade": "strong",
+     "evidence": "terminus-2.mdx: agent logic runs in a separate Python process from the Docker container ('Dockerized execution environments for safety and isolation'); every trial executes in a container \u2014 local Docker by default or ~17 documented cloud sandbox providers (Daytona, Modal, E2B, EC2, etc., docs/content/docs/run-jobs/cloud-sandboxes.mdx), with per-task network modes and tamper-resistant sidecar evidence collection (main container stopped before sidecar evidence is pulled, results-and-artifacts.mdx). Container-level isolation is the mandatory, shipped execution model, not an option."
+    },
+    {
+     "dimension": "session durability (resume, crash honesty, locking)",
+     "currentGrade": "absent",
+     "verdict": "revise",
+     "proposedGrade": "partial",
+     "evidence": "Job-level durability is shipped: `harbor jobs resume` CLI (src/harbor/cli/jobs.py:2040) resumes interrupted jobs with error-type filtering and reconciliation, usage-stats.mdx records 'whether the job is a resumed job', and jobs carry a lock file recording provenance (skills.mdx). But the Terminus-2 agent session itself is not durable: AgentCapabilities in terminus_2.py:82 declares resume=False, load_native_trajectory=False, handoff=False (handoff.mdx: 'today that is claude-code'), so a crashed trial's conversation cannot be resumed \u2014 hence partial, not absent."
+    },
+    {
+     "dimension": "automation contract (headless/JSON/SDK/exit codes)",
+     "currentGrade": "partial",
+     "verdict": "revise",
+     "proposedGrade": "strong",
+     "evidence": "Terminus-2 is headless-only (never asks for input) and driven via `harbor run` CLI or the documented Python SDK (AgentConfig/Terminus2 class in terminus-2.mdx; Job.create(...).run() 'programmatic' launch source in usage-stats.mdx); every run emits machine-readable JSON: job/trial config.json and result.json, trajectory.json in the specified ATIF interchange format, artifact manifest.json (run-evals.mdx, results-and-artifacts.mdx), and CLI exit codes are first-class (telemetry records exit code per command). The automation surface is the product's only interface \u2014 engineered, documented, shipped."
+    },
+    {
+     "dimension": "provider/model breadth",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "terminus-2.mdx: model routing via LiteLLM (any LiteLLM provider), custom api_base for self-hosted vLLM servers, Anthropic extended thinking (max_thinking_tokens), OpenAI-style reasoning_effort ('none' through 'max'), and custom model registration via model_info for uncommon models; source adds a Tinker backend (src/harbor/llms/tinker.py). TB 2.1 results show it running GPT, Gemini, and Claude models."
+    },
+    {
+     "dimension": "benchmark evidence & transparency",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "tbench.ai/news/terminal-bench-2-1 publishes Terminus 2 scores across 7 models (e.g. Gemini 3.1 Pro 70.7%, GPT-5.3-Codex 68.5%, Opus 4.6 63.8%, Sonnet 4.6 51.5%, GPT-5.4 mini 36.9%) alongside competing harnesses; tbench.ai leaderboard reports resolution rate with 95% CIs, cost, and tokens, tasks/jobs are on Harbor Hub, and the benchmark ships a training-data canary GUID. Caveat worth a footnote: the current TB 4.0 homepage leaderboard preview shows only Claude Code/Codex/Grok rows, not Terminus-2."
+    },
+    {
+     "dimension": "maturity & adoption",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "terminus-2.mdx calls it 'a research-preview agent'; Harbor is v0.16.1 (README citation), repo created 2025-08-04 with 4,827 stars/1,695 forks/791 open issues (GitHub API, 2026-09-01), Apache-2.0, backed by Stanford/Laude Institute. Widely used as a benchmark reference agent but pre-1.0 and not positioned as a production coding assistant."
+    }
+   ],
+   "corrections": [
+    "Any claim that Terminus-2 has 'no MCP support' is contradicted by source: src/harbor/agents/terminus_2/terminus_2.py:1596-1604 advertises configured MCP servers (stdio/url) to the agent, and MCP servers are a first-class field on the agent base class (src/harbor/agents/base.py:132). If our prose relied on the terminus-2.mdx page (which omits MCP), it should say 'prompt-level MCP advertisement, no client-side integration' rather than 'no MCP'.",
+    "Any claim of 'no skills or context-injection mechanism' is contradicted: terminus_2.py implements Agent Skills spec discovery (_build_skills_section, SKILL.md frontmatter parsing) and Harbor's --skill flag injects local/git skills into the sandbox with SHA-256/commit provenance in the job lock file (docs/content/docs/run-jobs/skills.mdx).",
+    "Any claim of 'no cost accounting' or 'no token/cost visibility' is wrong: per-step cost_usd, cache-token, and aggregate USD cost accounting are implemented (terminus_2.py, src/harbor/llms/chat.py) and cost/tokens are published on the Terminal-Bench leaderboard.",
+    "Any claim of 'no prompt caching' is contradicted by src/harbor/llms/utils.py add_anthropic_caching (Anthropic cache_control breakpoint management, applied in lite_llm.py:300) \u2014 though it is Anthropic-only.",
+    "Any blanket claim of 'no resume of any kind' overstates: `harbor jobs resume` (src/harbor/cli/jobs.py:2040) resumes interrupted eval jobs; what is absent is agent-session resume (AgentCapabilities resume=False, handoff supported only for claude-code per handoff.mdx).",
+    "If prose says Terminus-2 'has no turn limits', correct it: max_turns is configurable with default 1,000,000 (terminus-2.mdx).",
+    "If prose cites Terminus-2 results on the current Terminal-Bench 4.0 leaderboard, hedge it: the TB 4.0 homepage table currently shows Claude Code/Codex/Grok entries; published Terminus 2 multi-model scores come from the TB 2.1 announcement (tbench.ai/news/terminal-bench-2-1)."
+   ]
+  },
+  {
+   "harness": "mini-swe-agent",
+   "cells": [
+    {
+     "dimension": "context management (compaction/caching/footprint)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "README (raw.githubusercontent.com/SWE-agent/mini-swe-agent/main/README.md): deliberately 'completely linear history' with every step appended, no compaction or cache management; but src/minisweagent/config/mini.yaml ships a footprint control: observations over 10,000 chars are truncated to 5,000-char head + 5,000-char tail with an elision notice. Partial fits: one real shipped mechanism, no compaction/caching."
+    },
+    {
+     "dimension": "cost enforcement (accounting vs hard per-run limits)",
+     "currentGrade": "absent",
+     "verdict": "revise",
+     "proposedGrade": "strong",
+     "evidence": "src/minisweagent/agents/default.py: AgentConfig has step_limit, cost_limit (default $3.00), wall_time_limit_seconds, enforced before each model call by raising LimitsExceeded/TimeExceeded; mini.yaml sets cost_limit: 3.0 by default; CLI docs (mini-swe-agent.com/latest/usage/mini/) document -l/--cost-limit. Hard per-run limits are engineered, documented, shipped, and on by default."
+    },
+    {
+     "dimension": "tools & extensibility (MCP, plugins, skills)",
+     "currentGrade": "absent",
+     "verdict": "confirmed",
+     "proposedGrade": "absent",
+     "evidence": "README: 'Does not have any tools other than bash' and 'doesn't even need to use the tool-calling interface of the LMs'; no MCP, plugin, or skill system appears in README, FAQ, or docs. (Only extension point is swapping Python classes via --agent-class/--environment-class/--model-class, which is not a plugin/MCP system.)"
+    },
+    {
+     "dimension": "sub-agents / orchestration",
+     "currentGrade": "absent",
+     "verdict": "confirmed",
+     "proposedGrade": "absent",
+     "evidence": "No mention of sub-agents, delegation, or multi-agent orchestration anywhere in the README, FAQ (mini-swe-agent.com/latest/faq/), or agent source (default.py is a single linear loop)."
+    },
+    {
+     "dimension": "approvals & permission control",
+     "currentGrade": "absent",
+     "verdict": "revise",
+     "proposedGrade": "partial",
+     "evidence": "src/minisweagent/agents/interactive.py: confirm mode is the DEFAULT \u2014 every LM-proposed command requires user approval (Enter to run, typed comment to reject with reason); whitelist_actions regexes skip confirmation for matching commands; /y yolo and /u human modes switchable mid-run; CLI docs document -y/--yolo and the three modes. Partial, not strong: binary per-command confirm with regex allowlist only \u2014 no deny rules, path/network policies, or persistent permission store."
+    },
+    {
+     "dimension": "isolation & sandboxing (OS/container level)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "src/minisweagent/environments/ ships local.py (subprocess.run), docker.py (docker/podman), singularity.py (singularity/apptainer), extra/bubblewrap.py, extra/swerex_docker.py, extra/swerex_modal.py; README: 'trivial to execute the actions in sandboxes'. Real shipped container environments, but the default is unsandboxed local subprocess execution and sandboxing is config-dependent (--environment-class) \u2014 exactly the rubric's partial."
+    },
+    {
+     "dimension": "session durability (resume, crash honesty, locking)",
+     "currentGrade": "absent",
+     "verdict": "confirmed",
+     "proposedGrade": "absent",
+     "evidence": "CLI docs (mini-swe-agent.com/latest/usage/mini/): trajectories auto-save to JSON (-o) and history persists in the global config dir, but 'There's no mention of resuming prior sessions\u2014each run generates fresh output'; FAQ mentions no resume, locking, or crash recovery. Trajectory files are not session resume."
+    },
+    {
+     "dimension": "automation contract (headless/JSON/SDK/exit codes)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "README lists four interfaces: CLI, batch SWE-bench inference, trajectory inspector, and Python bindings; CLI docs show headless-friendly flags (-y yolo, -t task, -o JSON trajectory output, --exit-immediately). Gaps: no documented exit-code contract or structured event stream, and the 'SDK' is just importable Python classes \u2014 partial stands."
+    },
+    {
+     "dimension": "provider/model breadth",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "README: 'Supports all models via litellm, openrouter, portkey, and more. Support for /completion and /response endpoints, interleaved thinking etc.' \u2014 broad, engineered, documented provider support."
+    },
+    {
+     "dimension": "benchmark evidence & transparency",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "README: 'Scores >74% on the SWE-bench verified benchmark', 'beats Claude Code and Codex on DeepSWE'; the repo ships its own batch SWE-bench inference harness and is built by the Princeton/Stanford SWE-bench team, so results are reproducible from the same repo \u2014 strong confirmed."
+    },
+    {
+     "dimension": "maturity & adoption",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "github.com/SWE-agent/mini-swe-agent: 6.9k stars, 958 forks, MIT, v2 released (v1 branch retained); README: 'Used by Meta, NVIDIA, Essential AI, IBM, Nebius, Anyscale, Princeton University, Stanford University'. Real adoption, but a young (~2025), deliberately minimal research-oriented tool \u2014 partial is fair."
+    }
+   ],
+   "corrections": [
+    "Any claim that mini-swe-agent has no cost controls or budget limits is wrong: AgentConfig enforces a hard per-run cost_limit (default $3.00), step_limit, and wall_time_limit_seconds, raising LimitsExceeded/TimeExceeded before each model call, and the CLI exposes -l/--cost-limit (src/minisweagent/agents/default.py, config/mini.yaml, CLI docs).",
+    "Any claim that mini-swe-agent has no approval/permission mechanism or 'always auto-executes commands' is wrong: the interactive CLI's DEFAULT mode is confirm (user approves every LM command before execution), with a whitelist_actions regex allowlist and explicit -y/--yolo opt-out (src/minisweagent/agents/interactive.py, usage/mini docs).",
+    "Any claim that context grows completely unbounded with no mitigation should be softened: the default config truncates command observations over 10,000 characters to a 5,000-char head plus 5,000-char tail (config/mini.yaml); it is the history itself that is never compacted.",
+    "If prose says sandboxing is merely 'possible in principle': the repo ships concrete environment classes for docker/podman, singularity/apptainer, bubblewrap, and swerex/Modal (src/minisweagent/environments/), though local unsandboxed subprocess remains the default."
+   ]
+  },
+  {
+   "harness": "DeepSeek harness",
+   "cells": [
+    {
+     "dimension": "context management (compaction/caching/footprint)",
+     "currentGrade": "unverified",
+     "verdict": "revise",
+     "proposedGrade": "partial",
+     "evidence": "https://deepseek-harness.github.io/deepseek-harness/en/reference/subsystems/compaction documents a shipped compaction subsystem (dsh-compaction-basic) with pressure and provider-confirmed context-overflow triggers, manual compactNow(), and crash-safe lock bracketing via durable compaction/start-summary-end events; however compaction is described as 'an optional capability', its thresholds/retained-tail settings are not detailed, and no prompt-caching management is documented anywhere (the only cache found is dsh-session-projection-cache, a checkpoint cache, per the config catalog)."
+    },
+    {
+     "dimension": "cost enforcement (accounting vs hard per-run limits)",
+     "currentGrade": "unverified",
+     "verdict": "revise",
+     "proposedGrade": "partial",
+     "evidence": "https://deepseek-harness.github.io/deepseek-harness/en/reference/persistence-catalog shows token accounting is recorded ('assistant/message' and 'compaction/summary' events carry 'usage?: TokenUsage') but 'No budget limit events found'; the generated config catalog (en/reference/config-catalog) has no cost/spend/budget options \u2014 only non-monetary per-run caps like computeMs/maxWallMs/maxOutputBytes on the code-runtime worker. Accounting present, hard cost limits absent."
+    },
+    {
+     "dimension": "tools & extensibility (MCP, plugins, skills)",
+     "currentGrade": "partial",
+     "verdict": "revise",
+     "proposedGrade": "strong",
+     "evidence": "https://deepseek-harness.github.io/deepseek-harness/en/reference/config-catalog documents @deepseek-ai/dsh-mcp-client with stdio and streamable-http transports, timeouts, reconnection, and server namespacing; en/reference/subsystems/skills documents SKILL.md/flat-file skills with YAML frontmatter, six discovery roots (.dsh/skills, .agents/skills, user, bundled) and invocation policy; the README and landing page document an everything-is-a-plugin architecture with a community 'dsh-plugin' GitHub topic. MCP + plugins + skills are all shipped and documented."
+    },
+    {
+     "dimension": "sub-agents / orchestration",
+     "currentGrade": "unverified",
+     "verdict": "revise",
+     "proposedGrade": "strong",
+     "evidence": "https://deepseek-harness.github.io/deepseek-harness/en/reference/subsystems/subagent documents ctx.subagents.start() and startContinuable() (durable child sessions), multiple coexisting provider implementations (dsh-subagent-spawn-in-process, -fork, -acp, -codex, -claude-code, -dsh-sdk), durable delegationDepth with maxDepth caps, and start-time capabilities outputSchema/depthLimit/toolFilter/persona with fail-at-start on unsupported capabilities."
+    },
+    {
+     "dimension": "approvals & permission control",
+     "currentGrade": "unverified",
+     "verdict": "revise",
+     "proposedGrade": "strong",
+     "evidence": "https://deepseek-harness.github.io/deepseek-harness/en/reference/subsystems/approval documents a fail-closed outcome model ('Callers... fail closed unless it is allowed-once'), 'ask' and deterministic 'never' (headless/CI) policies, an answerer waterfall, and log-only audit events; en/reference/capability-seams documents permission presets bundling 'the sandbox-mode and approval-policy knobs' (workspace-write/danger-full-access); the Web UI quickstart confirms 'The Web UI asks before operations that require approval under the active permission policy.'"
+    },
+    {
+     "dimension": "isolation & sandboxing (OS/container level)",
+     "currentGrade": "unverified",
+     "verdict": "revise",
+     "proposedGrade": "partial",
+     "evidence": "https://deepseek-harness.github.io/deepseek-harness/en/reference/subsystems/sandbox documents OS-level backends (Linux bwrap/Landlock, macOS Seatbelt, Windows ACL restricted-token) with read-only/workspace-write/danger-full-access modes and fail-closed SandboxUnavailableError \u2014 but scope is filesystem-only ('Network and process visibility are outside this vocabulary'), older Landlock ABIs and Windows ACL are documented 'partial' enforcement cases, and containers/microVMs are 'sibling implementations of whole capability seams, not providers of ctx.sandbox'. The Python SDK minimal composition defaults to danger-full-access with a warning to 'Run it only inside a disposable checkout or container.'"
+    },
+    {
+     "dimension": "session durability (resume, crash honesty, locking)",
+     "currentGrade": "unverified",
+     "verdict": "revise",
+     "proposedGrade": "strong",
+     "evidence": "https://deepseek-harness.github.io/deepseek-harness/en/reference/subsystems/session documents the append-only typed SessionEvent log as single source of truth, restore via Session.fromRestore(), crash recovery that closes only 'a genuinely open trailing turn' and synthesizes turn/end reason 'interrupted' ('no loop emits' it), fork() that 'requires the selected prefix to end outside an open turn' rather than 'clipping silently', and a lossless durability contract including assistant/chunk; the compaction page adds lock bracketing that turns crashes 'into detectable orphaned locks rather than false completion claims'. The SDK guide confirms resume by session id preserves the session-owned bash process."
+    },
+    {
+     "dimension": "automation contract (headless/JSON/SDK/exit codes)",
+     "currentGrade": "unverified",
+     "verdict": "revise",
+     "proposedGrade": "partial",
+     "evidence": "https://deepseek-harness.github.io/deepseek-harness/en/guide/python-sdk documents a programmatic Python SDK (DeepSeekHarness(...).run(task, session_id=...), final_response, uncompressed JSONL session logs); en/reference/ documents dsh-headless as 'a one-shot runner with no server at all' and the approval policy 'never' targets headless/CI \u2014 but no exit-code contract or structured JSON output mode is documented ('No explicit exit-code or JSON output configuration documented' in the config catalog)."
+    },
+    {
+     "dimension": "provider/model breadth",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "https://deepseek-harness.github.io/deepseek-harness/en/guide/providers documents native DeepSeek, catalog providers ('Anthropic or OpenAI' and others), and custom providers (self-hosted/gateway/OpenAI-compatible) requiring manual base URL/protocol/credentials/model config, plus per-route compat knobs (supportsDeveloperRole, maxTokensField) and explicit vision-modality config; breadth beyond that is config-dependent and cloud platforms (Bedrock/Vertex) or local runtimes are not documented \u2014 matching 'present but config-dependent'."
+    },
+    {
+     "dimension": "benchmark evidence & transparency",
+     "currentGrade": "unverified",
+     "verdict": "revise",
+     "proposedGrade": "absent",
+     "evidence": "https://raw.githubusercontent.com/deepseek-ai/deepseek-harness/master/BENCHMARK.md is a 231-byte file containing only instructions to run benchmarks yourself via the Python SDK 'jsonrpc-agent minimal variant' with separate workspaces/session ids; no benchmark scores, methodology, or results appear there, on the landing page, in the README, or anywhere in the docs. A 'Minimal' runtime mode exists 'for benchmarking' but no published evidence exists."
+    },
+    {
+     "dimension": "maturity & adoption",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "https://github.com/deepseek-ai/deepseek-harness README states the project is 'in developer preview and iterating rapidly. THERE WILL BE COMPATIBILITY-BREAKING CHANGES.' with a safety notice to review before running; MIT license and very large star count (fetch reported ~206.8k stars) indicate real adoption, but preview status and breaking-change warnings cap it at partial."
+    }
+   ],
+   "corrections": [
+    "Any claim that DeepSeek harness lacks or does not document MCP support is contradicted: the generated config catalog documents @deepseek-ai/dsh-mcp-client with stdio and streamable-http transports (en/reference/config-catalog).",
+    "Any claim that sub-agent support is undocumented or absent is contradicted: a dedicated subagent subsystem reference documents six provider packages, durable continuable children, depth caps, tool filtering, and personas (en/reference/subsystems/subagent).",
+    "Any claim that approvals/permissions are undocumented is contradicted: the approval subsystem documents a fail-closed outcome model with ask/never policies, and permission presets bundle sandbox-mode and approval-policy (en/reference/subsystems/approval, en/reference/capability-seams).",
+    "Any claim that sandboxing is undocumented is contradicted \u2014 but so is any claim it is comprehensive: OS-level backends (bwrap/Landlock, Seatbelt, Windows ACL) are documented, while network and process isolation are explicitly out of scope and the SDK minimal composition defaults to danger-full-access (en/reference/subsystems/sandbox, en/guide/python-sdk).",
+    "Any claim that session durability is only partially engineered is contradicted: docs specify append-only event logs, crash recovery that synthesizes 'interrupted' turn-ends rather than faking completion, fork safety outside open turns, and orphaned-lock detection for compaction (en/reference/subsystems/session, en/reference/subsystems/compaction).",
+    "Any claim that DeepSeek harness publishes benchmark results is contradicted: BENCHMARK.md (master branch, 231 bytes) contains only instructions for running your own benchmarks via the SDK minimal variant, with no scores or methodology.",
+    "Any claim that the harness enforces cost or budget limits is contradicted: token usage is passively recorded on session events (TokenUsage on assistant/message), but no budget/cost-limit configuration or events exist in the generated config and persistence catalogs."
+   ]
+  },
+  {
+   "harness": "fusion-harness",
+   "cells": [
+    {
+     "dimension": "context management (compaction/caching/footprint)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "LOCAL:/...scratchpad/fusion-harness/README.md (Sessions and UI; Fusion context synchronization): per-slot context bars via ctx.getContextUsage (fusion-harness.ts:632-638), fused results split into visible head + hidden continuation 'so raw Main retains every byte', per-slot persistent sessions. No compaction or prompt-caching feature anywhere in the code (rg for 'compact' hits only stat-formatting comments)."
+    },
+    {
+     "dimension": "cost enforcement (accounting vs hard per-run limits)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "LOCAL: extensions/fusion-harness/fusion-harness.ts:373-386 and child-runner.ts:166 accumulate per-slot costUsd from provider usage events; README model bar shows '$0.0123' per slot and summary.json records totalCostUsd. No budget/spend-cap/limit code exists anywhere (rg 'budget|cap|limit' finds only debate char budgets and maxValidations) \u2014 accounting yes, hard per-run cost limits no."
+    },
+    {
+     "dimension": "tools & extensibility (MCP, plugins, skills)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "LOCAL: zero MCP mentions in the entire repo (rg -il mcp returns nothing). child-runner.ts:58-66 spawns children with --no-skills --no-extensions --no-context-files ('clean-room'). Extensibility is real but narrow: editable prompts/*.md templates, YAML model stacks, and the harness itself is a composable Pi extension (README line 19)."
+    },
+    {
+     "dimension": "sub-agents / orchestration",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "LOCAL: README Commands + modules/collaboration-graph.ts (DAG validation, cycle detection, dependency levels), cmd-build.ts (dependency-driven parallel execution with single global writer token, maxConcurrentWriteEnabledChildren==1), writer-lease.ts (atomic CWD lease), N-way debate/fusion/opinion protocols, plus dedicated orchestration-contract and collaboration-graph test suites. Engineered, documented, shipped."
+    },
+    {
+     "dimension": "approvals & permission control",
+     "currentGrade": "absent",
+     "verdict": "revise",
+     "proposedGrade": "partial",
+     "evidence": "LOCAL: extensions/fusion-harness/modules/runtime.ts:14-23 defines enforced per-role tool allowlists (READONLY_TOOLS='read,grep,find,ls', VALIDATOR_TOOLS write-scoped, FULL_TOOLS) passed to children via pi's --tools flag (child-runner.ts:83-84); README: 'Tool allowlists enforce planning safety'. That is shipped permission control, so 'absent' is too harsh \u2014 but there are no interactive approval gates and write-phase agents get unrestricted bash, so partial, not strong."
+    },
+    {
+     "dimension": "isolation & sandboxing (OS/container level)",
+     "currentGrade": "absent",
+     "verdict": "confirmed",
+     "proposedGrade": "absent",
+     "evidence": "LOCAL: no docker/container/sandbox/seatbelt/nsjail references anywhere in the repo. Isolation is app-level only: children in their own process groups for kill-tree escalation (child-runner.ts), a /tmp file-based writer lease (writer-lease.ts), and a shared CWD by design ('no worktrees' \u2014 fusion-harness.ts:30; worktree commands fail the run). Nothing at OS/container level."
+    },
+    {
+     "dimension": "session durability (resume, crash honesty, locking)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "LOCAL: fusion-harness.ts:440,476 \u2014 'quitting the app discards every slot brain. Restarting must never resume' / 'Fresh id EVERY process \u2014 never read from disk, so a restart cannot resume' (honest, deliberate non-durability across restarts); within-run child session resume exists (SpawnIdentity fork/resume/sessionId, runtime.ts:375-376); writer-lease.ts implements atomic locking with stale-lock reclaim via processAlive(pid). Partial is exactly right."
+    },
+    {
+     "dimension": "automation contract (headless/JSON/SDK/exit codes)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "LOCAL: children run 'pi --mode json -p' with JSON-event streaming (child-runner.ts:58-61); every run writes machine-readable summary.json with ok/exit data and gateExitCode (cmd-build.ts:586); invalid stacks set process.exitCode=1 (fusion-harness.ts:192,354); code tolerates headless contexts (fusion-harness.ts:889,979). But the harness's own commands are interactive TUI slash commands \u2014 no documented headless CLI entry point or SDK for the harness itself."
+    },
+    {
+     "dimension": "provider/model breadth",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "LOCAL: .env.example lists ANTHROPIC/GEMINI/FIREWORKS/OPENAI/OPENROUTER API keys; shipped stack YAMLs in .pi/fusion-harness/ mix anthropic/claude-fable-5, google/gemini-3.7-flash, fireworks DeepSeek V4 + Kimi K3, openai/gpt-5.6-sol/terra; README accepts any fully-qualified provider/id model authenticated in pi. Cross-provider fusion is the product's core purpose."
+    },
+    {
+     "dimension": "benchmark evidence & transparency",
+     "currentGrade": "absent",
+     "verdict": "confirmed",
+     "proposedGrade": "absent",
+     "evidence": "LOCAL: README Validation section offers only 34 deterministic unit/contract tests ('zero paid calls') and demo prompts under prompts/duckdb/ ordered 'simple to complex' \u2014 no benchmark suite, no published scores, no eval results anywhere in repo or README. Run artifacts in /tmp/fusion-harness-* give run transparency but not benchmark evidence."
+    },
+    {
+     "dimension": "maturity & adoption",
+     "currentGrade": "absent",
+     "verdict": "revise",
+     "proposedGrade": "partial",
+     "evidence": "https://github.com/disler/fusion-harness shows 504 stars, 98 forks, MIT license, 1 open issue, plus two YouTube walkthroughs linked from README \u2014 real adoption signal contradicting 'absent'. Countervailing facts: only 4 commits on main (local git log), no releases, package.json is 'private': true (never published), effectively single-author. Partial, not absent and not strong."
+    }
+   ],
+   "corrections": [
+    "Any claim that fusion-harness has 'no adoption signals' or 'no measurable community traction' is contradicted by the GitHub repo page: 504 stars, 98 forks, MIT license, and two public video walkthroughs.",
+    "Any claim that fusion-harness offers 'no permission or tool control at all' is contradicted by extensions/fusion-harness/modules/runtime.ts:14-23 (READONLY_TOOLS/VALIDATOR_TOOLS/FULL_TOOLS allowlists) enforced on every child via pi's --tools flag, and by the README's 'Tool allowlists enforce planning safety' and 'strict read-only tools' language \u2014 the accurate statement is that it lacks interactive approval gates, not permission control.",
+    "If the prose says fusion-harness 'cannot resume sessions', it should be qualified: within a run, child sessions are forked/resumed by design (auto-validate rounds re-enter the same fork); what is deliberately non-resumable is slot context across app restarts, and the README/code state this explicitly.",
+    "If the prose says cost is 'not tracked', that is wrong: per-slot USD cost is accumulated from provider usage events and surfaced live in the model bar and in summary.json totals \u2014 what is missing is any hard spend cap."
+   ]
+  },
+  {
+   "harness": "piko",
+   "cells": [
+    {
+     "dimension": "context management (compaction/caching/footprint)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "LOCAL:docs/adr/0001, 0003, 0014 (all Status: accepted) plus README.md: CI-enforced <1000-token prefix (scripts/check-budget.ts exists and runs as npm run check-budget), observable compaction into lineage-linked new session files with the prior transcript preserved, microcompaction offload to .pi/artifacts, stable-prefix Anthropic cache breakpoints. All shipped and documented, not just proposed."
+    },
+    {
+     "dimension": "cost enforcement (accounting vs hard per-run limits)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "LOCAL:docs/adr/0020 Status: 'accepted (2026-08-24; implemented and fault-verified same day; owner-ratified)'; packages/core/src/journal.ts validates per-request reservation rows (model, usd, token upper bounds, pricing provenance); LOCAL:docs/benchmarks/2026-08-25-tb20/manifest.md shows the $1.50/trial ceiling actually firing (28 ceiling stops recorded with stop reasons). Documented caveat: conservative reservation makes the effective ceiling ~half nominal \u2014 fail-closed, not a gap."
+    },
+    {
+     "dimension": "tools & extensibility (MCP, plugins, skills)",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "LOCAL:docs/adr/0002 ('No MCP client in core') and 0012 (extensions are trusted, in-process, unsandboxed controller code); README.md: five built-ins, bounded skills/prompt-templates behind --trust-project, --ext modules with schema validation only. Real extensibility with deliberate gaps (no MCP interop, no plugin sandbox) \u2014 exactly the rubric's 'partial'."
+    },
+    {
+     "dimension": "sub-agents / orchestration",
+     "currentGrade": "absent",
+     "verdict": "confirmed",
+     "proposedGrade": "absent",
+     "evidence": "LOCAL:docs/adr/0004: 'No sub-agent machinery in core' \u2014 the mechanism is headless self-spawn via bash, which itself requires --allow-host-bash; README.md: 'piko does not provide delegation, parent/child accounting, or isolation for that pattern.' No delegation path ships; absent is accurate."
+    },
+    {
+     "dimension": "approvals & permission control",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "LOCAL:docs/adr/0011 (accepted, revised after external review) and implemented code (packages/cli/src/approvals.ts; journal approval rows); README.md documents shipped --require-approval, suspended exit 4, decisions as durable journal rows survivable across crash/reboot, resume via --approve/--reject/--edit, policy sourced only from CLI flags and user config. Engineered, documented, shipped. Known narrowness (per-tool-name only, no argument patterns, no 'always allow') is stated in README but does not defeat 'strong' under the rubric."
+    },
+    {
+     "dimension": "isolation & sandboxing (OS/container level)",
+     "currentGrade": "partial",
+     "verdict": "revise",
+     "proposedGrade": "absent",
+     "evidence": "README.md: 'does not yet provide an OS sandbox' and 'Piko does not yet ship a turnkey container/microVM executor'; LOCAL:docs/adr/0018 (container executor) is Status: proposed; LOCAL:docs/adr/0022 (fix for the reproduced parent-symlink TOCTOU escape, {\"escaped\":true} per docs/reviews/2026-08-25-adversarial-review.md finding 1) is accepted but NOT implemented \u2014 packages/core/src/tools/filesystem.ts still does string-path resolveWorkspacePath. On a dimension scoped to OS/container level, piko ships nothing; the only in-harness containment has a confirmed unfixed escape and env sanitization is 'not a credential boundary' (finding 4, open). A proposed/unimplemented ADR cannot carry 'partial' here."
+    },
+    {
+     "dimension": "session durability (resume, crash honesty, locking)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "LOCAL:docs/adr/0007/0015/0023/0024 with 0023/0024 verified implemented in code: packages/core/src/session.ts enforces lock-required mutation (line 142), openLocked() (line 912), doctor sessions survey/recovery (0024), hard-link defense present in session.ts; docs/reviews/2026-08-25-adversarial-review.md remediation: findings 2 and 3 'closed via ADRs 0023/0024 (implemented, hardened after a six-defect re-review; reproductions are permanent tests)'. Write-ahead journal with outcome_unknown semantics, fsync+O_EXCL+0600, loud locked-head failure (exit 5)."
+    },
+    {
+     "dimension": "automation contract (headless/JSON/SDK/exit codes)",
+     "currentGrade": "strong",
+     "verdict": "confirmed",
+     "proposedGrade": "strong",
+     "evidence": "LOCAL:docs/adr/0010 Status: accepted and implemented, with governed amendment adding exit code 5; README.md exit-code table (0/1/2/3/4/130) plus versioned JSONL --json stream (v:1 envelopes visible in packages/cli/src/main.ts); fail-closed semantics ('success must be proven by a terminal status'). Gaps are breadth, not contract quality: no SDK/server yet (ADR 0010 names richer RPC as v0.3 future work) and the README table omits code 5 \u2014 doc drift worth fixing, not grade-changing."
+    },
+    {
+     "dimension": "provider/model breadth",
+     "currentGrade": "partial",
+     "verdict": "confirmed",
+     "proposedGrade": "partial",
+     "evidence": "README.md: @pi/ai speaks exactly two protocols (Anthropic Messages, OpenAI-compatible Chat Completions) with profiles for any compatible base URL (kimi/qwen examples); LOCAL:docs/benchmarks/2026-08-24-grid/manifest.md finding 4: gpt-5.6 family 'cannot run tool-calling via chat completions... frontier-most benchmarking blocks on the v0.3 Responses adapter'. Broad-by-proxy but protocol-limited: partial is right."
+    },
+    {
+     "dimension": "benchmark evidence & transparency",
+     "currentGrade": "strong",
+     "verdict": "revise",
+     "proposedGrade": "partial",
+     "evidence": "The transparency practice is real (committed per-trial results.json with rewards/costs/stop reasons, dated corrections and a retraction, dev-set firewall in docs/benchmarks/2026-08-24-grid/rerun-and-heldout.md), but piko's own commissioned review contradicts 'strong': docs/reviews/2026-08-25-adversarial-review.md finding 7 CONFIRMED 'Published benchmark evidence not independently reproducible (ephemeral paths; no hashes; example-only manifest)' with 'parts of 7 remain open' as of 2026-08-31; tb20 manifest concedes 18 of 89 trials unpriced (totals are floors) and n=1; grid run dirs are 'local, ephemeral'. Present with real gaps = partial."
+    },
+    {
+     "dimension": "maturity & adoption",
+     "currentGrade": "absent",
+     "verdict": "confirmed",
+     "proposedGrade": "absent",
+     "evidence": "README.md Maturity section: 'experimental, pre-1.0', no independent security audit, unstable APIs, packages 'intentionally marked private and must not be published' (no license); docs/reviews/2026-08-25-adversarial-review.md scorecard: 'Overall: 2.6/5 \u2014 late prototype / early alpha, not a production framework'. Zero external operators; absent is accurate."
+    }
+   ],
+   "corrections": [
+    "Section 4 'Context footprint discipline: ... a token-rent rule already enforced against our own feature' \u2014 the token-rent rule lives in ADR 0017, which is Status: proposed, and the 2026-08-31 fact-check (finding 4) records its token-rent amendment as awaiting owner ratification; call it a practiced discipline (the tb20 manifest's 'post token-rent revert'), not an enforced rule.",
+    "Section 4 '815-token default prefix' \u2014 815 is pinned to revision b42cab4 (docs/benchmarks/2026-08-25-tb20/manifest.md); README at HEAD states roughly 850 estimated tokens including the opt-in bash schema. Pin the revision or update the number.",
+    "Section 4 'Cost enforcement ... durable exposure accounting (ADR 0020, exercised across 89 benchmark trials)' \u2014 all 89 trials ran under the ceiling, but exposure accounting was complete on only 71 of 89 trials (18 unpriced; the manifest calls totals floors). Say 'capped across 89 trials, priced on 71'.",
+    "Section 4 'Benchmark evidence transparency ... committed in-repo' as an outright win \u2014 the commissioned adversarial review's finding 7 ('published benchmark evidence not independently reproducible: ephemeral paths, no hashes, example-only manifest') remains partly open per the 2026-08-31 remediation note; the prose should carry that caveat.",
+    "Section 3 isolation cell \u25d0 vs the study's own prose \u2014 'single largest capability deficit', README's 'does not yet provide an OS sandbox' / 'does not yet ship a turnkey container/microVM executor', proposed-only ADR 0018, and unimplemented ADR 0022 (TOCTOU escape reproduced, fix not landed in packages/core/src/tools/filesystem.ts) support \u25cb absent on an OS/container-level dimension, not \u25d0.",
+    "Section 4 'Approvals ... matches the production tier's permission systems in rigor' \u2014 README's Maturity section limits gating to per-tool-name only (no argument patterns, no session-scoped always-allow); scope the parity claim to durability across process death, not overall rigor."
+   ]
+  }
+ ]
+}
