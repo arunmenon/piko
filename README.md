@@ -134,6 +134,7 @@ Config file (`~/.config/pi/config.json`, optional):
 {
   "defaultProfile": "kimi",
   "approval": ["bash", "write"],
+  "shutdownGraceSeconds": 10,
   "profiles": {
     "kimi": { "provider": "openai", "baseUrl": "https://api.moonshot.ai/v1", "model": "kimi-k3", "apiKeyEnv": "MOONSHOT_API_KEY" }
   },
@@ -143,7 +144,8 @@ Config file (`~/.config/pi/config.json`, optional):
 
 `approval` gates those tools behind a human decision for every profile; a profile may set its own
 `approval` (a list of tool names or `"*"`) to override it. This file and the `--require-approval`
-flag are its only sources.
+flag are its only sources. `shutdownGraceSeconds` sets the SIGTERM drain window when
+`--shutdown-grace` is absent.
 
 Pricing accepts piko's `models.{name}.{inputUSDPerToken,outputUSDPerToken}` schema or exact
 LiteLLM price-table rows. Resolution is explicit path → fresh 24-hour cache → public-table fetch →
@@ -161,7 +163,22 @@ Headless exit codes are semantic and fail closed — success must be proven by a
 | 3 | incomplete or unknown terminal state |
 | 4 | suspended awaiting tool approval; resume with `--approve`/`--reject`/`--edit` |
 | 5 | newest resumable session is locked by another process; see `pi doctor sessions` |
-| 130 | canceled by the user |
+| 130 | canceled by the user (SIGINT) |
+| 143 | terminated by signal (SIGTERM), after either a cooperative or a forced drain |
+
+SIGTERM is a cooperative drain, not an abort (ADR 0027). It stops admission of new model
+requests and tool calls, journals a `run_drain_requested` marker, and gives whatever is already
+in flight `--shutdown-grace <seconds>` (default 10; config key `shutdownGraceSeconds`) to reach a
+durable terminal state. Work that settles inside the grace period leaves a `canceled` run with no
+`outcome_unknown` rows; work that outlives it is aborted, and every dispatched operation without a
+terminal acknowledgement stays `outcome_unknown` exactly as ADR 0007 requires. Both paths exit 143,
+and `--json` names the path on the terminal row (`"drain": "cooperative" | "forced"`). The REPL
+drains the same way. An extension whose tool blocks the event loop synchronously can defeat any
+in-process deadline; `--supervise` covers that case for headless runs by re-executing piko as a
+child in its own process group and letting the parent own the SIGKILL deadline. That parent never
+opens the session journal, so the single-writer rule holds and the child's unknown rows are the
+record. A fleet with its own supervisor (systemd, Kubernetes) already sends SIGKILL after its own
+timeout and does not need `--supervise`.
 
 A parent process spawning children must treat exit 4 as "forward the decision", not as failure.
 A child started with `--parent-run <id>` echoes that id on every JSON row and in telemetry;

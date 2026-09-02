@@ -128,6 +128,7 @@ type SessionMutator =
   | 'markReady'
   | 'markToolOutcomeUnknown'
   | 'planTool'
+  | 'recordDrainRequested'
   | 'requestToolApproval'
   | 'setRunStatus'
   | 'skipTool'
@@ -1209,6 +1210,16 @@ export class Session {
   }
 
   /**
+   * Record that a cooperative shutdown drain began (ADR 0027). Written by the
+   * process that holds this journal's lock, at the instant admission stops, so
+   * a later reader can tell a drained cancel from an ordinary one and can see
+   * how much grace the in-flight work was actually given.
+   */
+  recordDrainRequested(signal: string, graceMs: number): void {
+    this.append({ t: 'run_drain_requested', v: 2, at: now(), signal, graceMs });
+  }
+
+  /**
    * Record one extension module admitted at startup (ADR 0012). Written for
    * every loaded extension, pinned or not, so a reader can tell which code the
    * session actually ran with.
@@ -1531,6 +1542,13 @@ export class Session {
       (entry): entry is Extract<LifecycleEntry, { t: 'run_status' }> => entry.t === 'run_status',
     ).at(-1);
     return entry ? structuredClone(entry) : undefined;
+  }
+
+  /** Every cooperative-shutdown drain marker in this journal, oldest first (ADR 0027). */
+  get drainRequests(): readonly Extract<LifecycleEntry, { t: 'run_drain_requested' }>[] {
+    return this.lifecycleEntries
+      .filter((entry): entry is Extract<LifecycleEntry, { t: 'run_drain_requested' }> => entry.t === 'run_drain_requested')
+      .map((entry) => structuredClone(entry));
   }
 
   get toolExecutions(): readonly ToolExecutionState[] {

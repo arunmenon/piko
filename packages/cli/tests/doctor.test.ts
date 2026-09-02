@@ -56,7 +56,7 @@ test('0024 CLI acceptance: crash, exit 5 with typed JSON, doctor list, recovery,
   // 0010 addendum (R2-5): a failure before setup still advertises the static
   // part of the contract, with the tool set omitted rather than guessed.
   assert.equal(errorRow.capabilities?.['partial'], true, blocked.stdout);
-  assert.deepEqual(errorRow.capabilities?.['exitCodes'], [0, 1, 2, 3, 4, 5, 130]);
+  assert.deepEqual(errorRow.capabilities?.['exitCodes'], [0, 1, 2, 3, 4, 5, 130, 143]);
   assert.equal(errorRow.capabilities?.['budgetScope'], 'turn');
   assert.equal(errorRow.capabilities?.['tools'], undefined);
 

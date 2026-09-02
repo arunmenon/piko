@@ -206,6 +206,14 @@ export type LifecycleEntry =
       /** Ceilings in force for the run, recorded so a resumed run continues under them. */
       budget?: RunBudgetSnapshot;
     })
+  /**
+   * A cooperative shutdown drain was requested (ADR 0027): the signal that
+   * asked for it, the grace period in-flight work was granted, and the instant
+   * admission stopped. Additive, so the schema generation does not move; a
+   * reader that ignores unknown rows is unaffected, and a reader that keeps it
+   * can tell a drained cancel from an ordinary one.
+   */
+  | (LifecycleBase & { t: 'run_drain_requested'; signal: string; graceMs: number })
   | (LifecycleBase & { t: 'journal_schema'; schema: number })
   /**
    * One extension module admitted at startup (ADR 0012): what was imported, the
@@ -614,6 +622,10 @@ export function validateSessionEntry(value: unknown): asserts value is SessionEn
       if (!runStatuses.has(entry['status'] as RunStatus)) throw new TypeError(`${type}.status is unsupported`);
       optionalString(entry['reason'], `${type}.reason`);
       if (entry['budget'] !== undefined) validateRunBudgetSnapshot(entry['budget'], `${type}.budget`);
+      return;
+    case 'run_drain_requested':
+      requireString(entry['signal'], `${type}.signal`);
+      requireNonNegativeInteger(entry['graceMs'], `${type}.graceMs`);
       return;
     case 'journal_schema':
       requirePositiveInteger(entry['schema'], `${type}.schema`);

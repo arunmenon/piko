@@ -19,6 +19,7 @@ import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { synthesizeInterruptedResults } from '../src/agent.js';
+import { JOURNAL_SCHEMA_VERSION } from '../src/journal.js';
 import {
   LockedSessionHeadError,
   Session,
@@ -54,6 +55,28 @@ test('session create/append/open roundtrip with usage totals', () => {
   assert.equal(reopened.messages.length, 2);
   assert.equal(reopened.meta?.model, 'test-model');
   assert.deepEqual(reopened.usage, { inputTokens: 20, outputTokens: 10, cacheReadTokens: 4, cacheWriteTokens: 2 });
+});
+
+test('0027: a drain marker round-trips and does not move the schema generation', () => {
+  const session = Session.create('/some/project', 'test-model', dir);
+  session.setRunStatus('running');
+  session.recordDrainRequested('SIGTERM', 10_000);
+  session.setRunStatus('canceled', 'user_abort');
+
+  const reopened = Session.open(session.file);
+  const marker = reopened.drainRequests.at(-1);
+  assert.equal(reopened.drainRequests.length, 1);
+  assert.equal(marker?.signal, 'SIGTERM');
+  assert.equal(marker?.graceMs, 10_000);
+  assert.ok(marker?.at, 'the marker records when admission stopped');
+  assert.equal(reopened.schemaVersion, JOURNAL_SCHEMA_VERSION, 'the row is additive on the v2 shape');
+  assert.equal(reopened.runStatus?.status, 'canceled');
+  // The row is validated like any other: a malformed grace period is refused.
+  assert.throws(
+    () => session.append({ t: 'run_drain_requested', v: 2, at: new Date().toISOString(), signal: 'SIGTERM', graceMs: -1 }),
+    /graceMs/,
+  );
+  session.close();
 });
 
 test('an append failure poisons that Session object until the journal is reopened', () => {
