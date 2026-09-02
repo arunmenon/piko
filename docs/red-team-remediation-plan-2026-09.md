@@ -239,10 +239,11 @@ toward 2.9 is plausible, and the re-review decides.
 ## 8. Moves folded into Tranche 3 and after
 
 - 0017 variance study as stage 0 of the pre-registered frontier rerun:
-  the seven held-out tasks at n=5 (35 trials; roughly $20 at the recorded
-  mean of about $0.56 per trial, capped at $1.50 per trial). Publish the
-  smallest detectable effect; if it exceeds 10 points, 0017 records that
-  it cannot promote anything on this suite.
+  the nine held-out tasks at n=5 (45 trials; roughly $25 at the recorded
+  mean of about $0.56 per trial, capped per trial by the configured
+  ceiling). Publish the smallest detectable effect; if it exceeds 10
+  points, 0017 records that it cannot promote anything on this suite.
+  (r1 said seven tasks and 35 trials; the held-out draw has nine tasks.)
 - 0020: the manifest generator gains an unpriced-reason column so every
   trial is priced or explained.
 - 0021 (gated on ratification): `pi doctor sessions --prune`, a telemetry
