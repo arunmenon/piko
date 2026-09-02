@@ -29,7 +29,7 @@ function bashCall(id: string, command: string): ToolCallBlock {
   return { type: 'toolCall', id, name: 'bash', arguments: { command } };
 }
 
-const plannedWorkspaceDigest: WorkspaceDigest = {
+const startedWorkspaceDigest: WorkspaceDigest = {
   kind: 'git',
   algorithm: 'sha256',
   digest: 'a'.repeat(64),
@@ -43,11 +43,8 @@ function unknownBashOutcomeJournal(): string {
   session.append({ t: 'msg', message: userMessage('deploy it') });
   const requestId = session.beginModelRequest('test-model', { messageCount: 1 });
   session.completeModelRequest(requestId, { stopReason: 'tool_use', usage });
-  const executionId = session.planTool(bashCall('call-deploy', './deploy.sh'), {
-    requestId,
-    workspaceDigest: plannedWorkspaceDigest,
-  });
-  session.startTool(executionId);
+  const executionId = session.planTool(bashCall('call-deploy', './deploy.sh'), { requestId });
+  session.startTool(executionId, { workspaceDigest: startedWorkspaceDigest });
   session.markToolOutcomeUnknown(executionId, 'process stopped before the tool result was durably recorded');
   session.setRunStatus('incomplete', 'interrupted');
   session.close();
@@ -175,9 +172,9 @@ test('0007: the corpus carries the states a resumer must distinguish', () => {
   const unknownOutcome = Session.open(unknownBashOutcomeJournal());
   const [bashExecution] = unknownOutcome.toolExecutions;
   assert.equal(bashExecution?.status, 'outcome_unknown');
-  // The planning-time digest survives the round trip, so a resumer can compare
+  // The dispatch-time digest survives the round trip, so a resumer can compare
   // it against the workspace it sees rather than guessing.
-  assert.deepEqual(bashExecution?.workspaceDigest, plannedWorkspaceDigest);
+  assert.deepEqual(bashExecution?.workspaceDigest, startedWorkspaceDigest);
 
   const suspended = Session.open(approvalSuspensionJournal());
   assert.equal(suspended.suspendedToolExecutions.length, 2);

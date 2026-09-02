@@ -836,13 +836,32 @@ export class Agent {
   }
 
   /**
-   * Fingerprint the workspace a bash call is about to be planned against
-   * (0007). Never throws: an undiagnosable workspace records no digest rather
-   * than blocking the call.
+   * True when this call would dispatch the built-in host shell with host
+   * execution enabled. Anything else named "bash" (an extension tool, a bash
+   * call under a fail-closed policy) never justifies probing the workspace.
    */
-  private async planningWorkspaceDigest(): Promise<WorkspaceDigest | undefined> {
+  private dispatchesEnabledBash(toolName: string): boolean {
+    return toolName === 'bash' && this.toolPolicy.bash?.allowHostExecution === true;
+  }
+
+  /**
+   * Fingerprint the workspace a bash call is about to be dispatched into
+   * (0007). This starts real git processes, so it runs at dispatch time only:
+   * every caller must already have cleared the tool policy, the tool-call
+   * budget, approval, and cancellation. Bounded by the digest's own budget and
+   * by whatever wall time the turn has left, canceled with the turn, and never
+   * throwing: an undiagnosable workspace records no digest rather than blocking
+   * or delaying the call.
+   */
+  private async dispatchWorkspaceDigest(
+    signal: AbortSignal,
+    remainingWallTimeMs: number,
+  ): Promise<WorkspaceDigest | undefined> {
     try {
-      return await workspaceDigestFor(this.cwd, this.toolPolicy.bash);
+      return await workspaceDigestFor(this.toolPolicy.workspaceRoot ?? this.cwd, this.toolPolicy.bash, {
+        signal,
+        remainingWallTimeMs,
+      });
     } catch {
       return undefined;
     }
@@ -1229,6 +1248,9 @@ export class Agent {
     const forwardAbort = () => runController.abort(signal?.reason ?? new Error('aborted'));
     if (signal?.aborted) forwardAbort();
     else signal?.addEventListener('abort', forwardAbort, { once: true });
+    // The same instant the deadline timer fires on, in a form in-turn probes can
+    // subtract from: a bounded harness step must never outlast the turn budget.
+    const runDeadlineAt = Date.now() + budget.maxWallTimeMs;
     const deadline = setTimeout(() => {
       deadlineExceeded = true;
       runController.abort(new Error(`run exceeded ${budget.maxWallTimeMs}ms wall-time budget`));
@@ -1969,14 +1991,13 @@ export class Agent {
           const planned: BatchCall[] = [];
           for (const call of calls) {
             const executionId = createTelemetryId('tool');
-            // 0007: bash is the tool whose side effects the journal cannot
-            // describe, so its planned row carries a workspace fingerprint. A
-            // resumer facing outcome_unknown recomputes it to see whether the
-            // workspace moved. Best-effort and never a reason to refuse a call.
-            const workspaceDigest = call.name === 'bash' ? await this.planningWorkspaceDigest() : undefined;
+            // Planning journals intent and nothing else. The workspace
+            // fingerprint 0007 wants for bash is taken at dispatch instead:
+            // probing here would run host git for calls this loop has not yet
+            // checked against the tool policy, the budget, approval, or abort.
             const journaled = this._session
               ? this.journal((session) => {
-                  session.planTool(call, { executionId, requestId, ...(workspaceDigest ? { workspaceDigest } : {}) });
+                  session.planTool(call, { executionId, requestId });
                   return true;
                 }) === true
               : true;
@@ -2246,8 +2267,18 @@ export class Agent {
             break;
           }
           if (this._session) {
+            // 0007: bash is the tool whose side effects the journal cannot
+            // describe, so its started row carries a workspace fingerprint a
+            // resumer facing outcome_unknown recomputes. The probe runs host
+            // git, so it happens here and nowhere earlier: the call has cleared
+            // validation, the tool-call budget, approval, and the abort check,
+            // and is about to be dispatched. Best-effort, and never a reason to
+            // refuse or delay the call beyond the turn's own deadline.
+            const workspaceDigest = this.dispatchesEnabledBash(call.name)
+              ? await this.dispatchWorkspaceDigest(runController.signal, runDeadlineAt - Date.now())
+              : undefined;
             const started = this.journal((session) => {
-              session.startTool(executionId);
+              session.startTool(executionId, workspaceDigest ? { workspaceDigest } : {});
               return true;
             });
             if (!started) {

@@ -133,11 +133,15 @@ export interface ModelRequestState {
 export type ApprovalDecision = 'approved' | 'edited' | 'rejected';
 
 /**
- * Planning-time fingerprint of the workspace a side-effecting call was planned
+ * Dispatch-time fingerprint of the workspace a side-effecting call was started
  * against (ADR 0007). A resumer that finds an `outcome_unknown` call can compare
  * this against the workspace it sees and tell whether anything moved underneath
  * it. Best-effort by construction: the field is absent whenever the digest could
  * not be taken, and an absent digest never means "unchanged".
+ *
+ * It rides the `tool_started` row rather than `tool_planned` because taking it
+ * runs host git: nothing may probe a workspace for a call that policy, budget,
+ * approval, or cancellation is about to refuse.
  */
 export interface WorkspaceDigest {
   /** The only source today: a git checkout's HEAD plus its porcelain status. */
@@ -155,7 +159,6 @@ export type ToolLifecycleEntry =
       executionId: string;
       requestId?: string;
       call: ToolCallBlock;
-      workspaceDigest?: WorkspaceDigest;
     })
   /** A gated call is deferred pending a recorded human decision (ADR 0011). */
   | (LifecycleBase & { t: 'tool_approval_requested'; executionId: string })
@@ -170,7 +173,7 @@ export type ToolLifecycleEntry =
       editedArguments?: Record<string, unknown>;
       reason?: string;
     })
-  | (LifecycleBase & { t: 'tool_started'; executionId: string })
+  | (LifecycleBase & { t: 'tool_started'; executionId: string; workspaceDigest?: WorkspaceDigest })
   | (LifecycleBase & { t: 'tool_skipped'; executionId: string; reason: string })
   | (LifecycleBase & { t: 'tool_completed'; executionId: string })
   | (LifecycleBase & { t: 'tool_failed'; executionId: string; error: string })
@@ -267,7 +270,7 @@ export interface ToolExecutionState {
   error?: string;
   reason?: string;
   approval?: ToolApprovalState;
-  /** Present when the planner could fingerprint the workspace (ADR 0007). */
+  /** Present when the dispatcher could fingerprint the workspace at start (ADR 0007). */
   workspaceDigest?: WorkspaceDigest;
 }
 
@@ -553,11 +556,13 @@ export function validateSessionEntry(value: unknown): asserts value is SessionEn
       requireString(entry['executionId'], `${type}.executionId`);
       optionalString(entry['requestId'], `${type}.requestId`);
       validateToolCall(entry['call'], `${type}.call`);
+      return;
+    case 'tool_started':
+      requireString(entry['executionId'], `${type}.executionId`);
       if (entry['workspaceDigest'] !== undefined) {
         validateWorkspaceDigest(entry['workspaceDigest'], `${type}.workspaceDigest`);
       }
       return;
-    case 'tool_started':
     case 'tool_completed':
     case 'tool_approval_requested':
       requireString(entry['executionId'], `${type}.executionId`);
@@ -676,7 +681,6 @@ export function reduceToolExecutions(entries: readonly SessionEntry[]): Map<stri
         call: entry.call,
         status: 'planned',
         plannedAt: entry.at,
-        ...(entry.workspaceDigest ? { workspaceDigest: structuredClone(entry.workspaceDigest) } : {}),
       });
       continue;
     }
@@ -728,6 +732,7 @@ export function reduceToolExecutions(entries: readonly SessionEntry[]): Map<stri
       if (state.status !== 'planned') invalidTransition(`${entry.executionId} cannot start from ${state.status}`);
       state.status = 'started';
       state.startedAt = entry.at;
+      if (entry.workspaceDigest) state.workspaceDigest = structuredClone(entry.workspaceDigest);
       continue;
     }
     if (entry.t === 'tool_skipped') {

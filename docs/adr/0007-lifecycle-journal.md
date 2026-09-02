@@ -80,19 +80,45 @@ the state actionable, and the conformance test that keeps replay faithful.
   refuses a file over the same 10 MB ceiling read and edit enforce, before
   reading any of it, so a precondition cannot be turned into an unbounded read.
 - Bash cannot have a precondition of that shape, because its effects are
-  arbitrary. It gets evidence instead: the `tool_planned` row for a bash call
-  carries an optional `workspaceDigest`, the planning-time fingerprint of the
-  workspace the call was planned against. When the workspace is a git checkout
-  the digest is SHA-256 over `git rev-parse HEAD` and `git status --porcelain=v1 -z`.
-  A resumer facing an `outcome_unknown` bash call recomputes it: an equal digest
-  says the workspace did not move, and an unequal one says something changed and
-  a human should look before the command is repeated.
-- The digest is best-effort by construction, under a total 2 second budget. It
-  is omitted, never fabricated and never fatal, when git is absent, slow, or the
-  directory is not a checkout. An absent digest therefore means "unknown", not
-  "unchanged", and no caller may read it the other way. An unborn branch is
-  still a checkout: HEAD contributes nothing and the porcelain status carries
-  the whole state.
+  arbitrary. It gets evidence instead: the `tool_started` row for a bash call
+  carries an optional `workspaceDigest`, the dispatch-time fingerprint of the
+  workspace the call was started against. When the workspace is a git checkout
+  the digest is SHA-256 over the raw bytes of `git rev-parse HEAD` and
+  `git status --porcelain=v1 -z --ignore-submodules=all`. A resumer facing an
+  `outcome_unknown` bash call recomputes it: an equal digest says the workspace
+  did not move, and an unequal one says something changed and a human should
+  look before the command is repeated.
+- Correction. This paragraph first said the digest was planning-time evidence on
+  the `tool_planned` row. That was wrong, and it was wrong in a way that mattered:
+  taking the fingerprint runs real git in the workspace, and `git status` honours
+  repository configuration, where `core.fsmonitor` names a program git executes.
+  Probing at planning time therefore ran workspace-chosen code for any call the
+  model merely named `bash`: before the harness checked that a bash tool existed,
+  before the tool policy that can leave host execution disabled, before the
+  tool-call budget, before human approval, and before cancellation. A nominally
+  file-only harness could execute host code, and a rejected call could execute it
+  too. The digest is dispatch-time evidence: it is taken only once the call has
+  cleared validation, the tool-call budget, approval, and the abort check, and is
+  about to be handed to the executor. Nothing is measured at planning time.
+- The probe is hardened, because reading a workspace must not be a way to run it:
+  `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null` remove the system and
+  per-user configuration sources; `-c core.fsmonitor=false -c core.hooksPath=/dev/null
+  -c core.untrackedCache=false -c core.pager=cat` and `--no-optional-locks` remove
+  the repository's own ways to name a program or take a lock; `--ignore-submodules=all`
+  keeps one status from walking into nested checkouts. Stdout is hashed as raw
+  bytes, so a path that is not valid UTF-8 fingerprints instead of round-tripping
+  through a decoder. Each invocation is spawned detached in its own process group
+  and the whole group is killed with SIGKILL on deadline or abort, so a git that
+  hangs or leaves a helper behind cannot outlive the call.
+- The digest is best-effort by construction. The 2 second budget covers the sum
+  of all git invocations behind one digest, not each of them, and the probe is
+  additionally capped at whatever wall time the turn has left, so it can never
+  push a turn past its own deadline; it also carries the turn's AbortSignal and
+  ends when the turn ends. The digest is omitted, never fabricated and never
+  fatal, when git is absent, slow, canceled, or the directory is not a checkout.
+  An absent digest therefore means "unknown", not "unchanged", and no caller may
+  read it the other way. An unborn branch is still a checkout: HEAD contributes
+  nothing and the porcelain status carries the whole state.
 - Both fields are additive optional fields on existing row shapes, so
   `JOURNAL_SCHEMA_VERSION` does not move.
 - A replay conformance test covers the corpus these guarantees depend on:

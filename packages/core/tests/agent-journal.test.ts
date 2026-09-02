@@ -308,7 +308,7 @@ test('0007: the workspace digest fingerprints a checkout and is omitted elsewher
   assert.notEqual(afterChange.digest, initial.digest, 'a moved workspace digests differently');
 });
 
-test('0007: a bash call planned under an unknown outcome carries its workspace digest', { skip: !gitAvailable }, async () => {
+test('0007: a bash call dispatched under an unknown outcome carries its workspace digest', { skip: !gitAvailable }, async () => {
   const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'pi-bash-digest-')));
   execFileSync('git', ['init', '-q'], { cwd: workspace, stdio: 'ignore' });
   writeFileSync(join(workspace, 'tracked.txt'), 'before\n', 'utf8');
@@ -348,6 +348,9 @@ test('0007: a bash call planned under an unknown outcome carries its workspace d
     tools: [tool],
     cwd: workspace,
     session,
+    // The digest is dispatch-time evidence for the enabled host shell, so the
+    // policy that enables that shell is what turns the probe on.
+    toolPolicy: { bash: { allowHostExecution: true } },
   }).run('deploy');
   let event = await iterator.next();
   while (!event.done && event.value.type !== 'tool_start') event = await iterator.next();
@@ -356,7 +359,17 @@ test('0007: a bash call planned under an unknown outcome carries its workspace d
   const reopened = Session.open(session.file);
   const execution = reopened.toolExecutions[0];
   assert.equal(execution?.status, 'outcome_unknown');
-  assert.deepEqual(execution?.workspaceDigest, expectedDigest, 'the planned row fingerprints the workspace as planned');
+  assert.deepEqual(execution?.workspaceDigest, expectedDigest, 'the started row fingerprints the workspace at dispatch');
+  const startedRow = reopened.lifecycleEntries.find((entry) => entry.t === 'tool_started');
+  const plannedRow = reopened.lifecycleEntries.find((entry) => entry.t === 'tool_planned');
+  assert.ok(startedRow && startedRow.t === 'tool_started');
+  assert.ok(plannedRow && plannedRow.t === 'tool_planned');
+  assert.deepEqual(startedRow.workspaceDigest, expectedDigest, 'the digest rides tool_started');
+  assert.equal(
+    (plannedRow as unknown as Record<string, unknown>)['workspaceDigest'],
+    undefined,
+    'tool_planned carries no digest: planning must start no process',
+  );
 
   // A resumer compares the recorded digest against what it sees now: a workspace
   // that moved while the outcome was unknown no longer matches what was planned.
