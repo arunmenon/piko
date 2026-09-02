@@ -10,8 +10,8 @@ Each item: at most five files, its test, a dated addendum to its ADR in the same
 - [x] 5. 0012 extension sha256 pins and extension_loaded journal row
 - [x] 6. 0015 journal_repaired row; doctor lists repaired sessions
 - [x] 7. 0009 wording: run budget to turn budget in user-visible text
-- [ ] 8. 0001 two-number check-budget with per-provider minimum cacheable size
-- [ ] 9. 0014 measurement: eligibility line, model-switch warning, compare_runs hit-rate column, TTL option
+- [x] 8. 0001 two-number check-budget with per-provider minimum cacheable size
+- [x] 9. 0014 measurement: eligibility line, model-switch warning, compare_runs hit-rate column, TTL option
 - [ ] 10. 0003 compaction: summarizer on the cached prefix, rehydration list, compaction counter
 - [x] 11. 0010 capabilities array in the first JSON row
 - [x] 12. 0007 idempotency: write expected-hash precondition, bash workspace hash, replay conformance test
