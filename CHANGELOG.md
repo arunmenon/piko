@@ -167,6 +167,50 @@ Every user-visible change since the 0.2.0 tree. No tag exists yet; ADR 0019
   nonzero amount would otherwise show fewer than two significant digits, and
   never scientific notation. (R2 finding 11)
 
+### The boundary (maturity plan Tranche 2)
+- Sandbox executor (ADR 0018): the five built-in tools' effects run inside an
+  operating-system sandbox through a `SandboxProvider` seam
+  (acquire, exec, release), with a tool worker hosting the real tool
+  implementations and the control plane (model calls, credentials, journal,
+  budgets, approvals) staying in the parent process. Providers: bubblewrap on
+  Linux and Seatbelt on macOS, each usable only after an acquire-time self-test
+  inside the sandbox proves an out-of-workspace canary is unreadable, a network
+  connect fails, and a parent environment marker is absent. `--sandbox
+  auto|off|require` selects it; `auto` never falls back to host execution, and
+  `require` exits 1 when no provider passes. With a provider active, bash is
+  available inside the sandbox without `--allow-host-bash`. No sandbox is
+  offered when the session store would fall inside the workspace. Deferred and
+  stated: seccomp on Linux, a Docker provider, Windows, the egress proxy.
+- Session-tree budget authority (ADR 0026): one file-backed ledger per session
+  tree under `~/.pi/budgets/<rootRunId>.json` with atomic reserve and reconcile
+  under an exclusive lock; every provider request is admitted against the
+  root's remaining budget before dispatch and a child's exposure is charged to
+  the root and every ancestor. `--max-session-spend-usd`,
+  `--max-session-tokens`, `--max-active-time`, and `--max-elapsed-time` hold
+  across REPL turns and across every child that joins through
+  `PI_BUDGET_AUTHORITY`. Budget reminders as `[harness]` messages at
+  configurable thresholds. `--usage` reports the tree snapshot; the
+  capabilities row gains `sessionBudgetScope: "tree"`. Measured: twenty
+  concurrent children reserve at roughly 240 to 900 reservations per second;
+  the lock is not the bottleneck.
+- Cooperative shutdown (ADR 0027): SIGTERM stops admission, journals a
+  `run_drain_requested` row, and grants `--shutdown-grace` seconds (default 10,
+  config `shutdownGraceSeconds`) for in-flight work to settle; a cooperative
+  drain ends `canceled` with no unknown rows, a forced drain leaves dispatched
+  operations `outcome_unknown` per ADR 0007. Headless and the REPL exit 143;
+  SIGINT keeps 130; `--json` terminal rows carry `drain: cooperative | forced`.
+  `--supervise` adds an optional parent that owns the hard-kill deadline for
+  the blocking-extension case and never writes the journal.
+- Argument-aware approvals (ADR 0011): ordered argument-prefix rules
+  (`approvals.rules` in config, `--approval-rule`) evaluated at dispatch on the
+  exact arguments a tool will receive, with bash commands split into segments
+  on `&&`, `||`, `|`, `;`, `&`, and newlines; deny beats prompt beats allow and
+  anything the tokenizer cannot read confidently falls to prompt. Rules carry
+  inline tests run at load; a failing example refuses to start. Session-scoped
+  grants (`g` at the prompt, `--grant`, `/approvals revoke`) are additive
+  `tool_approval_grant` journal rows replayed on resume and can never override
+  a deny.
+
 ### Governance
 - ADRs 0021 (proposed), 0022 (accepted, unimplemented), 0023, 0024
   (implemented); amendments to 0010 and 0015; token-rent rule re-homed as a
