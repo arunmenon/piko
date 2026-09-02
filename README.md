@@ -158,9 +158,13 @@ Headless exit codes are semantic and fail closed — success must be proven by a
 | 2 | budget exceeded (`--max-turns`, tool calls, wall time, tokens, USD spend) |
 | 3 | incomplete or unknown terminal state |
 | 4 | suspended awaiting tool approval; resume with `--approve`/`--reject`/`--edit` |
+| 5 | newest resumable session is locked by another process; see `pi doctor sessions` |
 | 130 | canceled by the user |
 
 A parent process spawning children must treat exit 4 as "forward the decision", not as failure.
+A child started with `--parent-run <id>` echoes that id on every JSON row and in telemetry;
+`--max-depth <n>` (default 2) with the exported `PI_DEPTH` variable refuses a piko started
+past the cap with exit 1 before any model call.
 
 ## Sandboxing
 
@@ -227,7 +231,9 @@ distinction between the legacy Terminal-Bench adapter and current Harbor-based b
   prompt and uses workspace-relative paths.
 - **Tool extensions**: `--ext path/to/module.js` (or config `extensions`); the compiled JavaScript
   module default-exports `Tool[]`. Exports, duplicate names, and aggregate schema size are validated;
-  extension schemas still add to provider-visible context.
+  extension schemas still add to provider-visible context. `--ext path/to/module.js@sha256:<hex>`
+  pins the module to a content hash verified before import, and every load is journaled as an
+  `extension_loaded` row.
 - **AGENTS.md**: loaded only with `--trust-project`, delimited as project-supplied instructions,
   and capped at 32 KiB.
 

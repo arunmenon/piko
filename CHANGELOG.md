@@ -17,6 +17,20 @@ Every user-visible change since the 0.2.0 tree. No tag exists yet; ADR 0019
   support; tiered rows no longer rejected. (ADR 0020)
 - Fixed-context budget gate ratcheted against a committed baseline (815
   tokens); the tool-batching prompt line reverted under the token-rent rule.
+- Spend ceilings are legible: every dollar stop reports the attempted
+  reservation, spend so far, outstanding reserved exposure, and the configured
+  ceiling on the `budget_exceeded` and `turn_done` events, on one printed line
+  in headless and the REPL, and as `spendCeiling` in `--usage`. Output only;
+  reservation math and scope unchanged. (ADR 0020 addendum)
+- User-visible budget text says "turn budget", not "run budget": validation
+  errors, the headless terminal line, and `--max-*` flag help. Identifiers
+  unchanged. (ADR 0009 addendum)
+- `check-budget` reports two numbers: the ratcheted default prefix and a
+  bounded worst-case first request (prefix plus the AGENTS.md, skill index,
+  and tool schema caps), plus a per-provider cache-eligibility line; skill
+  entry names and paths are reported as unbounded. The ratchet and the
+  1000-token ceiling still apply to the default prefix only, and the gate now
+  builds first. (ADR 0001 addendum)
 
 ### Sessions
 - Lock-capability session API: `Session.open()` returns a read-only view;
@@ -26,6 +40,22 @@ Every user-visible change since the 0.2.0 tree. No tag exists yet; ADR 0019
   `pi doctor sessions` lists lock state and recovers verifiably dead local
   locks; v2 lock records carry host and start time. (ADR 0024, ADR 0010
   amendment for exit 5 and `code: locked_session_head`)
+- Journals record a `journal_repaired` row on the first append after a
+  tolerated partial tail (repair kind, byte offset, bytes discarded);
+  `pi doctor sessions` reports the count per session in text and `--json`.
+  An append refused for exceeding the size limit no longer repairs the
+  boundary first, so a repair cannot occur without its record. (ADR 0015
+  addendum)
+- Bash calls record an optional planning-time `workspaceDigest` on their
+  `tool_planned` row (SHA-256 over `git rev-parse HEAD` and
+  `git status --porcelain=v1 -z`, best effort under 2 seconds, omitted outside
+  a git checkout) so a resumer can tell whether the workspace moved under an
+  unknown outcome; write takes an optional `expected_sha256` precondition;
+  an example-based replay conformance test covers the journal. (ADR 0007
+  addendum)
+- An additive `extension_loaded` journal row (path, sha256, tool names,
+  pinned) is written for every loaded extension. No schema generation bump.
+  (ADR 0012 addendum)
 
 ### Telemetry and privacy
 - `policy.env_sanitized` carries a count instead of the allowlist;
@@ -41,10 +71,62 @@ Every user-visible change since the 0.2.0 tree. No tag exists yet; ADR 0019
 - Retractions recorded: the flail-threshold claim; the 25/30 rerun demoted
   to narrative after its artifacts were lost.
 
+### Containment
+- Protected-path deny list inside the workspace: write and edit refuse
+  `.git/`, `.pi/`, `.agent/`, `.claude/`, `AGENTS.md`, `.mcp.json`, and the
+  workspace-root shell rc files, evaluated on the resolved path after symlink
+  resolution; reads unaffected; explicit opt-out `--allow-protected-paths`,
+  warned like `--allow-host-bash`. (ADR 0006 addendum)
+- ADR 0022 acceptance tests exist as `todo` in
+  `packages/core/tests/containment.test.ts` and fail on the current tree by
+  design; the evidence map points at them.
+
+### Bounded execution
+- Flail guard classifies every tool outcome, not only failures: calls are
+  hashed as tool name plus canonical arguments; identical succeeding calls
+  escalate on relaxed thresholds (nudge 4, stop 8) and an A,B,A,B alternation
+  of identical pairs on cycles (6, 8); error thresholds unchanged; a success
+  no longer clears the repeat counters, only a genuinely new call does.
+  Thresholds are dev-set tuned and not yet checked on the held-out draw.
+  (ADR 0005 addendum)
+- `--parent-run <id>` sets `parentRunId`, reaching telemetry and every
+  headless `--json` row; `--max-depth <n>` (default 2) with `PI_DEPTH`
+  exported to bash children refuses a piko started past the cap with exit 1
+  before any model call. Concurrency and tree-wide spend caps arrive with
+  ADR 0026. (ADR 0004 addendum)
+- `--ext <path>@sha256:<hex>` pins an extension to a content hash verified
+  before import; a mismatch refuses to start with exit 1 naming both digests.
+  (ADR 0012 addendum)
+
+### Context economics
+- The compaction summarizer reuses the live system prompt and tool list with
+  the instruction as the final user message so it can hit the cached prefix;
+  tool use is disabled through a new `toolChoice: 'none'` request field
+  mapped for both providers. Compaction appends a rehydration block
+  (AGENTS.md on a trusted run, the last 5 written or edited paths as stubs).
+  Explicit compactions-per-turn cap (default 3) ends the turn `incomplete`
+  before another summary is billed. (ADR 0003 addendum)
+- Startup prints one stderr line stating the fixed prefix size against the
+  provider's minimum cacheable size; `/model` warns that a mid-session switch
+  changes the cache key; `profiles.<name>.cacheTtl` selects the Anthropic
+  cache lifetime (5m or 1h); bench/compare_runs.py gains a cache hit-rate
+  column. (ADR 0014 addendum)
+
+### Headless and JSON
+- The first headless `--json` row carries a `capabilities` object: journal
+  schema generation, tool names, the exit-code set, and the budget scope
+  (`turn`). Additive and first-row only. (ADR 0010 addendum)
+
 ### Governance
 - ADRs 0021 (proposed), 0022 (accepted, unimplemented), 0023, 0024
   (implemented); amendments to 0010 and 0015; token-rent rule re-homed as a
   proposed amendment to 0001.
+- Red-team review (2026-09-02) committed with a remediation plan; dated
+  Research addenda on all 27 ADRs with a bibliography in docs/adr/README.md;
+  exit code 143 reserved in 0010; 0019 corrected to journal generation 2;
+  0023 and 0024 addenda on capability framing, expiry, network filesystems,
+  and PID reuse; proposed amendment drafts on 0018, 0025, and 0027 awaiting
+  owner decisions.
 
 ## 0.2.0 — 2026-08-19
 
