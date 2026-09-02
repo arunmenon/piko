@@ -1,14 +1,19 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { loadConfiguredExtensions, loadExtensions } from '../src/extensions.js';
+import { loadConfiguredExtensions, loadExtensions, parseExtensionRequest } from '../src/extensions.js';
 
 function extensionFile(directory: string, name: string, source: string): string {
   const path = join(directory, name);
   writeFileSync(path, source, 'utf8');
   return path;
+}
+
+function digestOf(path: string): string {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
 const validToolSource = (name: string): string => `({
@@ -27,11 +32,21 @@ test('loadExtensions supports JavaScript arrays, wrappers, and async factories',
     `export default async () => ({ tools: [${validToolSource('factory_tool')}] });`,
   );
 
-  const tools = await loadExtensions(['array.mjs', 'factory.mjs'], directory);
+  const loaded = await loadExtensions(['array.mjs', 'factory.mjs'], directory);
   assert.deepEqual(
-    tools.map((tool) => tool.name),
+    loaded.tools.map((tool) => tool.name),
     ['array_tool', 'factory_tool'],
   );
+  assert.deepEqual(
+    loaded.extensions.map((extension) => [extension.path, extension.toolNames, extension.pinned]),
+    [
+      ['array.mjs', ['array_tool'], false],
+      ['factory.mjs', ['factory_tool'], false],
+    ],
+  );
+  for (const extension of loaded.extensions) {
+    assert.equal(extension.sha256, digestOf(join(directory, extension.path)));
+  }
 });
 
 test('config extension paths are config-relative while explicit CLI paths remain cwd-relative', async () => {
@@ -43,7 +58,7 @@ test('config extension paths are config-relative while explicit CLI paths remain
   extensionFile(configDirectory, 'relative.mjs', `export default [${validToolSource('from_config')}];`);
   extensionFile(projectDirectory, 'relative.mjs', `export default [${validToolSource('from_cli')}];`);
 
-  const tools = await loadConfiguredExtensions({
+  const loaded = await loadConfiguredExtensions({
     configPaths: ['relative.mjs'],
     configFile: join(configDirectory, 'config.json'),
     cliPaths: ['relative.mjs'],
@@ -51,8 +66,12 @@ test('config extension paths are config-relative while explicit CLI paths remain
   });
 
   assert.deepEqual(
-    tools.map((tool) => tool.name),
+    loaded.tools.map((tool) => tool.name),
     ['from_config', 'from_cli'],
+  );
+  assert.deepEqual(
+    loaded.extensions.map((extension) => extension.sha256),
+    [digestOf(join(configDirectory, 'relative.mjs')), digestOf(join(projectDirectory, 'relative.mjs'))],
   );
 });
 
@@ -90,5 +109,51 @@ test('TypeScript extension sources fail clearly on the supported Node 20 runtime
   await assert.rejects(
     () => loadExtensions(['extension.ts'], directory),
     /TypeScript source files are not portable.*compile the extension to \.js, \.mjs, or \.cjs first/,
+  );
+});
+
+test('a pin suffix is read only when it is a full sha256 digest', () => {
+  assert.deepEqual(parseExtensionRequest('tools.mjs'), { path: 'tools.mjs' });
+  assert.deepEqual(parseExtensionRequest('node_modules/@scope/pack/tools.mjs'), {
+    path: 'node_modules/@scope/pack/tools.mjs',
+  });
+  const digest = 'a'.repeat(64);
+  assert.deepEqual(parseExtensionRequest(`tools.mjs@sha256:${digest.toUpperCase()}`), {
+    path: 'tools.mjs',
+    expectedDigest: digest,
+  });
+  // too short to be a digest: the whole string stays a path
+  assert.deepEqual(parseExtensionRequest('tools.mjs@sha256:abc'), { path: 'tools.mjs@sha256:abc' });
+});
+
+test('a matching sha256 pin loads the extension and records it as pinned', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'pi-extensions-pin-'));
+  const path = extensionFile(directory, 'pinned.mjs', `export default [${validToolSource('pinned_tool')}];`);
+  const digest = digestOf(path);
+
+  const loaded = await loadExtensions([`pinned.mjs@sha256:${digest}`], directory);
+  assert.deepEqual(
+    loaded.tools.map((tool) => tool.name),
+    ['pinned_tool'],
+  );
+  assert.deepEqual(loaded.extensions, [
+    { path: 'pinned.mjs', sha256: digest, toolNames: ['pinned_tool'], pinned: true },
+  ]);
+});
+
+test('a mismatched sha256 pin refuses the extension and names both digests', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'pi-extensions-pin-mismatch-'));
+  const path = extensionFile(directory, 'swapped.mjs', `export default [${validToolSource('swapped_tool')}];`);
+  const digest = digestOf(path);
+  const stalePin = `${digest.startsWith('0') ? '1' : '0'}${digest.slice(1)}`;
+
+  await assert.rejects(
+    () => loadExtensions([`swapped.mjs@sha256:${stalePin}`], directory),
+    (error: Error) => {
+      assert.match(error.message, /extension swapped\.mjs: sha256 pin mismatch/);
+      assert.ok(error.message.includes(stalePin), 'the expected digest is named');
+      assert.ok(error.message.includes(digest), 'the digest on disk is named');
+      return true;
+    },
   );
 });

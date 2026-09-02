@@ -9,6 +9,7 @@ export * from './types.js';
 export * from './filesystem.js';
 export * from './validation.js';
 export { readTool, writeTool, editTool, bashTool, mapTool };
+export { DEPTH_ENVIRONMENT_NAME, readProcessDepth } from './bash.js';
 
 export function defaultTools(): Tool[] {
   return [readTool, writeTool, editTool, bashTool, mapTool];

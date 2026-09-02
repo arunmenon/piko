@@ -31,12 +31,33 @@ const SAFE_ENVIRONMENT_NAMES = [
   'TERM',
   'COLORTERM',
   'NO_COLOR',
+  // ADR 0004 nesting depth. Allowlisted because a child is meant to see it, but
+  // the inherited value is always replaced below with this process's depth plus
+  // one: passing the parent's own number through would let every generation
+  // claim the same depth and defeat --max-depth.
+  'PI_DEPTH',
   // Required to locate executables on Windows environments that provide bash.
   'SystemRoot',
   'WINDIR',
   'COMSPEC',
   'PATHEXT',
 ] as const;
+
+/** Environment variable carrying how deep this piko sits in a spawn tree (ADR 0004). */
+export const DEPTH_ENVIRONMENT_NAME = 'PI_DEPTH';
+
+/**
+ * This process's nesting depth: 0 when unset (a root run), the inherited number
+ * when it is a non-negative safe integer, and undefined when the value is
+ * malformed so a controller can refuse to guess.
+ */
+export function readProcessDepth(environment: NodeJS.ProcessEnv = process.env): number | undefined {
+  const raw = environment[DEPTH_ENVIRONMENT_NAME];
+  if (raw === undefined || raw === '') return 0;
+  const depth = Number(raw);
+  if (!Number.isSafeInteger(depth) || depth < 0) return undefined;
+  return depth;
+}
 
 /** Names this policy permits a child to inherit from the parent environment. */
 function inheritedNames(policy?: BashExecutionPolicy): Set<string> {
@@ -65,6 +86,10 @@ export function sanitizedBashEnvironment(policy?: BashExecutionPolicy): NodeJS.P
   }
   // A usable deterministic fallback when a parent launches pi without PATH.
   if (!environment['PATH']) environment['PATH'] = '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
+  // ADR 0004: a piko spawned from this shell must see one level deeper than we
+  // do, so --max-depth can stop an unbounded spawn chain. Set explicitly on
+  // every call; a malformed inherited value counts as the root depth.
+  environment[DEPTH_ENVIRONMENT_NAME] = String((readProcessDepth() ?? 0) + 1);
   for (const [name, value] of Object.entries(policy?.environment ?? {})) {
     if (value === undefined) delete environment[name];
     else environment[name] = value;

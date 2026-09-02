@@ -1067,6 +1067,28 @@ export class Session {
     this.append({ t: 'session_ready', v: 2, at: now() });
   }
 
+  /**
+   * Record one extension module admitted at startup (ADR 0012). Written for
+   * every loaded extension, pinned or not, so a reader can tell which code the
+   * session actually ran with.
+   */
+  recordExtensionLoaded(extension: {
+    path: string;
+    sha256: string;
+    toolNames: readonly string[];
+    pinned: boolean;
+  }): void {
+    this.append({
+      t: 'extension_loaded',
+      v: 2,
+      at: now(),
+      path: extension.path,
+      sha256: extension.sha256,
+      toolNames: [...extension.toolNames],
+      pinned: extension.pinned,
+    });
+  }
+
   beginModelRequest(
     model: string,
     options: { requestId?: string; messageCount?: number; spendReservation?: SpendReservation } = {},

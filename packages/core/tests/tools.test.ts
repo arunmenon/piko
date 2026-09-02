@@ -314,6 +314,30 @@ test('bash inherits a minimal environment and omits credentials by default', asy
   }
 });
 
+test('bash children carry this process nesting depth plus one', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'pi-bash-depth-'));
+  const originalDepth = process.env['PI_DEPTH'];
+  const readDepth = async (): Promise<string> => {
+    const result = await bashTool.execute({ command: `printf '%s' "$PI_DEPTH"` }, makeContext(root));
+    return (result.content[0] as { text: string }).text;
+  };
+  try {
+    delete process.env['PI_DEPTH'];
+    assert.equal(await readDepth(), '1', 'a root run hands its children depth 1');
+
+    process.env['PI_DEPTH'] = '2';
+    assert.equal(await readDepth(), '3');
+
+    // A value the parent process cannot vouch for counts as the root depth
+    // rather than being passed through unchanged.
+    process.env['PI_DEPTH'] = 'garbage';
+    assert.equal(await readDepth(), '1');
+  } finally {
+    if (originalDepth === undefined) delete process.env['PI_DEPTH'];
+    else process.env['PI_DEPTH'] = originalDepth;
+  }
+});
+
 test('bash policy can explicitly inject environment without inheriting other variables', async () => {
   const root = mkdtempSync(join(tmpdir(), 'pi-bash-policy-'));
   const localContext = makeContext(root, {
