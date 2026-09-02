@@ -224,6 +224,7 @@ export class ToolWorkerHost {
     canaryPath: string;
     probePort: number;
     markerName: string;
+    shellPath: string | undefined;
     timeoutMs: number;
   }): Promise<SandboxSelfTestChecks> {
     const id = this.nextRequestId++;
@@ -234,6 +235,7 @@ export class ToolWorkerHost {
         canaryPath: input.canaryPath,
         probePort: input.probePort,
         markerName: input.markerName,
+        shellPath: input.shellPath,
       },
       input.timeoutMs,
     );

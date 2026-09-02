@@ -41,6 +41,8 @@ export interface WorkerSelfTestMessage {
   readonly probePort: number;
   /** Name of a variable the parent set in its own environment. */
   readonly markerName: string;
+  /** The shell the parent resolved, which the worker must be able to start. */
+  readonly shellPath: string | undefined;
 }
 
 export interface WorkerResultMessage {

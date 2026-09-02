@@ -293,6 +293,39 @@ test('the self-test refuses a provider whose sandbox is deliberately broken', { 
   );
 });
 
+/**
+ * The fourth self-test check. A profile that starts node but refuses every
+ * other binary passes the first three checks and then hosts four working tools
+ * and one that always fails, which is worse than no sandbox because it looks
+ * like it works. Two rounds of CI reached exactly that state on a hosted macOS
+ * runner, so the check exists to turn it into a refusal with a reason.
+ */
+test(
+  'the self-test refuses a sandbox that cannot start a shell',
+  { skip: process.platform !== 'darwin' && 'this exec-denial is expressed as a Seatbelt profile' },
+  async () => {
+    const workspace = makeWorkspace('pi-executor-noexec-');
+    const nodeOnlyProvider = createSeatbeltProvider({
+      profileFor: (spec, privateTempDir) =>
+        seatbeltProfile(spec, privateTempDir).replace(
+          /^\(allow process-exec\*.*$/mu,
+          `(allow process-exec* (literal "${spec.nodeExecutablePath}"))`,
+        ),
+    });
+    const outcome = await acquireVerifiedExecutor(nodeOnlyProvider, workspace);
+    if ('executor' in outcome) {
+      await outcome.executor.release();
+      assert.fail('a sandbox that cannot start a shell passed the self-test');
+    }
+    assert.match(outcome.refusal, /does not permit starting a shell/u, outcome.refusal);
+    // The reason has to name the paths, or a failure on someone else's machine
+    // is unreadable.
+    assert.match(outcome.refusal, /parent resolved \//u, outcome.refusal);
+    assert.match(outcome.refusal, /EPERM|EACCES|ENOENT/u, outcome.refusal);
+    assert.match(outcome.refusal, /node \/.*shell \//u, outcome.refusal);
+  },
+);
+
 test('selectSandboxExecutor reports no executor when no provider is available', async () => {
   const workspace = makeWorkspace('pi-executor-none-');
   for (const mode of ['auto', 'require'] as const) {
@@ -301,6 +334,19 @@ test('selectSandboxExecutor reports no executor when no provider is available', 
     assert.match(selection.summary, /no provider available on this host/u);
     assert.equal(selection.summary.includes('\n'), false, 'the summary is one line');
   }
+});
+
+test('a working sandbox names the binaries it permitted', async (t) => {
+  if (await skipWithoutSandbox(t)) return;
+  const selection = await selectSandboxExecutor({
+    workspaceRoot: makeWorkspace('pi-executor-summary-'),
+    mode: 'auto',
+    providers: [platformProvider!],
+  });
+  assert.ok(selection.executor, selection.summary);
+  assert.match(selection.summary, /provider active/u);
+  assert.match(selection.summary, /node \/.*shell \//u, selection.summary);
+  await selection.executor.release();
 });
 
 test('selectSandboxExecutor off never looks for a provider', async () => {

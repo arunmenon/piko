@@ -27,22 +27,29 @@ const SYSTEM_READ_PATHS = [
 ] as const;
 
 /**
- * Directories a command inside the sandbox may execute out of. The package
- * prefixes are named whole rather than by their `bin` directory because the
- * entries in `bin` are usually symlinks into the package tree, and Seatbelt
- * judges the resolved target: `/opt/homebrew/bin` alone permits the link and
- * denies the binary it points at, which is how a hosted macOS runner produced
- * `spawn EPERM` for a Homebrew bash while `/bin/bash` would have been fine.
+ * Trees a command inside the sandbox may execute out of, as whole subpaths.
+ *
+ * Two rounds of CI taught this list. The package prefixes are named whole
+ * rather than by their `bin` directory because entries in `bin` are usually
+ * symlinks into the package tree and Seatbelt judges the resolved target.
+ * `/usr` and `/System` are named whole because a hosted runner still answered
+ * `spawn EPERM` with the resolved binaries named as literals, while the same
+ * runner's diagnostics showed an unfiltered `(allow process-exec)` starting
+ * bash without trouble: some path the worker reaches was outside every filter
+ * this list used to carry. Every tree here is already granted `file-read*`
+ * below and is system-owned and read-only, so permitting exec across it widens
+ * nothing that matters. The write boundary is untouched: the workspace and the
+ * private temporary directory remain the only writable places.
  */
 const SYSTEM_EXECUTABLE_PATHS = [
   '/bin',
   '/sbin',
-  '/usr/bin',
-  '/usr/sbin',
-  '/usr/libexec',
-  '/usr/local',
+  '/usr',
+  '/System',
+  '/Library',
   '/opt/homebrew',
   '/opt/local',
+  '/private/var/select',
 ] as const;
 
 /** Character devices a normal process writes to. Everything else under /dev is read-only. */
@@ -133,9 +140,15 @@ export function seatbeltProfile(spec: SandboxSpec, privateTempDir: string): stri
   for (const path of [...readPaths, ...writePaths, ...spec.executableRealPaths]) {
     for (const ancestor of ancestorsOf(path)) metadataPaths.add(ancestor);
   }
+  // The node prefix and piko's package root come first: the worker is those two
+  // trees, and a sandbox that cannot execute them cannot start at all.
   const executablePaths = [
-    ...new Set([join(spec.nodeInstallPrefix, 'bin'), ...executableDirectories]),
-    ...SYSTEM_EXECUTABLE_PATHS.filter((path) => existsSync(path)),
+    ...new Set([
+      spec.nodeInstallPrefix,
+      spec.pikoPackageRoot,
+      ...executableDirectories,
+      ...SYSTEM_EXECUTABLE_PATHS.filter((path) => existsSync(path)),
+    ]),
   ];
   const lines = [
     '(version 1)',
@@ -144,10 +157,11 @@ export function seatbeltProfile(spec: SandboxSpec, privateTempDir: string): stri
     '; provider, so there is no allowlist to get wrong (ADR 0018).',
     '(deny network*)',
     '(allow process-fork)',
-    // Directories, then the exact resolved binaries. The literals are what make
-    // this profile correct on a machine whose node or shell lives somewhere the
-    // directory list does not name.
-    `(allow process-exec ${executablePaths.map(sbplString).map((path) => `(subpath ${path})`).join(' ')} ${spec.executableRealPaths.map(sbplString).map((path) => `(literal ${path})`).join(' ')})`,
+    // The starred form covers both plain exec and the interpreter path a script
+    // with a shebang takes, which bash needs the moment it runs one. Trees
+    // first, then the exact resolved binaries, so a node or a shell living
+    // somewhere the tree list does not name is still permitted by name.
+    `(allow process-exec* ${executablePaths.map(sbplString).map((path) => `(subpath ${path})`).join(' ')} ${spec.executableRealPaths.map(sbplString).map((path) => `(literal ${path})`).join(' ')})`,
     `(allow file-read-metadata ${[...metadataPaths].sort().map(sbplString).map((path) => `(literal ${path})`).join(' ')})`,
     // The root directory node itself: node reads it while starting, and
     // granting the literal does not grant anything below it.

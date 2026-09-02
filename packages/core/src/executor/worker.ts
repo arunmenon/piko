@@ -10,6 +10,7 @@
  * The process writes exactly one thing to stdout, the protocol stream, so the
  * parent can parse it without heuristics. Diagnostics go to stderr.
  */
+import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { bashTool } from '../tools/bash.js';
@@ -25,6 +26,7 @@ import {
   type WorkerRequest,
   type WorkerResponse,
 } from './protocol.js';
+import { resolveExecutableOnPath, WORKER_SHELL_NAME } from './resolve-executable.js';
 import type { SandboxSelfTestChecks } from './types.js';
 
 const toolsByName = new Map<string, Tool>(
@@ -33,6 +35,9 @@ const toolsByName = new Map<string, Tool>(
 
 /** How long the network probe waits before calling a silent socket a failure. */
 const NETWORK_PROBE_TIMEOUT_MS = 2_000;
+
+/** How long the child-process probe waits for `bash -c true` to finish. */
+const CHILD_PROCESS_PROBE_TIMEOUT_MS = 5_000;
 
 const inFlight = new Map<number, AbortController>();
 
@@ -46,7 +51,51 @@ function send(message: WorkerResponse): void {
  * perform the forbidden action counts as a pass, and only an unambiguous
  * success counts as a failure.
  */
-async function runSelfTest(canaryPath: string, probePort: number, markerName: string): Promise<SandboxSelfTestChecks> {
+/**
+ * Start one child, exactly the way the bash tool starts one: same detached
+ * process group, same ignored stdin. Resolves to `ok` or to a short reason, so
+ * a denial reports its errno rather than a stack.
+ */
+function probeChildProcess(command: string): Promise<string> {
+  return new Promise((resolveProbe) => {
+    let settled = false;
+    const settle = (outcome: string): void => {
+      if (settled) return;
+      settled = true;
+      resolveProbe(outcome);
+    };
+    let child;
+    try {
+      child = spawn(command, ['-c', 'true'], { stdio: ['ignore', 'ignore', 'ignore'], detached: true });
+    } catch (error) {
+      // A sandbox denial arrives here rather than on the error event: node
+      // throws synchronously for spawn errno values it does not defer, EPERM
+      // among them.
+      settle(`${(error as NodeJS.ErrnoException).code ?? String(error)}`);
+      return;
+    }
+    child.on('error', (error) => settle(`${(error as NodeJS.ErrnoException).code ?? String(error)}`));
+    child.on('exit', (code, signal) =>
+      settle(code === 0 ? 'ok' : `exit ${code ?? 'null'}${signal ? ` signal ${signal}` : ''}`),
+    );
+    const deadline = setTimeout(() => {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // already gone
+      }
+      settle('timed out');
+    }, CHILD_PROCESS_PROBE_TIMEOUT_MS);
+    deadline.unref();
+  });
+}
+
+async function runSelfTest(
+  canaryPath: string,
+  probePort: number,
+  markerName: string,
+  shellPath: string | undefined,
+): Promise<SandboxSelfTestChecks> {
   let canaryReadRefused = true;
   let canaryDetail = 'read refused';
   try {
@@ -74,8 +123,21 @@ async function runSelfTest(canaryPath: string, probePort: number, markerName: st
     );
   });
 
+  // Both spellings, because they can disagree: the parent resolved one shell
+  // from its own view of PATH, and the tool will hand a bare name to the
+  // operating system's own search. Reporting each outcome separately is what
+  // turns a bare EPERM on a remote runner into a path a human can act on.
+  const workerResolvedShell = resolveExecutableOnPath(WORKER_SHELL_NAME, process.env['PATH'] ?? '');
+  const byAbsolutePath = shellPath === undefined ? 'no shell was resolved by the parent' : await probeChildProcess(shellPath);
+  const byName = await probeChildProcess(WORKER_SHELL_NAME);
+  const childProcessStarted = byAbsolutePath === 'ok' && byName === 'ok';
+
   const markerValue = process.env[markerName];
   return {
+    childProcessStarted,
+    childProcessDetail:
+      `parent resolved ${shellPath ?? 'nothing'} (${byAbsolutePath}); ` +
+      `"${WORKER_SHELL_NAME}" on the worker PATH resolves to ${workerResolvedShell ?? 'nothing'} (${byName})`,
     canaryReadRefused,
     canaryDetail,
     networkConnectRefused: network.refused,
@@ -130,7 +192,7 @@ async function handle(message: WorkerRequest): Promise<void> {
       inFlight.get(message.id)?.abort(new Error('canceled by the parent process'));
       return;
     case 'selftest': {
-      const checks = await runSelfTest(message.canaryPath, message.probePort, message.markerName);
+      const checks = await runSelfTest(message.canaryPath, message.probePort, message.markerName, message.shellPath);
       send({ kind: 'selftest_result', id: message.id, checks });
       return;
     }

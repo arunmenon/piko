@@ -44,6 +44,12 @@ export interface SandboxSpec {
    * `Cellar/`, for instance) needs the target permitted, not the link.
    */
   readonly executableRealPaths: readonly string[];
+  /**
+   * The shell the worker's bash tool will reach on this PATH, resolved. Named
+   * separately from the list above because a failure to start it is the one
+   * self-test result worth quoting back to a human verbatim.
+   */
+  readonly shellExecutablePath: string | undefined;
   /** Built worker entry the sandbox executes. */
   readonly workerEntryPath: string;
   /** The sanitized allowlist environment the worker process receives. */
@@ -126,11 +132,24 @@ export interface SandboxSelfTestChecks {
   /** A marker variable present in the parent environment must be absent here. */
   readonly parentMarkerAbsent: boolean;
   readonly markerDetail: string;
+  /**
+   * The worker must be able to start a child process: the shell the bash tool
+   * will reach, run as `bash -c true` through the same spawn path that tool
+   * uses. A sandbox that hosts four tools and refuses the fifth is worse than
+   * no sandbox, because it looks like it works.
+   */
+  readonly childProcessStarted: boolean;
+  readonly childProcessDetail: string;
 }
 
 /** True only when all three checks held. */
 export function selfTestPassed(checks: SandboxSelfTestChecks): boolean {
-  return checks.canaryReadRefused && checks.networkConnectRefused && checks.parentMarkerAbsent;
+  return (
+    checks.canaryReadRefused &&
+    checks.networkConnectRefused &&
+    checks.parentMarkerAbsent &&
+    checks.childProcessStarted
+  );
 }
 
 /** One line naming the first failed check, for a refusal message. */
@@ -138,5 +157,6 @@ export function describeSelfTestFailure(checks: SandboxSelfTestChecks): string |
   if (!checks.canaryReadRefused) return `a file outside the workspace was readable inside it (${checks.canaryDetail})`;
   if (!checks.networkConnectRefused) return `a network connection succeeded inside it (${checks.networkDetail})`;
   if (!checks.parentMarkerAbsent) return `a parent environment variable was visible inside it (${checks.markerDetail})`;
+  if (!checks.childProcessStarted) return `the sandbox profile does not permit starting a shell: ${checks.childProcessDetail}`;
   return undefined;
 }
