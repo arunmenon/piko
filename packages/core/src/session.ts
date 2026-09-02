@@ -1226,14 +1226,11 @@ export class Session {
   }
 
   /**
-   * Journal a call before dispatch. `workspaceDigest` is the planning-time
-   * workspace fingerprint (0007) a resumer compares against when the call ends
-   * `outcome_unknown`; it is optional because it is best-effort by design.
+   * Journal a call before dispatch. Planning is pure bookkeeping: it records
+   * what the model asked for and starts no process of its own, so nothing about
+   * the workspace is measured here (0007 addendum, 2026-09-02).
    */
-  planTool(
-    call: ToolCallBlock,
-    options: { executionId?: string; requestId?: string; workspaceDigest?: WorkspaceDigest } = {},
-  ): string {
+  planTool(call: ToolCallBlock, options: { executionId?: string; requestId?: string } = {}): string {
     const executionId = options.executionId ?? randomUUID();
     this.append({
       t: 'tool_planned',
@@ -1242,7 +1239,6 @@ export class Session {
       executionId,
       ...(options.requestId ? { requestId: options.requestId } : {}),
       call,
-      ...(options.workspaceDigest ? { workspaceDigest: options.workspaceDigest } : {}),
     });
     return executionId;
   }
@@ -1277,8 +1273,22 @@ export class Session {
     });
   }
 
-  startTool(executionId: string): void {
-    this.append({ t: 'tool_started', v: 2, at: now(), executionId });
+  /**
+   * Journal that a call is being dispatched. `workspaceDigest` is the
+   * dispatch-time workspace fingerprint (0007) a resumer compares against when
+   * the call ends `outcome_unknown`. It rides this row rather than the planned
+   * one because taking it runs host git, which may only happen for a call that
+   * has already cleared policy, budget, approval, and cancellation. Optional,
+   * because the fingerprint is best-effort by design.
+   */
+  startTool(executionId: string, options: { workspaceDigest?: WorkspaceDigest } = {}): void {
+    this.append({
+      t: 'tool_started',
+      v: 2,
+      at: now(),
+      executionId,
+      ...(options.workspaceDigest ? { workspaceDigest: options.workspaceDigest } : {}),
+    });
   }
 
   /** Terminal state for a planned call rejected before dispatch (budget, policy, or cancellation). */

@@ -70,7 +70,9 @@ industry harnesses.
   turns append. Explicit microcompaction rewrites only eligible old tool-result blocks, while full
   compaction starts a lineage-linked session and preserves the prior transcript.
 - **Fail-closed budgets**: model requests, tool calls, provider-reported tokens, USD spend, and every retained
-  tool result are bounded. Wall deadlines bound harness waits and bundled provider/bash paths;
+  tool result are bounded. Wall deadlines bound harness waits and bundled provider/bash paths,
+  including the git workspace fingerprint taken when a bash call is dispatched, which is capped by
+  the turn's remaining wall time, canceled with the turn, and killed as a process group;
   arbitrary in-process extension code cannot be forcibly preempted or have its side effects rolled
   back. `max_tokens` and incomplete streams are non-success states.
 

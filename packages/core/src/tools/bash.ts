@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
@@ -102,59 +102,192 @@ export function sanitizedBashEnvironment(policy?: BashExecutionPolicy): NodeJS.P
 /** Total wall-clock budget for every git probe behind one workspace digest. */
 export const WORKSPACE_DIGEST_TIMEOUT_MS = 2_000;
 
+/** Stdout a single probe will buffer before it is abandoned as unusable. */
+const MAX_DIGEST_PROBE_BYTES = 8 * 1024 * 1024;
+
+/** What a probe that produced nothing contributes to the hash. */
+const EMPTY_PROBE_OUTPUT = Buffer.alloc(0);
+/** Keeps one probe's trailing bytes from being read as the next probe's leading ones. */
+const PROBE_SEPARATOR = Buffer.from([0]);
+
 /**
- * Run one git probe under the remaining slice of the digest budget. Resolves to
- * undefined for every failure mode (git absent, not a checkout, slow, non-zero
- * exit), because a digest is a diagnostic aid and must never fail a tool call.
+ * Configuration forced onto every digest probe so reading a workspace cannot
+ * execute code the workspace chose. `git status` otherwise honours repository
+ * configuration: `core.fsmonitor` names a program git runs, hooks can run on
+ * some paths, and submodule traversal multiplies both across nested checkouts.
+ * The paired GIT_CONFIG_NOSYSTEM / GIT_CONFIG_GLOBAL environment entries close
+ * the same door for system and per-user configuration, which `-c` cannot.
  */
-function runGitProbe(
-  gitArguments: readonly string[],
-  cwd: string,
-  timeoutMs: number,
-  environment: NodeJS.ProcessEnv,
-): Promise<string | undefined> {
-  if (timeoutMs <= 0) return Promise.resolve(undefined);
-  return new Promise((resolveProbe) => {
-    execFile(
-      'git',
-      [...gitArguments],
-      { cwd, timeout: timeoutMs, env: environment, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' },
-      (error, stdout) => resolveProbe(error ? undefined : stdout),
-    );
-  });
+const GIT_PROBE_OPTIONS = [
+  '-c',
+  'core.fsmonitor=false',
+  '-c',
+  'core.hooksPath=/dev/null',
+  '-c',
+  'core.untrackedCache=false',
+  '-c',
+  'core.pager=cat',
+  '--no-optional-locks',
+] as const;
+
+/** Send a signal to a detached child's whole process group, never to this one. */
+function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+  try {
+    if (child.pid) process.kill(-child.pid, signal);
+    else child.kill(signal);
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {
+      /* already gone */
+    }
+  }
 }
 
 /**
- * Planning-time fingerprint of a workspace, recorded on a bash call's `planned`
+ * Run one git probe under the remaining slice of the digest budget. Resolves to
+ * undefined for every failure mode (git absent, not a checkout, slow, aborted,
+ * non-zero exit), because a digest is a diagnostic aid and must never fail a
+ * tool call. Stdout is kept as raw bytes: the digest hashes what git wrote, not
+ * a lossy decoding of it, so a path that is not valid UTF-8 still fingerprints.
+ *
+ * The probe owns a process group and is killed as a group, so a git that hangs
+ * or leaves a helper behind cannot outlive the call that asked for it.
+ */
+function runGitProbe(
+  gitArguments: readonly string[],
+  workspaceRoot: string,
+  timeoutMs: number,
+  environment: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<Buffer | undefined> {
+  if (timeoutMs <= 0 || signal?.aborted) return Promise.resolve(undefined);
+  return new Promise((resolveProbe) => {
+    let child: ChildProcess;
+    try {
+      child = spawn('git', [...GIT_PROBE_OPTIONS, ...gitArguments], {
+        cwd: workspaceRoot,
+        env: environment,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        // detached => own process group, so the deadline and the turn's abort
+        // can kill the whole tree rather than only the git that was launched.
+        detached: true,
+      });
+    } catch {
+      resolveProbe(undefined);
+      return;
+    }
+    const stdoutChunks: Buffer[] = [];
+    let stdoutBytes = 0;
+    let exitCode: number | null = null;
+    let abandoned = false;
+    let settled = false;
+    const settle = (value: Buffer | undefined): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(probeTimer);
+      signal?.removeEventListener('abort', onAbort);
+      resolveProbe(value);
+    };
+    // A probe that ran out of budget, was canceled, or overflowed is not merely
+    // ignored: its process group dies before the promise resolves.
+    const abandonProbe = (): void => {
+      abandoned = true;
+      killProcessGroup(child, 'SIGKILL');
+      settle(undefined);
+    };
+    const probeTimer = setTimeout(abandonProbe, timeoutMs);
+    const onAbort = (): void => abandonProbe();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > MAX_DIGEST_PROBE_BYTES) {
+        abandonProbe();
+        return;
+      }
+      stdoutChunks.push(chunk);
+    });
+    child.on('error', () => settle(undefined));
+    child.on('exit', (code) => {
+      exitCode = code;
+      // Kill the group even on a clean exit: a helper git started (an fsmonitor
+      // daemon on a checkout that configured one before this probe disabled it)
+      // must not outlive the probe.
+      killProcessGroup(child, 'SIGKILL');
+    });
+    child.on('close', () => {
+      if (abandoned) return;
+      settle(exitCode === 0 ? Buffer.concat(stdoutChunks) : undefined);
+    });
+  });
+}
+
+/** Environment for a digest probe: the sanitized bash set, plus the two git
+ *  configuration sources `-c` cannot reach. */
+function gitProbeEnvironment(policy?: BashExecutionPolicy): NodeJS.ProcessEnv {
+  const environment = sanitizedBashEnvironment(policy);
+  environment['GIT_CONFIG_NOSYSTEM'] = '1';
+  environment['GIT_CONFIG_GLOBAL'] = '/dev/null';
+  return environment;
+}
+
+export interface WorkspaceDigestOptions {
+  /** The turn's cancellation signal: the probe ends when the turn ends. */
+  readonly signal?: AbortSignal;
+  /** Wall time the turn has left. Caps the probe when it is the smaller bound. */
+  readonly remainingWallTimeMs?: number;
+}
+
+/**
+ * Dispatch-time fingerprint of a workspace, recorded on a bash call's `started`
  * row (ADR 0007). A resumer that finds the call `outcome_unknown` can recompute
  * this and tell whether the workspace moved underneath it.
  *
- * The digest is SHA-256 over `git rev-parse HEAD` plus `git status --porcelain=v1 -z`.
- * It is best-effort under a total 2 second budget: when git is absent, slow, or
- * the directory is not a checkout, the result is undefined and the planned row
- * simply carries no digest. An absent digest never means "unchanged".
+ * The digest is SHA-256 over the raw bytes of `git rev-parse HEAD` and
+ * `git status --porcelain=v1 -z --ignore-submodules=all`. It is best-effort
+ * under a total budget of 2 seconds for all invocations together, further
+ * capped by the caller's remaining turn wall time: when git is absent, slow,
+ * canceled, or the directory is not a checkout, the result is undefined and the
+ * started row simply carries no digest. An absent digest never means
+ * "unchanged".
+ *
+ * This runs host git, so it is a dispatch-time probe and never a planning-time
+ * one: callers must reach it only once a bash call has cleared policy, budget,
+ * approval, and cancellation.
  */
 export async function workspaceDigestFor(
-  workspace: string,
+  workspaceRoot: string,
   policy?: BashExecutionPolicy,
+  options: WorkspaceDigestOptions = {},
 ): Promise<WorkspaceDigest | undefined> {
-  const environment = sanitizedBashEnvironment(policy);
-  const deadline = Date.now() + WORKSPACE_DIGEST_TIMEOUT_MS;
+  const environment = gitProbeEnvironment(policy);
+  const budgetMs = Math.min(
+    WORKSPACE_DIGEST_TIMEOUT_MS,
+    options.remainingWallTimeMs ?? WORKSPACE_DIGEST_TIMEOUT_MS,
+  );
+  if (budgetMs <= 0) return undefined;
+  // One deadline for the whole probe, so N invocations cannot each spend the
+  // budget in turn.
+  const deadline = Date.now() + budgetMs;
   const remaining = (): number => deadline - Date.now();
-  let insideWorkTree: string | undefined;
-  try {
-    insideWorkTree = await runGitProbe(['rev-parse', '--is-inside-work-tree'], workspace, remaining(), environment);
-  } catch {
-    return undefined;
-  }
-  if (insideWorkTree?.trim() !== 'true') return undefined;
-  // An unborn branch is still a checkout: HEAD contributes an empty string and
-  // the porcelain status carries the whole state.
-  const head = (await runGitProbe(['rev-parse', 'HEAD'], workspace, remaining(), environment)) ?? '';
-  const status = await runGitProbe(['status', '--porcelain=v1', '-z'], workspace, remaining(), environment);
+  // An unborn branch is still a checkout: HEAD contributes nothing and the
+  // porcelain status carries the whole state. A directory that is not a
+  // checkout fails the status probe instead, and records no digest at all.
+  const head = await runGitProbe(['rev-parse', 'HEAD'], workspaceRoot, remaining(), environment, options.signal);
+  const status = await runGitProbe(
+    ['status', '--porcelain=v1', '-z', '--ignore-submodules=all'],
+    workspaceRoot,
+    remaining(),
+    environment,
+    options.signal,
+  );
   if (status === undefined) return undefined;
-  const digest = createHash('sha256').update(head.trim()).update('\0').update(status).digest('hex');
-  return { kind: 'git', algorithm: 'sha256', digest, workspace };
+  const digest = createHash('sha256')
+    .update(head ?? EMPTY_PROBE_OUTPUT)
+    .update(PROBE_SEPARATOR)
+    .update(status)
+    .digest('hex');
+  return { kind: 'git', algorithm: 'sha256', digest, workspace: workspaceRoot };
 }
 
 interface BashResult {
@@ -196,18 +329,7 @@ function runBash(
     let settled = false;
     let escalationTimer: NodeJS.Timeout | undefined;
 
-    const killGroup = (sig: NodeJS.Signals) => {
-      try {
-        if (child.pid) process.kill(-child.pid, sig);
-        else child.kill(sig);
-      } catch {
-        try {
-          child.kill(sig);
-        } catch {
-          /* already gone */
-        }
-      }
-    };
+    const killGroup = (sig: NodeJS.Signals) => killProcessGroup(child, sig);
     const terminate = () => {
       killGroup('SIGTERM');
       escalationTimer ??= setTimeout(() => killGroup('SIGKILL'), 2000);
