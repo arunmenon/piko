@@ -9,3 +9,6 @@ bench/__pycache__/
 artifacts/
 .pi/
 bench/model-prices.json
+
+# live operational state, never evidence (T1.1, review finding 6)
+.project/telemetry/

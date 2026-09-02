@@ -1,31 +1,27 @@
-> SUPERSEDED 2026-09-02 by capability-matrix-content-2026-09-02-r3.md (digest sha256:b5d8e0d40b54d92d). Retained for provenance; do not fact-check against this file. Known stale claim: budget scope stated as per-run / in every mode; corrected to per-turn.
+# capability-matrix (artifact content, revision 3, 2026-09-02)
 
-# Capability matrix study (artifact content, revision 2 — post-grounding, 2026-09-01)
-
-Extraction of the published matrix artifact AFTER the 13-agent grounding
-workflow (38/143 cells revised; verdicts in
-capability-matrix-grounding-2026-09-01.json). Supersedes the pre-grounding
-extract for review purposes. Glyphs: filled=strong, half=partial,
-open=absent, ?=unverified.
+Extraction of the published artifact after the T1 per-turn scope correction. Supersedes capability-matrix-content-2026-09-01-r2.md. Content digest sha256:b5d8e0d40b54d92d. Layout flattened; wording verbatim.
 
 ---
 Engineering Strategy · Competitive Capability Study · September 2026 
 
 # Where piko stands: a capability matrix against the leading agentic harnesses 
 
-Thirteen harnesses, eleven dimensions, 143 cells — every one verified against primary sources by a 13-agent grounding workflow that revised 38 of our own grades, including piko's. The humbling result is the finding. 
+Thirteen harnesses, eleven dimensions, 143 cells — verified by a 13-agent grounding workflow, then independently replicated by a second investigator whose blind pass agreed on 63% of cells and killed two of our exclusivity claims. Both correction rounds are in the page. 
 
 1 · Method and evidence 
 
 ## How each cell earned its mark 
 
-Two-stage method. Stage one: census from the Harbor benchmark framework's agent registry (41 harnesses) filtered to 13 candidates, with draft grades from session research. Stage two — the stage that mattered: a 13-agent grounding workflow, one adversarial verifier per row, instructed to confirm or refute every cell from primary sources only (vendor docs and repos fetched live; local pinned sources for rows we had read at source) under a no-guess rule: anything unestablishable returns "unverified." 
+Three-stage method. Stage one: census from the Harbor benchmark framework's agent registry (41 harnesses) filtered to 13 candidates, with draft grades from session research. Stage two — the stage that mattered: a 13-agent grounding workflow, one adversarial verifier per row, instructed to confirm or refute every cell from primary sources only (vendor docs and repos fetched live; local pinned sources for rows we had read at source) under a no-guess rule: anything unestablishable returns "unverified." Stage three: an independent replication by a second investigator (blind re-investigation, then a cell diff), which agreed on 90 of 143 cells, killed two exclusivity claims, and drove the adjudicated regrade this page now shows. 
 
 - The grounding changed 38 of 143 cells — in both directions. Competitors were upgraded 24 times (Claude Code's hard budget cap, mini-swe-agent's enforced cost limit, DeepSeek's fail-closed approvals); piko's own row lost two grades (isolation to absent, benchmark evidence to partial). Every verdict carries its source and fact in the committed grounding artifact. 
 
 - Evidence grades per row: A = source-read/benchmarked by us (Terminus-2, Exo, fusion-harness, pi-mono, piko); B = primary-doc verified via the grounding pass (production tier, OpenHands, Aider, mini-swe-agent, DeepSeek — upgraded from C after its documentation site was read in full). 
 
-- Full verdicts: docs/reviews/capability-matrix-grounding-2026-09-01.json — 143 cells, each with verdict, proposed grade, and the primary source behind it. 
+- Full verdicts: docs/reviews/capability-matrix-grounding-2026-09-01.json (143 grounded cells with sources) and docs/reviews/2026-09-01-capability-matrix-replication.md (the replication report and our adjudication: which findings we accepted after re-verifying their sources ourselves, which we rejected and why). 
+
+- The D2 rubric, made explicit after replication: strong = an enforced ceiling that cannot be exceeded (pre-dispatch reservation); partial = an enforced stop that can overshoot or is mode-restricted (OpenHands' per-task stop, mini-swe-agent's post-response cost limit, Claude Code's print-mode cap); absent = accounting without enforcement. Durability grading now distinguishes resumable history, durable append, in-process serialization, cross-process locking, and stale-lock recovery — only the last two earn strong. 
 
 2 · The field 
 
@@ -58,19 +54,19 @@ Also considered and cut as redundant with a represented tier: Cursor CLI, Copilo
 Harness (evidence) 
 Context mgmt Cost enforce Tools & ext. Sub-agents Approvals Isolation Session durability Automation Provider breadth Bench evidence Maturity 
 
-| Piko (A) ● ● ◐ ○ ● ○ ● ● ◐ ◐ ○ |
-| Claude Code (B) ● ● ● ● ● ● ◐ ● ◐ ○ ● |
-| Codex CLI (B) ● ◐ ● ● ● ● ● ● ◐ ◐ ● |
-| Gemini CLI (B) ◐ ◐ ● ◐ ● ● ◐ ◐ ○ ◐ ● |
-| OpenCode (B) ● ◐ ● ● ◐ ○ ◐ ● ● ○ ● |
-| OpenHands (B) ◐ ◐ ● ◐ ◐ ● ◐ ● ● ● ● |
-| Aider (B) ◐ ◐ ◐ ○ ◐ ○ ◐ ◐ ● ● ◐ |
-| pi-mono (A) ● ◐ ◐ ◐ ◐ ◐ ◐ ● ● ◐ ● |
-| Exo (A) ◐ ◐ ◐ ◐ ○ ● ◐ ◐ ● ○ ○ |
-| Terminus-2 (A) ● ◐ ◐ ○ ○ ● ◐ ● ● ● ◐ |
-| mini-swe-agent (B) ◐ ● ○ ○ ◐ ◐ ○ ◐ ● ● ◐ |
-| DeepSeek harness (B) ◐ ◐ ● ● ● ◐ ● ◐ ◐ ○ ◐ |
-| fusion-harness (A) ◐ ◐ ◐ ● ◐ ○ ◐ ◐ ● ○ ◐ |
+| Piko (A) ● ● ◐ ◐ ● ○ ● ● ◐ ◐ ○ |
+| Claude Code (B) ● ◐ ● ● ● ◐ ◐ ● ◐ ○ ● |
+| Codex CLI (B) ● ○ ● ● ● ● ◐ ● ◐ ◐ ● |
+| Gemini CLI (B) ◐ ○ ● ◐ ● ◐ ◐ ◐ ○ ◐ ● |
+| OpenCode (B) ● ○ ● ● ◐ ○ ◐ ● ● ○ ● |
+| OpenHands (B) ◐ ◐ ● ◐ ◐ ● ● ● ● ● ● |
+| Aider (B) ◐ ○ ◐ ○ ◐ ○ ◐ ◐ ● ● ◐ |
+| pi-mono (A) ● ○ ◐ ◐ ◐ ◐ ◐ ● ● ◐ ● |
+| Exo (A) ◐ ○ ◐ ◐ ○ ● ◐ ◐ ● ○ ○ |
+| Terminus-2 (A) ● ○ ◐ ○ ○ ● ◐ ● ● ● ◐ |
+| mini-swe-agent (B) ◐ ◐ ○ ○ ◐ ◐ ○ ◐ ● ● ◐ |
+| DeepSeek harness (B) ◐ ○ ● ● ● ◐ ◐ ◐ ◐ ○ ◐ |
+| fusion-harness (A) ◐ ○ ◐ ● ◐ ○ ◐ ◐ ● ○ ◐ |
 
 4 · Reading the columns 
 
@@ -80,7 +76,7 @@ The draft of this study gave piko four outright wins. The grounding pass took th
 
 ### Where the draft was wrong about the field 
 
-- "Only harness with a hard dollar ceiling" is dead. Claude Code ships --max-budget-usd as a hard cap that stops the run and kills background subagents (print mode only, v2.1.217+). mini-swe-agent enforces a cost_limit (default $3.00) checked before every model call. Piko's remaining distinction is mechanism: reservation of each request's worst-case cost before dispatch , in every mode, with durable exposure accounting — engineered deepest, no longer alone. 
+- "Only harness with a hard dollar ceiling" is dead — twice over. Claude Code ships --max-budget-usd (print mode, v2.1.217+); mini-swe-agent enforces a cost_limit checked around each call; and the replication surfaced OpenHands' MAX_BUDGET_PER_TASK , a real per-task dollar stop (post-spend, can overshoot the final request — verified against its docs by us). Piko's distinction is mechanism, not existence: pre-dispatch reservation of each request's worst-case cost, enforced per user turn (the whole run in headless mode; session-scoped under proposed ADR 0026), so the turn ceiling cannot be exceeded rather than merely reacted to. 
 
 - DeepSeek harness is a governance competitor, not a price story. Its documentation (read in full by the grounding agent, upgrading the row from unverified) describes fail-closed approvals, an append-only typed session-event log as source of truth, durable child sessions, MCP client, and OS-level sandbox backends (bwrap/Landlock, Seatbelt, Windows ACL). That is piko's own specialty, executed by a well-resourced lab — the single most strategically important finding of this study. 
 
@@ -96,15 +92,19 @@ The draft of this study gave piko four outright wins. The grounding pass took th
 
 - Benchmark evidence: partial, not strong. The transparency practice (per-trial ledgers, corrections, firewalls) is real and unusual — but the score itself is a cost-bounded floor at n=1, and the rubric grades the evidence, not the virtue. 
 
+- Sub-agents: partial, not absent (replication). Under the rubric's own mode-restriction rule, piko's primitive headless self-spawn via explicitly enabled host execution (ADR 0004) earns partial — while being nothing like native contained delegation with unified accounting, which is not shipped. 
+
+- The residual exclusivity framing fell to replication. OpenHands documents a per-task dollar stop (MAX_BUDGET_PER_TASK) and process-safe locked event-log appends — both re-verified by us against its documentation before accepting. "Mechanisms the field genuinely lacks" was retired for the narrower, defensible composition claim in the verdict. 
+
 ### What actually survives as piko's edge 
 
-- Cost enforcement with reservations — the only implementation that blocks the request before spend, in all modes, with journaled exposure. Peers cap after the fact or in one mode. 
+- Cost enforcement with reservations — among all implementations inspected by both investigations, the only one that blocks the request before spend, with journaled exposure. Scope caveat, corrected 2026-09-02: the ceiling is enforced per user turn (the whole run in headless mode); a session-scoped aggregate is ADR 0026, proposed. Peers that enforce (OpenHands, mini-swe-agent, Claude Code) cap after the fact or in one mode. 
 
-- Session durability with locking — Claude Code's docs state plainly that double-resume interleaves one transcript; that is the corruption class piko's lock-capability API makes unrepresentable. DeepSeek's log is append-only; its locking posture is undocumented. 
+- Session integrity, stated narrowly — the replication found OpenHands documents process-safe locked event-log appends (flock, with a stated NFS caveat), so "the field lacks locking" is retired. Piko's narrower, still-unique composition: lock-capability mutation (compile-time and runtime), hard-link defense, and explicit stale-lock diagnosis with single-target recovery. Claude Code's docs still state double-resume interleaves one transcript; Codex and DeepSeek establish durability but not cross-process locking. 
 
 - The CI-ratcheted footprint and the evidence-governance loop (dev-set firewalls, dated retractions, this grounding pass itself) — practices no other candidate documents. 
 
-So what The grounded matrix reads differently than the draft: piko is not ahead of the field on any column — it is a pre-1.0 harness with three genuinely deep mechanisms in a field whose leaders have caught up on coarse capability everywhere. Two implications sharpen: the isolation gap is now piko's most glaring cell (absent, in a field where even the research baselines score strong), and DeepSeek's governance stack means the "well-governed harness" position must be earned with shipped code, not claimed by default. 0022/0018 stopped being roadmap items and became existential. 
+So what After two correction rounds the position is: piko tops no column, holds no exclusive mechanism, and differentiates on composition — reservation-based spend enforcement plus lock-capability sessions plus stale-lock recovery plus evidence ratchets in one runtime, each individually matched somewhere in the field, nowhere combined. The isolation cell (absent, where even research baselines score strong) gates everything; DeepSeek and OpenHands are the governance competitors to beat head-to-head. 0022/0018 are existential. 
 
 5 · Candidate notes 
 
@@ -126,6 +126,6 @@ So what The grounded matrix reads differently than the draft: piko is not ahead 
 
 The standing, in one statement 
 
-The grounded matrix demoted piko from "wins four columns" to something more useful: a pre-1.0 harness with three mechanisms the field genuinely lacks — reservation-based spend enforcement in every mode, lock-enforced session integrity, and a self-auditing evidence culture this very study just demonstrated — surrounded by a field that has quietly caught up everywhere coarser. The strategy that survives grounding: treat isolation (0022/0018) as existential rather than roadmap, benchmark DeepSeek's governance stack head-to-head before claiming the well-governed-harness position, and keep doing in public what this page just did — letting the verification pass rewrite the conclusion. 
+Two verification rounds each made this page more honest: the grounding pass took away piko's four column wins; the independent replication (62.9% cell agreement) then killed the residual "mechanisms the field lacks" framing — OpenHands enforces a per-task dollar stop and locks its event log. What survives both rounds, in the replication's own words, is composition: no other harness inspected combines pre-dispatch spend reservation, durable lifecycle accounting, lock-capability sessions with stale-lock recovery, and evidence-budget ratchets in one runtime. The strategy stands sharpened: isolation (0022/0018) is existential; DeepSeek and OpenHands are the governance competitors to measure against head-to-head; and the process that produced this page — verify, replicate, adjudicate, correct in public — is the part no competitor currently ships at all. 
 
-Provenance. Census: the Harbor framework's agent registry (41 harnesses). Grades: a 13-agent grounding workflow (run wf_eb2809e6-9a2), one adversarial verifier per row, primary sources only — vendor documentation and repositories fetched live, plus pinned local sources for source-read rows (docs/exo-study-2026-08-24.md; the fusion-harness clone; piko's own ADRs, benchmark ledgers, and review trail). 143 cell verdicts with per-cell evidence: docs/reviews/capability-matrix-grounding-2026-09-01.json, committed. 38 draft grades were revised by grounding, including two of piko's own downward; sentence-level corrections from the same pass are folded into sections 4-5. Sources reflect primary documentation as fetched 2026-09-01. Grades remain judgment under a stated rubric (strong = engineered/documented/shipped; partial = present with real gaps; absent = not offered; ? = unestablishable); the committed artifact lets any reader re-derive them.
+Provenance. Census: the Harbor framework's agent registry (41 harnesses). Grades: a 13-agent grounding workflow (run wf_eb2809e6-9a2; 143 per-cell verdicts with sources in docs/reviews/capability-matrix-grounding-2026-09-01.json), followed by an independent replication (blind re-investigation, 90/143 agreement, report and adjudication in docs/reviews/2026-09-01-capability-matrix-replication.md). Grades shown are post-adjudication: replication findings were accepted only after we re-verified their cited sources ourselves (OpenHands budget and EventLog docs checked directly), and rejected findings are recorded with reasons. Disputed strong-vs-partial cells reflecting rubric strictness variance are disclosed rather than hidden. Sources reflect primary documentation as fetched 2026-09-01. The rubric is stated in section 1; the committed artifacts let any reader re-derive every cell.

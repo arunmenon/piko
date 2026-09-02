@@ -31,8 +31,12 @@ One written lifecycle contract covering every artifact class:
 - Session journals, offloads, and telemetry get named retention classes
   with defaults and an explicit owner override; deletion is an explicit,
   logged act, never a side effect of scratch cleanup.
-- Sensitive-content handling for retained transcripts follows 0013/0016
-  posture: values redacted or excluded at write time, not at review time.
+- Sensitive-content handling is per class, not uniform (owner review
+  2026-09-02): telemetry is structurally redacted at write time (0013/0016);
+  session journals and offloads are owner-only (0600) and DO retain full
+  prompts, tool arguments, and tool results in plaintext by design, so they
+  are never publishable as-is; publishable benchmark artifacts (ledgers,
+  trajectories) require explicit sanitization before commit.
 - Benchmark run directories are treated as ephemeral BY DEFAULT and
   therefore must never be the sole home of anything evidence-grade.
 
@@ -58,6 +62,12 @@ One written lifecycle contract covering every artifact class:
 | Benchmark run directories | Ephemeral by default | Any time | Never the sole home of anything evidence-grade; ledgers and manifests are committed |
 | Committed benchmark artifacts and manifests | Permanent | Never | The evidence tier; regenerated only from committed inputs |
 | Review reports and adjudications | Permanent | Never | Provenance for maturity claims |
+
+"Permanent" and "never" above mean no scheduled or incidental deletion; they
+do not override deletion obligations. An erasure request, a legal hold's
+release, or a discovered secret in a committed artifact is a documented
+deletion act (history rewrite or redaction commit with a dated note), and the
+policy must name who may perform it.
 
 Ratification may accept these defaults, or accept the record as principles
 only with defaults deferred; the owner chooses, and the status line says which.

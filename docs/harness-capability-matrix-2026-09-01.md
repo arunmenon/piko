@@ -46,7 +46,7 @@ docs/reviews/capability-matrix-grounding-2026-09-01.json.
 
 Verdict rewritten accordingly: piko tops no column alone at glyph
 resolution. Its surviving edge is mechanism depth (reservation-based spend
-enforcement in every mode; lock-enforced session integrity vs Claude
+enforcement (per turn today; session-scoped under proposed ADR 0026); lock-enforced session integrity vs Claude
 Code's documented double-resume interleaving; the CI-ratcheted footprint
 and evidence-governance loop). Key strategic finding: the DeepSeek harness
 is a governance competitor in piko's own specialty (fail-closed approvals,

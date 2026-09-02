@@ -163,10 +163,16 @@ A parent process spawning children must treat exit 4 as "forward the decision", 
 ## Sandboxing
 
 By default, piko exposes only workspace-confined file tools. Parent traversal, absolute paths,
-symlink escapes, and special files are rejected; writes are atomic. Repository `AGENTS.md` and
-skills are ignored until `--trust-project` is explicit. Host bash is absent until
-`--allow-host-bash` is explicit, and then receives a sanitized environment that omits provider
-credential environment variables.
+symlink escapes, and special files are rejected by path-based checks; writes are atomic. These
+checks are not race-proof: a reproduced parent-symlink swap can defeat them (ADR 0022, accepted,
+not yet implemented), so the boundary is best-effort against a hostile repository until 0022
+lands. Repository `AGENTS.md` and skills are ignored until `--trust-project` is explicit. Host
+bash is absent until `--allow-host-bash` is explicit, and then receives a sanitized environment
+that omits provider credential environment variables. That sanitization is hygiene, not a
+credential boundary: a host-bash command runs as your user and can inspect the parent piko
+process (for example via `ps`), including its environment. The executor split in ADR 0018 is
+the real boundary; until it ships, enable host bash only where you would run the model as
+yourself.
 
 `--allow-host-bash` is still not an OS sandbox: commands can access host files and network using
 the process user's authority. For untrusted autonomous work, run the built CLI inside a container

@@ -3,7 +3,7 @@
  * under BUDGET_TOKENS (hard ceiling) AND must not grow past the committed
  * baseline (scripts/budget-baseline.json). Growth is a deliberate act: update
  * the baseline in the same commit with measured-benefit evidence in the commit
- * message (token-rent rule, ADR 0017). Shrinking auto-lowers the baseline hint.
+ * message (token-rent rule, proposed amendment to ADR 0001). Shrinking auto-lowers the baseline hint.
  * Run via `npm run check-budget`; exits 1 when over ceiling or above baseline.
  */
 import { readFileSync } from 'node:fs';

@@ -1,8 +1,10 @@
 # Changelog
 
 All notable changes to piko. Versions are repo-wide (all @pi/* packages move
-together). Packages are not yet published; versions mark tagged states of this
-repository. Breaking changes are called out explicitly.
+together). Packages are not yet published and no git tag exists yet: the
+version headings below are development snapshots of this repository, not
+releases. ADR 0019 (release contract) gates the first real tag. Breaking
+changes are called out explicitly.
 
 ## Unreleased
 
@@ -50,7 +52,9 @@ The hardening and trust release: from late prototype to early alpha.
 
 ### Security and containment (BREAKING defaults)
 - Workspace-confined file tools: parent traversal, absolute paths (without
-  opt-in), symlink escapes, and special files rejected; TOCTOU re-resolution;
+  opt-in), symlink escapes, and special files rejected; TOCTOU re-resolution
+  (historical correction 2026-09-02: the re-resolution is path-based and a
+  parent-symlink swap race was later reproduced; see ADR 0022, unimplemented);
   atomic writes. (ADR 0006)
 - Host bash is deny-by-default behind `--allow-host-bash`, with a sanitized
   allowlist environment; credentials are never inherited by tools. (ADR 0016)

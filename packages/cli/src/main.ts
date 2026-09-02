@@ -250,7 +250,7 @@ async function setup(args: CliArgs): Promise<Setup> {
   }
   const builtins = defaultTools().filter((tool) => tool.name !== 'bash' || args.allowHostBash);
   if (args.allowHostBash) {
-    process.stderr.write(dim('warning: host bash enabled without OS isolation; use only in a trusted environment\n'));
+    process.stderr.write(dim('warning: host bash enabled without OS isolation; commands run as your user and can inspect this process and its credentials; use only where you would run the model as yourself\n'));
   }
   const tools = validateToolSet(
     [

@@ -1,1 +1,0 @@
-{"ts": "2026-09-02T03:42:18Z", "event": "invocation_usage", "session": "277d6939-898d-4a37-864a-57b70b0f2cc0", "agent": "unknown", "input_tokens": 5387, "output_tokens": 2855465, "cache_read_input_tokens": 1030822604, "cache_creation_input_tokens": 37336945, "note": "delta since previous cursor; spans concurrent subagents if any"}

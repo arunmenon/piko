@@ -18,6 +18,8 @@ Containment is enforced in the harness, not requested of the model or the user:
 
 - File tools resolve paths against a stable workspace root; parent traversal,
   absolute paths (unless opted in), symlink escapes, and special files are rejected
+  by path-based checks (qualification 2026-09-02: not race-proof; a parent-symlink
+  swap escape was reproduced and is addressed by 0022, which amends this record)
   at the tool boundary.
 - Bash runs with a sanitized allowlist environment (credentials never inherited)
   and is deny-by-default on the host, behind an explicit opt-in; its persisted cwd

@@ -1,3 +1,5 @@
+> SUPERSEDED 2026-09-02 by cto-overview-content-2026-09-02-r3.md (digest sha256:46bb15e0777ae007). Retained for provenance; do not fact-check against this file. Known stale claim: budget scope stated as per-run / in every mode; corrected to per-turn.
+
 # Piko — Executive Overview (artifact content, revision 2, 2026-08-31)
 
 Automated text extraction of the published executive artifact AFTER the
