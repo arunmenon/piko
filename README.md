@@ -174,6 +174,15 @@ process (for example via `ps`), including its environment. The executor split in
 the real boundary; until it ships, enable host bash only where you would run the model as
 yourself.
 
+Containment also covers paths inside the workspace. `write` and `edit` refuse anything that
+resolves, after symlink resolution, into `.git/`, `.pi/`, `.agent/`, or `.claude/` at any depth,
+or onto workspace-root `AGENTS.md`, `.mcp.json`, `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`,
+or `.profile`. Those are the files a hostile repository would use to make an agent persist past the
+run: a git hook, an agent instruction file, a shell rc file. Reads stay allowed, and git changes go
+through bash, so refusing all of `.git/` costs no legitimate workflow. The refusal names the path
+and the rule it broke. `--allow-protected-paths` turns the deny list off for a run and prints a
+warning.
+
 `--allow-host-bash` is still not an OS sandbox: commands can access host files and network using
 the process user's authority. For untrusted autonomous work, run the built CLI inside a container
 or microVM with a project-only mount and an egress policy. Keep the provider credential in a

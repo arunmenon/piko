@@ -36,6 +36,13 @@ export interface ToolExecutionPolicy {
    * Relative paths are the secure default.
    */
   readonly allowAbsolutePaths?: boolean;
+  /**
+   * Permit the file tools to modify the protected paths inside the workspace
+   * (`.git/`, `.pi/`, `.agent/`, `.claude/`, AGENTS.md, .mcp.json, and the
+   * workspace-root shell rc files). Refusing them is the secure default; this
+   * is an explicit operator opt-out, never something project content can set.
+   */
+  readonly allowProtectedPaths?: boolean;
   readonly bash?: BashExecutionPolicy;
   /**
    * Tool names gated behind a recorded human decision, or `"*"` for every tool
