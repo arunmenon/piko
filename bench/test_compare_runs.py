@@ -3,7 +3,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bench.compare_runs import collect, paired_task_ratio, pi_tokens, summarize, terminus_tokens
+from bench.compare_runs import (
+    collect,
+    format_task_hit_rate,
+    paired_task_ratio,
+    pi_tokens,
+    summarize,
+    task_aggregate,
+    terminus_tokens,
+)
 
 
 def make_trial(root: Path, task: str, trial: str, *, resolved: bool, input_tokens: int, output_tokens: int):
@@ -114,3 +122,50 @@ class ExpectedTrialsTests(unittest.TestCase):
             summary = summarize("pi", rows, emit=False)
             self.assertEqual(summary["solved_trials"], 2)
             self.assertIsNone(summary["mean_cost_of_solved_trials_usd"])
+
+
+class CacheHitRateTests(unittest.TestCase):
+    """ADR 0014 measurement: cache reads as a share of the input side."""
+
+    def test_hit_rate_divides_cache_reads_by_the_whole_input_side(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            # make_trial writes uncached = input - 3, cache_read = 2, cache_write = 1,
+            # so the input side per trial is exactly input_tokens.
+            make_trial(root, "task-a", "trial-1", resolved=True, input_tokens=100, output_tokens=10)
+            make_trial(root, "task-a", "trial-2", resolved=False, input_tokens=200, output_tokens=20)
+            rows = collect(root, pi_tokens)
+            self.assertAlmostEqual(summarize("pi", rows, emit=False)["cache_hit_rate"], 4 / 300)
+            self.assertAlmostEqual(task_aggregate(rows["task-a"])["cache_hit_rate"], 4 / 300)
+            self.assertEqual(format_task_hit_rate(rows["task-a"]), "1%")
+
+    def test_a_source_without_a_cache_split_leaves_the_column_blank(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            make_trial(root, "task-a", "trial-1", resolved=True, input_tokens=100, output_tokens=10)
+            rows = collect(root, terminus_tokens)
+            self.assertIsNone(summarize("baseline", rows, emit=False)["cache_hit_rate"])
+            self.assertEqual(format_task_hit_rate(rows["task-a"]), "")
+            self.assertEqual(format_task_hit_rate(None), "")
+
+    def test_a_reported_zero_hit_rate_is_zero_not_blank(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            directory = root / "task-a" / "trial-1"
+            (directory / "sessions").mkdir(parents=True)
+            (directory / "results.json").write_text(json.dumps({"is_resolved": True}))
+            usage = {
+                "v": 1,
+                "type": "usage_summary",
+                "usage": {
+                    "inputTokens": 500,
+                    "outputTokens": 10,
+                    "cacheReadTokens": 0,
+                    "cacheWriteTokens": 0,
+                },
+                "requests": 1,
+            }
+            (directory / "sessions" / "agent.log").write_text(json.dumps(usage) + "\n")
+            rows = collect(root, pi_tokens)
+            self.assertEqual(summarize("pi", rows, emit=False)["cache_hit_rate"], 0.0)
+            self.assertEqual(format_task_hit_rate(rows["task-a"]), "0%")

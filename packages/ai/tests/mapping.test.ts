@@ -49,6 +49,29 @@ test('anthropic body: caching breakpoints and tool_use mapping', () => {
   assert.equal(messages[0].content[0].cache_control, undefined);
 });
 
+test('anthropic body: a configured cache TTL reaches every breakpoint, and no TTL leaves the shape untouched', () => {
+  const withTtl = buildAnthropicBody(request, { cacheTtl: '1h' }) as any;
+  assert.deepEqual(withTtl.system[0].cache_control, { type: 'ephemeral', ttl: '1h' });
+  const lastBlocks = withTtl.messages[2].content;
+  assert.deepEqual(lastBlocks[lastBlocks.length - 1].cache_control, { type: 'ephemeral', ttl: '1h' });
+
+  const fiveMinutes = buildAnthropicBody(request, { cacheTtl: '5m' }) as any;
+  assert.deepEqual(fiveMinutes.system[0].cache_control, { type: 'ephemeral', ttl: '5m' });
+
+  // Omitted means the provider default, and the body stays byte-identical to
+  // the pre-option shape so an unset profile cannot move the cache key.
+  const unset = buildAnthropicBody(request) as any;
+  assert.deepEqual(unset.system[0].cache_control, { type: 'ephemeral' });
+  assert.equal(JSON.stringify(unset), JSON.stringify(buildAnthropicBody(request, {})));
+});
+
+test('openai body ignores the anthropic-only cache TTL profile option', () => {
+  // OpenAI caches automatically with no caller control, so the option has no
+  // mapping there; the request body must carry no trace of it.
+  const body = buildOpenAIBody({ ...request, model: 'gpt-5' });
+  assert.doesNotMatch(JSON.stringify(body), /ttl|cache_control/);
+});
+
 test('anthropic body: consecutive same-role messages are merged (strict alternation)', () => {
   const body = buildAnthropicBody({
     ...request,

@@ -5,6 +5,7 @@ import {
   SSELimitError,
   sseEvents,
 } from './sse.js';
+import type { AnthropicCacheTtl } from './cache.js';
 import {
   ApiError,
   emptyUsage,
@@ -26,6 +27,20 @@ import {
 
 const ANTHROPIC_VERSION = '2023-06-01';
 const CACHE_CONTROL = { cache_control: { type: 'ephemeral' } };
+
+export interface AnthropicProviderOptions {
+  /**
+   * Cache lifetime for every breakpoint in the request (ADR 0014). Omitted
+   * leaves the provider default of five minutes and keeps the body byte-identical
+   * to the pre-option shape, so an unset profile cannot move the cache key.
+   */
+  readonly cacheTtl?: AnthropicCacheTtl;
+}
+
+/** `{type: 'ephemeral'}`, plus `ttl` only when a lifetime was configured. */
+function cacheControlFor(cacheTtl: AnthropicCacheTtl | undefined): Record<string, unknown> {
+  return cacheTtl === undefined ? CACHE_CONTROL : { cache_control: { type: 'ephemeral', ttl: cacheTtl } };
+}
 const DEFAULT_MAX_TOKENS = 8192; // safe across every supported model (haiku, deepseek-class caps)
 
 function mapBlocks(message: Message): Record<string, unknown>[] {
@@ -87,11 +102,15 @@ function mergeAdjacent(messages: Message[]): { role: string; content: Record<str
  * breakpoint on the system block caches tools+system, a second on the last message
  * block extends the cached prefix incrementally each turn.
  */
-export function buildAnthropicBody(request: CompletionRequest): Record<string, unknown> {
+export function buildAnthropicBody(
+  request: CompletionRequest,
+  options: AnthropicProviderOptions = {},
+): Record<string, unknown> {
+  const cacheControl = cacheControlFor(options.cacheTtl);
   const messages = mergeAdjacent(request.messages);
   const last = messages[messages.length - 1];
   const lastBlock = last?.content[last.content.length - 1];
-  if (lastBlock) Object.assign(lastBlock, CACHE_CONTROL);
+  if (lastBlock) Object.assign(lastBlock, cacheControl);
 
   const maxTokens = request.maxTokens ?? DEFAULT_MAX_TOKENS;
   if (!Number.isSafeInteger(maxTokens) || maxTokens <= 0) {
@@ -115,7 +134,7 @@ export function buildAnthropicBody(request: CompletionRequest): Record<string, u
     // extended thinking requires temperature 1 (the default) — omit it entirely
     ...(request.temperature !== undefined && !thinking ? { temperature: request.temperature } : {}),
     ...(thinking ? { thinking: { type: 'enabled', budget_tokens: request.thinkingBudget } } : {}),
-    system: [{ type: 'text', text: request.system, ...CACHE_CONTROL }],
+    system: [{ type: 'text', text: request.system, ...cacheControl }],
     tools: request.tools.map((tool) => ({
       name: tool.name,
       description: tool.description,
@@ -188,6 +207,7 @@ export class AnthropicProvider implements Provider {
   constructor(
     private readonly apiKey: string,
     private readonly baseUrl = 'https://api.anthropic.com',
+    private readonly options: AnthropicProviderOptions = {},
   ) {}
 
   async *stream(
@@ -206,7 +226,7 @@ export class AnthropicProvider implements Provider {
             'x-api-key': this.apiKey,
             'anthropic-version': ANTHROPIC_VERSION,
           },
-          body: JSON.stringify(buildAnthropicBody(request)),
+          body: JSON.stringify(buildAnthropicBody(request, this.options)),
           signal: scope.signal,
         });
       } catch (error) {

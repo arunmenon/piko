@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { validateAnthropicCacheTtl, type AnthropicCacheTtl } from './cache.js';
 
 /** Tool names gated behind a human decision, or "*" for every tool (ADR 0011). */
 export type ApprovalPolicy = readonly string[] | '*';
@@ -25,6 +26,12 @@ export interface Profile {
   contextWindow?: number;
   /** approval gating from the profile, falling back to the top-level setting */
   approval?: ApprovalPolicy;
+  /**
+   * Prompt-cache lifetime, where the provider exposes one (ADR 0014). Anthropic
+   * maps it onto every cache_control breakpoint; OpenAI has no such control and
+   * ignores it. Omitted means the provider default (5 minutes on Anthropic).
+   */
+  cacheTtl?: AnthropicCacheTtl;
 }
 
 interface ProfileConfig {
@@ -35,6 +42,7 @@ interface ProfileConfig {
   apiKeyEnv?: string;
   contextWindow?: number;
   approval?: ApprovalPolicy;
+  cacheTtl?: AnthropicCacheTtl;
 }
 
 export interface PiConfig {
@@ -91,7 +99,12 @@ export function validateConfig(value: unknown): PiConfig {
         throw new TypeError(`profiles.${name}.contextWindow must be a positive integer`);
       }
       const profileApproval = optionalApproval(raw['approval'], `profiles.${name}.approval`);
+      const cacheTtl =
+        raw['cacheTtl'] === undefined
+          ? undefined
+          : validateAnthropicCacheTtl(raw['cacheTtl'], `profiles.${name}.cacheTtl`);
       profiles[name] = {
+        ...(cacheTtl !== undefined ? { cacheTtl } : {}),
         ...(profileApproval !== undefined ? { approval: profileApproval } : {}),
         ...(provider ? { provider } : {}),
         ...(optionalString(raw['model'], `profiles.${name}.model`) ? { model: raw['model'] as string } : {}),
@@ -201,6 +214,12 @@ export function resolveProfile(
   // Profile gating overrides the top-level default; neither can be reached by
   // project content or extensions.
   const approval = merged.approval ?? config.approval;
+  // Validated again at the consumption site: resolveProfile accepts raw objects,
+  // and an unchecked value would reach the provider request body.
+  const cacheTtl =
+    merged.cacheTtl === undefined
+      ? undefined
+      : validateAnthropicCacheTtl(merged.cacheTtl, `profiles.${name}.cacheTtl`);
   return {
     name,
     provider,
@@ -210,5 +229,6 @@ export function resolveProfile(
     ...(baseUrl ? { baseUrl } : {}),
     ...(merged.contextWindow ? { contextWindow: merged.contextWindow } : {}),
     ...(approval !== undefined ? { approval } : {}),
+    ...(cacheTtl !== undefined ? { cacheTtl } : {}),
   };
 }

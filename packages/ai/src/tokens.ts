@@ -2,8 +2,20 @@
  * Cheap token estimate (~4 chars/token for English + code). Used for output caps and
  * the fixed-context budget check; billing-grade counts come from provider usage fields.
  */
+const CHARS_PER_TOKEN = 4;
+
 export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+/**
+ * The same estimate applied to a byte ceiling. UTF-8 never uses fewer bytes than
+ * characters, so a byte cap converted this way is an upper bound on the tokens
+ * that cap can admit; the fixed-context gate (ADR 0001) relies on that direction.
+ */
+export function estimateTokensForBytes(bytes: number): number {
+  if (!Number.isFinite(bytes) || bytes < 0) throw new RangeError('bytes must be a nonnegative finite number');
+  return Math.ceil(bytes / CHARS_PER_TOKEN);
 }
 
 // conservative context windows by model family — used to pick the auto-compaction

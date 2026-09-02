@@ -171,12 +171,43 @@ def collect(run_dir: Path, extractor: Callable[[Path], Tokens | None]) -> dict[s
     return dict(rows)
 
 
+def cache_hit_rate(tokens: list[Tokens]) -> float | None:
+    """Cache reads as a share of the input side, or None when unreported.
+
+    ADR 0014 measurement: the harness reports the split, the Terminus baseline
+    does not, so the column is blank rather than zero for a source that never
+    told us. Denominator is the whole input side (uncached + cache read + cache
+    write) so the number answers "what fraction of input bytes were billed at
+    the cached rate".
+    """
+    reported = [
+        token
+        for token in tokens
+        if token["cache_read"] is not None
+        and token["cache_write"] is not None
+        and token["input_uncached"] is not None
+    ]
+    if not reported:
+        return None
+    total_input_side = sum(
+        token["input_uncached"] + token["cache_read"] + token["cache_write"] for token in reported
+    )
+    if total_input_side == 0:
+        return None
+    return sum(token["cache_read"] for token in reported) / total_input_side
+
+
+def format_hit_rate(rate: float | None) -> str:
+    return "" if rate is None else f"{rate * 100:.0f}%"
+
+
 def task_aggregate(trials: list[Trial]) -> dict[str, int | float | None]:
     tokens = [trial["tokens"] for trial in trials if trial["tokens"] is not None]
     return {
         "resolved": sum(1 for trial in trials if trial["resolved"]),
         "trials": len(trials),
         "with_token_data": len(tokens),
+        "cache_hit_rate": cache_hit_rate(tokens),
         "mean_input": sum(token["input"] for token in tokens) / len(tokens) if tokens else None,
         "mean_output": sum(token["output"] for token in tokens) / len(tokens) if tokens else None,
         "mean_cost_usd": (
@@ -203,6 +234,7 @@ def summarize(name: str, rows: dict[str, list[Trial]], *, emit: bool = True) -> 
     total_out = sum(token["output"] for token in tokens)
     cache_rows = [token["cache_read"] for token in tokens if token.get("cache_read") is not None]
     total_cache_read = sum(cache_rows)
+    hit_rate = cache_hit_rate(tokens)
     cost_rows = [token["cost_usd"] for token in tokens if token["cost_usd"] is not None]
     summary: dict[str, int | float | None] = {
         "solved_trials": solved,
@@ -212,6 +244,7 @@ def summarize(name: str, rows: dict[str, list[Trial]], *, emit: bool = True) -> 
         "input_tokens": total_in,
         "output_tokens": total_out,
         "cache_read_tokens": total_cache_read if cache_rows else None,
+        "cache_hit_rate": hit_rate,
         "trials_with_token_data": len(tokens),
         "mean_input_per_measured_trial": total_in / len(tokens) if tokens else 0,
         "mean_output_per_measured_trial": total_out / len(tokens) if tokens else 0,
@@ -239,6 +272,8 @@ def summarize(name: str, rows: dict[str, list[Trial]], *, emit: bool = True) -> 
             print(f"  {infrastructure_failures} expected trial(s) produced no verdict (infrastructure); kept in the denominator")
         cache_note = f" (cache reads {total_cache_read:,} of the input; bill them at the cached rate)" if cache_rows else ""
         print(f"  total tokens: {total_in:,} in / {total_out:,} out ({len(tokens)}/{len(trials)} trials have data){cache_note}")
+        if hit_rate is not None:
+            print(f"  cache hit rate: {format_hit_rate(hit_rate)} of the input side served from cache")
         if tokens:
             print(f"  mean per measured trial: {total_in / len(tokens):,.0f} in / {total_out / len(tokens):,.0f} out")
         if cost_rows:
@@ -254,6 +289,13 @@ def format_task(trials: list[Trial] | None) -> str:
     if aggregate["mean_input"] is None:
         return f"{score} no token data"
     return f"{score} {aggregate['mean_input']:,.0f}in {aggregate['mean_output']:,.0f}out"
+
+
+def format_task_hit_rate(trials: list[Trial] | None) -> str:
+    if not trials:
+        return ""
+    rate = task_aggregate(trials)["cache_hit_rate"]
+    return "" if rate is None else format_hit_rate(float(rate))
 
 
 def paired_task_ratio(pi_rows: dict[str, list[Trial]], base_rows: dict[str, list[Trial]]) -> tuple[float, int] | None:
@@ -288,9 +330,17 @@ def main() -> int:
     if not pi_rows or not base_rows:
         raise SystemExit("compare-runs: both directories must contain at least one results.json trial")
 
-    print(f"{'task':32} {'pi repeats / mean tokens':>31} {'baseline repeats / mean tokens':>31}")
+    # The hit% columns are blank for any source that reports no cache split
+    # (Terminus results.json never does); blank means unreported, not zero.
+    print(
+        f"{'task':32} {'pi repeats / mean tokens':>31} {'hit%':>5}"
+        f" {'baseline repeats / mean tokens':>31} {'hit%':>5}"
+    )
     for task in sorted(set(pi_rows) | set(base_rows)):
-        print(f"{task:32} {format_task(pi_rows.get(task)):>31} {format_task(base_rows.get(task)):>31}")
+        print(
+            f"{task:32} {format_task(pi_rows.get(task)):>31} {format_task_hit_rate(pi_rows.get(task)):>5}"
+            f" {format_task(base_rows.get(task)):>31} {format_task_hit_rate(base_rows.get(task)):>5}"
+        )
 
     pi_summary = summarize("pi", pi_rows)
     base_summary = summarize("baseline", base_rows)
