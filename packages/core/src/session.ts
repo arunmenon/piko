@@ -22,6 +22,7 @@ import { dirname, isAbsolute, join } from 'node:path';
 import { addUsage, emptyUsage, type Message, type ToolCallBlock, type Usage } from '@pi/ai';
 import {
   JOURNAL_SCHEMA_VERSION,
+  journalRepairs,
   journalSchemaVersion,
   parseSessionEntry,
   reduceModelRequests,
@@ -38,6 +39,7 @@ import {
   type SessionEntry,
   type SessionLineage,
   type ToolExecutionState,
+  type WorkspaceDigest,
 } from './journal.js';
 import {
   addCostSummary,
@@ -51,6 +53,7 @@ import {
 export type {
   ApprovalDecision,
   CompactionEntry,
+  JournalRepairKind,
   LegacySessionEntry,
   LifecycleEntry,
   ModelRequestEntry,
@@ -66,6 +69,7 @@ export type {
   ToolExecutionState,
   ToolExecutionStatus,
   ToolLifecycleEntry,
+  WorkspaceDigest,
 } from './journal.js';
 
 export interface SessionCreateOptions {
@@ -425,6 +429,39 @@ export interface SessionLockReport {
   owner?: PublicLockOwner;
   /** 'removable' only for a parsable local record whose pid is dead. */
   classification?: 'live' | 'removable' | 'remote' | 'malformed' | 'legacy';
+  /** Recorded append-boundary repairs (0015); omitted when the journal has none. */
+  repairs?: number;
+}
+
+/**
+ * Count `journal_repaired` rows without failing closed (0015). The inventory
+ * must stay listable even when a journal is corrupt elsewhere, so this scans
+ * lines instead of reusing the strict parser, and reports zero for anything it
+ * cannot read rather than aborting the whole survey.
+ */
+export function countJournalRepairs(file: string): number {
+  let raw: string;
+  try {
+    const stats = statSync(file);
+    if (!stats.isFile() || stats.size > MAX_SESSION_FILE_BYTES) return 0;
+    raw = readFileSync(file, 'utf8');
+  } catch {
+    return 0;
+  }
+  let repairs = 0;
+  for (const line of raw.split('\n')) {
+    // Cheap prefilter: only lines that could carry the row are parsed.
+    if (!line.includes('"journal_repaired"')) continue;
+    try {
+      const value: unknown = JSON.parse(line);
+      if (typeof value === 'object' && value !== null && (value as { t?: unknown }).t === 'journal_repaired') {
+        repairs++;
+      }
+    } catch {
+      /* an unparsable line is not a countable repair record */
+    }
+  }
+  return repairs;
 }
 
 function pidAlive(pid: number): boolean {
@@ -458,8 +495,10 @@ export function listSessionsWithLockState(dir: string): SessionLockReport[] {
       if (++entries > MAX_DISCOVERY_ENTRIES) break;
       if (!entry.name.endsWith('.jsonl')) continue;
       const file = join(dir, entry.name);
+      const repairs = countJournalRepairs(file);
+      const repairDetail = repairs > 0 ? { repairs } : {};
       if (!sessionLockExists(file)) {
-        reports.push({ file, locked: false });
+        reports.push({ file, locked: false, ...repairDetail });
         continue;
       }
       let owner: LockOwner | undefined;
@@ -468,7 +507,13 @@ export function listSessionsWithLockState(dir: string): SessionLockReport[] {
       } catch {
         owner = undefined;
       }
-      reports.push({ file, locked: true, ...(owner ? { owner: publicOwner(owner) } : {}), classification: classifyLock(owner) });
+      reports.push({
+        file,
+        locked: true,
+        ...(owner ? { owner: publicOwner(owner) } : {}),
+        classification: classifyLock(owner),
+        ...repairDetail,
+      });
     }
   } finally {
     directory.closeSync();
@@ -726,7 +771,26 @@ function adoptSessionLock(session: Session, token: string): void {
   mutationTokens.set(session, token);
 }
 
-type TailRepair = { kind: 'truncate'; size: number } | { kind: 'newline' };
+/**
+ * A tolerated partial tail, and exactly what repairing it will cost in bytes.
+ * `size` is the byte offset the repair happens at: the truncation point, or the
+ * end of the file the missing delimiter is written to.
+ */
+type TailRepair =
+  | { kind: 'truncate'; size: number; discardedBytes: number }
+  | { kind: 'newline'; size: number };
+
+/** The durable record of a repair, written as the first row of the first append (0015). */
+function journalRepairEntry(repair: TailRepair): LifecycleEntry {
+  return {
+    t: 'journal_repaired',
+    v: 2,
+    at: now(),
+    repair: repair.kind === 'truncate' ? 'truncated_partial_line' : 'appended_missing_newline',
+    offset: repair.size,
+    discardedBytes: repair.kind === 'truncate' ? repair.discardedBytes : 0,
+  };
+}
 
 function parseFile(file: string): { entries: SessionEntry[]; tailRepair?: TailRepair } {
   const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -798,12 +862,14 @@ function parseFile(file: string): { entries: SessionEntry[]; tailRepair?: TailRe
   let tailRepair: TailRepair | undefined;
   if (hasPartialTail) {
     const finalSegment = lines.at(-1) ?? '';
+    const rawBytes = Buffer.from(raw, 'utf8');
     if (skippedTail || finalSegment.trim().length === 0) {
-      const lastNewline = Buffer.from(raw).lastIndexOf(0x0a);
-      tailRepair = { kind: 'truncate', size: lastNewline + 1 };
+      const lastNewline = rawBytes.lastIndexOf(0x0a);
+      const truncateTo = lastNewline + 1;
+      tailRepair = { kind: 'truncate', size: truncateTo, discardedBytes: rawBytes.length - truncateTo };
     } else {
       // A valid final row is retained, but it must be delimited before O_APPEND.
-      tailRepair = { kind: 'newline' };
+      tailRepair = { kind: 'newline', size: rawBytes.length };
     }
   }
   return { entries, ...(tailRepair ? { tailRepair } : {}) };
@@ -1018,7 +1084,12 @@ export class Session {
         { cause: this.writeFailure },
       );
     }
-    const serialized = entries.map((entry) => serializeEntry(entry));
+    // 0015: a tolerated partial tail leaves a durable record, not only a stderr
+    // warning. The row describes the repair this very append is about to make,
+    // so it leads the batch and lands in the same fsync as the rows that follow.
+    const pendingRepair = this.tailRepair;
+    const withRepairRecord = pendingRepair ? [journalRepairEntry(pendingRepair), ...entries] : entries;
+    const serialized = withRepairRecord.map((entry) => serializeEntry(entry));
     const normalized = serialized.map((item) => item.entry);
     if (normalized.some((entry) => 'v' in entry && entry.v === 2)) {
       validateLifecycle([...this.entries, ...normalized]);
@@ -1026,11 +1097,20 @@ export class Session {
     let projectedSize: number;
     const content = serialized.map((item) => item.line).join('');
     try {
-      this.repairAppendBoundary();
-      projectedSize = statSync(this.file).size + Buffer.byteLength(content);
+      // Size the append against the post-repair file without applying the repair
+      // yet. A refused append must not leave a repaired boundary behind whose
+      // journal_repaired row was never written; the repair is deterministic, so
+      // its effect on the size is known before it happens.
+      const currentSize = statSync(this.file).size;
+      const repairedSize = pendingRepair
+        ? pendingRepair.kind === 'truncate'
+          ? pendingRepair.size
+          : currentSize + 1
+        : currentSize;
+      projectedSize = repairedSize + Buffer.byteLength(content);
     } catch (error) {
-      // Repair/path failures leave the append boundary untrusted. Poison this
-      // Session object so a rebuilt Agent cannot append contradictory rows.
+      // Path failures leave the append boundary untrusted. Poison this Session
+      // object so a rebuilt Agent cannot append contradictory rows.
       this.writeFailure = error;
       throw error;
     }
@@ -1042,10 +1122,11 @@ export class Session {
       );
     }
     try {
+      this.repairAppendBoundary();
       durableAppend(this.file, content);
     } catch (error) {
-      // write/fsync failures are outcome-ambiguous: the row may already be on
-      // disk even though the in-memory lifecycle has not accepted it.
+      // Repair and write/fsync failures are outcome-ambiguous: the row may
+      // already be on disk even though the in-memory lifecycle has not accepted it.
       this.writeFailure = error;
       throw error;
     }
@@ -1122,7 +1203,15 @@ export class Session {
     return requestIds;
   }
 
-  planTool(call: ToolCallBlock, options: { executionId?: string; requestId?: string } = {}): string {
+  /**
+   * Journal a call before dispatch. `workspaceDigest` is the planning-time
+   * workspace fingerprint (0007) a resumer compares against when the call ends
+   * `outcome_unknown`; it is optional because it is best-effort by design.
+   */
+  planTool(
+    call: ToolCallBlock,
+    options: { executionId?: string; requestId?: string; workspaceDigest?: WorkspaceDigest } = {},
+  ): string {
     const executionId = options.executionId ?? randomUUID();
     this.append({
       t: 'tool_planned',
@@ -1131,6 +1220,7 @@ export class Session {
       executionId,
       ...(options.requestId ? { requestId: options.requestId } : {}),
       call,
+      ...(options.workspaceDigest ? { workspaceDigest: options.workspaceDigest } : {}),
     });
     return executionId;
   }
@@ -1301,6 +1391,15 @@ export class Session {
     return entry?.t === 'meta' ? structuredClone(entry) : undefined;
   }
 
+  /**
+   * Every row in file order, legacy and lifecycle alike. Replay and conformance
+   * tooling needs the whole sequence; the derived getters below answer the
+   * narrower questions callers usually have.
+   */
+  get journalRows(): readonly SessionEntry[] {
+    return this.entries.map((entry) => structuredClone(entry));
+  }
+
   get lifecycleEntries(): readonly LifecycleEntry[] {
     return this.entries
       .filter((entry): entry is LifecycleEntry => 'v' in entry && entry.v === 2)
@@ -1325,6 +1424,11 @@ export class Session {
 
   get ready(): boolean {
     return this.lifecycleEntries.some((entry) => entry.t === 'session_ready');
+  }
+
+  /** Append-boundary repairs this journal has recorded (0015); empty for an intact file. */
+  get journalRepairs(): readonly Extract<LifecycleEntry, { t: 'journal_repaired' }>[] {
+    return journalRepairs(this.entries).map((entry) => structuredClone(entry));
   }
 
   get runStatus(): Extract<LifecycleEntry, { t: 'run_status' }> | undefined {

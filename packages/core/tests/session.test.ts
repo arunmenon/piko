@@ -20,6 +20,7 @@ import {
   Session,
   SessionCorruptionError,
   SessionPersistenceError,
+  countJournalRepairs,
   latestSessionFile,
   listSessionsWithLockState,
   recoverStaleLock,
@@ -141,6 +142,84 @@ test('a resumed append repairs malformed and valid unterminated tails', () => {
   const reopened = Session.open(valid.file);
   assert.equal(reopened.messages.length, 1);
   assert.equal(reopened.runStatus?.status, 'completed');
+});
+
+test('0015: a crash-shaped partial tail leaves a durable repair row with its byte counts', () => {
+  const crashed = Session.create('/some/project', 'test-model', dir);
+  crashed.append({ t: 'msg', message: message('user', 'kept') });
+  const intactBytes = statSync(crashed.file).size;
+  // A torn write: a complete row was being appended when the process died.
+  const partialTail = '{"t":"msg","message":{"role":"assist';
+  appendFileSync(crashed.file, partialTail, 'utf8');
+  crashed.close();
+
+  const recovered = Session.openLocked(crashed.file)!;
+  recovered.setRunStatus('running');
+  recovered.close();
+
+  const reopened = Session.open(crashed.file);
+  assert.equal(reopened.messages.length, 1);
+  const repairs = reopened.journalRepairs;
+  assert.equal(repairs.length, 1);
+  assert.equal(repairs[0]?.repair, 'truncated_partial_line');
+  assert.equal(repairs[0]?.offset, intactBytes, 'the repair offset is the last intact byte boundary');
+  assert.equal(repairs[0]?.discardedBytes, Buffer.byteLength(partialTail, 'utf8'));
+
+  // The record leads the first append, so the discarded bytes are accounted for
+  // before any row that was written after the repair.
+  const lines = readFileSync(crashed.file, 'utf8').trim().split('\n');
+  const repairIndex = lines.findIndex((line) => line.includes('"journal_repaired"'));
+  const statusIndex = lines.findIndex((line) => line.includes('"run_status"'));
+  assert.ok(repairIndex >= 0 && statusIndex > repairIndex, 'the repair row precedes the rows it made room for');
+
+  // Repair is recorded once, not re-declared on every later append.
+  const stillLocked = Session.openLocked(crashed.file)!;
+  stillLocked.setRunStatus('completed', 'end_turn');
+  stillLocked.close();
+  assert.equal(Session.open(crashed.file).journalRepairs.length, 1);
+});
+
+test('0015: a valid but undelimited final row records the newline repair and discards nothing', () => {
+  const undelimited = Session.create('/some/project', 'test-model', dir);
+  const validRow = JSON.stringify({ t: 'msg', message: message('user', 'valid tail') });
+  appendFileSync(undelimited.file, validRow, 'utf8');
+  const unterminatedBytes = statSync(undelimited.file).size;
+  undelimited.close();
+
+  const resumed = Session.openLocked(undelimited.file)!;
+  resumed.setRunStatus('completed', 'end_turn');
+  resumed.close();
+
+  const reopened = Session.open(undelimited.file);
+  assert.equal(reopened.messages.length, 1, 'a complete final row is kept, not discarded');
+  const repairs = reopened.journalRepairs;
+  assert.equal(repairs.length, 1);
+  assert.equal(repairs[0]?.repair, 'appended_missing_newline');
+  assert.equal(repairs[0]?.offset, unterminatedBytes);
+  assert.equal(repairs[0]?.discardedBytes, 0);
+  assert.equal(countJournalRepairs(undelimited.file), 1);
+});
+
+test('0015: an intact journal records no repair and doctor counts repaired sessions', () => {
+  const inventory = mkdtempSync(join(tmpdir(), 'pi-repair-inventory-'));
+  const intact = Session.create('/some/project', 'test-model', inventory);
+  intact.append({ t: 'msg', message: message('user', 'clean') });
+  intact.close();
+  assert.equal(Session.open(intact.file).journalRepairs.length, 0);
+  assert.equal(countJournalRepairs(intact.file), 0);
+
+  const repaired = Session.create('/some/project', 'test-model', inventory);
+  appendFileSync(repaired.file, '{"t":', 'utf8');
+  repaired.close();
+  const recovered = Session.openLocked(repaired.file)!;
+  recovered.markReady();
+  recovered.close();
+
+  const reports = listSessionsWithLockState(inventory);
+  const intactReport = reports.find((report) => report.file === intact.file);
+  const repairedReport = reports.find((report) => report.file === repaired.file);
+  assert.equal(intactReport?.repairs, undefined, 'an intact session carries no repair count');
+  assert.equal(repairedReport?.repairs, 1);
 });
 
 test('open rejects corrupt or schema-invalid rows anywhere except a partial JSON tail', () => {
