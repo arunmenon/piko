@@ -217,8 +217,8 @@ approvals, and the agent loop all remain in the parent process.
 
 | Provider | Platform | How |
 | --- | --- | --- |
-| bubblewrap | Linux, when `bwrap` is on PATH | `--unshare-all` (so there is no network namespace at all), `--die-with-parent`, `--new-session`, read-only binds of the system paths node needs, a read-write bind of the workspace, `--proc`, `--dev`, `--tmpfs /tmp` |
-| Seatbelt | macOS, via `/usr/bin/sandbox-exec` | a generated deny-by-default profile: reads limited to the system trees node needs plus the workspace, writes limited to the workspace and a private temp directory, network denied, exec limited to node, `/bin/bash`, and the standard tool directories |
+| bubblewrap | Linux, when `bwrap` is on PATH | `--unshare-all` (so there is no network namespace at all), `--die-with-parent`, `--new-session`, read-only binds of the system paths node needs, a read-write bind of the workspace, `--proc`, `--dev`, `--tmpfs /tmp`. A host that restricts capabilities inside unprivileged user namespaces (Ubuntu 24.04 with `kernel.apparmor_restrict_unprivileged_userns=1`) cannot bring up loopback in the new namespace, so the provider refuses rather than sharing the host network |
+| Seatbelt | macOS, via `/usr/bin/sandbox-exec` | a generated deny-by-default profile: reads limited to the system trees node needs plus the workspace, writes limited to the workspace and a private temp directory, network denied, exec limited to the standard tool directories plus the node and shell binaries resolved through `realpath` on this host, since Seatbelt judges a symlinked binary by its target |
 
 `--sandbox auto` (the default) uses a provider when one passes its acquire-time self-test:
 inside the sandbox, reading a canary file the parent just created outside the workspace must

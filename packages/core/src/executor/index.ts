@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -29,6 +29,7 @@ export {
   bubblewrapProvider,
   createBubblewrapProvider,
   bubblewrapCommandLine,
+  bubblewrapStartupFailure,
   BUBBLEWRAP_BINARY,
   type BubblewrapProviderOptions,
 } from './bubblewrap.js';
@@ -85,6 +86,48 @@ export function resolveNodeInstallPrefix(nodeExecutablePath: string): string {
   return basename(binDirectory) === 'bin' ? dirname(binDirectory) : binDirectory;
 }
 
+/** The shell name the bash tool hands to the operating system's PATH search. */
+export const WORKER_SHELL_NAME = 'bash';
+
+/**
+ * Resolve a bare binary name the way the worker's own `spawn` will: first match
+ * on the PATH the worker is given, followed through symlinks. Returns undefined
+ * when nothing on that PATH answers to the name.
+ */
+export function resolveExecutableOnPath(binaryName: string, pathVariable: string): string | undefined {
+  for (const directory of pathVariable.split(':')) {
+    if (directory.length === 0) continue;
+    const candidate = join(directory, binaryName);
+    try {
+      const resolved = realpathSync(candidate);
+      if (statSync(resolved).isFile()) return resolved;
+    } catch {
+      // Not on this PATH entry; keep looking.
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Every binary the sandbox must be allowed to execute, canonicalised on this
+ * host. The node that runs the worker, the shell the worker's bash tool spawns
+ * (resolved through the same PATH the worker gets, so a Homebrew bash ahead of
+ * `/bin/bash` is the one permitted), and `/bin/bash` itself as the fallback the
+ * system always has.
+ */
+export function resolveExecutableRealPaths(pathVariable: string): string[] {
+  const paths = new Set<string>();
+  paths.add(realpathSync(process.execPath));
+  const shell = resolveExecutableOnPath(WORKER_SHELL_NAME, pathVariable);
+  if (shell !== undefined) paths.add(shell);
+  try {
+    paths.add(realpathSync('/bin/bash'));
+  } catch {
+    // No /bin/bash on this platform; the PATH lookup above is the whole answer.
+  }
+  return [...paths].sort();
+}
+
 /**
  * Canonicalise a path that may not exist yet by resolving its deepest existing
  * ancestor and re-attaching the rest. A session directory is created lazily, so
@@ -121,6 +164,9 @@ export function buildSandboxSpec(workspaceRoot: string): SandboxSpec {
     pikoPackageRoot: resolvePikoPackageRoot(workerEntryPath),
     workerEntryPath,
     environment,
+    // Resolved against the PATH the worker will actually search, not this
+    // process's own, so the permitted shell is the one the worker will find.
+    executableRealPaths: resolveExecutableRealPaths(environment['PATH'] ?? ''),
   };
 }
 
