@@ -327,3 +327,60 @@ File: packages/core/tests/containment.test.ts, docs/adr/evidence/
    5), with one sentence per dimension saying what in this diff moved it or
    did not. The score is secondary to the findings.
 5. The minimum patch set that would make you call R2 closed.
+
+---
+
+## R2.1 re-review (2026-09-02, after the review above was addressed)
+
+Paste the block below together with everything above it.
+
+The R2 review at docs/reviews/2026-09-02-r2-review.md was addressed by the
+R2.1 patch set (`git diff 0e633e0..main`, the merges after commit b297955).
+Review the head of main. Expected baseline: `npm test` reports 334 passing,
+0 failing, 16 todo (the eight end-to-end ADR 0022 attacks plus the eight
+lower-level supplements), 1 skipped (the case-sensitivity complement that
+does not apply to the running filesystem); the budget gate reports ~815 of
+1000 at baseline 815.
+
+For each of the twelve R2 findings, state whether the fix closes it, closes
+it with a stated limitation, or leaves it open, citing the code and the
+test that proves it. Re-run every executed reproduction from the R2 review
+against the new tree and report its outcome. In particular:
+
+1. Finding 1: confirm the git probe cannot run for a `bash` call that is
+   absent, disabled, rejected by validation, unapproved, past the tool
+   budget, or after abort, and that an approved dispatch with an executable
+   `core.fsmonitor` in the repository config does not execute it (see
+   packages/core/tests/workspace-digest.test.ts). Attack the hardening
+   list: is there any remaining git configuration key, environment
+   variable, or alias path that can execute a program under
+   `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, and the `-c`
+   overrides? Confirm the shared deadline and process-group kill.
+2. Finding 2: the pin now re-reads and re-hashes after import and the
+   contract is narrowed to the entry module. Say whether the narrowed
+   contract is stated honestly everywhere (row field, ADR 0012, CHANGELOG).
+3. Finding 3: `expected_sha256` is now described as a stale-at-check
+   precondition with bounded hashing. Confirm the wording nowhere claims
+   compare-and-swap.
+4. Finding 4: the repair protocol (positional write on a non-O_APPEND
+   descriptor, fsync, conditional truncate, fsync). Reason through both
+   crash windows and the parseFile tolerance for an undelimited final line
+   that parses as JSON but is not a row; try to construct a fragment that
+   is a valid row and would be silently accepted.
+5. Finding 5: the dedicated capabilities row and the partial form on every
+   run_error path, including depth refusal in `--json`. List any remaining
+   path with neither.
+6. Finding 6: the barrier registry in filesystem.ts. Confirm it costs one
+   Map lookup per point in production and cannot be reached by the model;
+   confirm each end-to-end todo test fails at its intended assertion.
+7. Finding 7: `compaction.matchLiveCacheKey` and the recorded mode. Confirm
+   the summary request equals the live request on every provider cache-key
+   field when thinking is on; state what remains unmeasured.
+8. Finding 8: the JSON-fenced rehydration block. Try to break the framing.
+9. Finding 9: the dated per-model minimum table and the "unknown" wording.
+10. Findings 10 to 12: eval marker, spend precision, filesystem-aware case
+    folding. Confirm each regression test uses the producer's own string or
+    the real filesystem probe.
+
+Then rescore on the same rubric and say what the minimum remaining patch
+set is, if any.
