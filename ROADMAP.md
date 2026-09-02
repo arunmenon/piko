@@ -19,6 +19,8 @@ Package manifests are versioned `0.2.0`; the tag and publish decision remains a 
 
 ## v0.3 framework beta — in progress
 
+- [ ] ADR 0018 sandbox executor (Docker provider, control plane outside the sandbox) with ADR 0022 descriptor-anchored containment proven at the swap barrier through it. See docs/maturity-plan-2026-09.md.
+
 - [x] Versioned `--json` automation event stream and typed terminal states.
 - [x] Versioned redacted telemetry contract, durable JSONL sink, and model/tool/run spans.
 - [x] Runtime validation and byte ceilings for tool extensions; duplicate names rejected.

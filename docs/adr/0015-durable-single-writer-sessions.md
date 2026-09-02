@@ -1,6 +1,7 @@
 # 0015 — Durable single-writer session store
 
 Status: accepted (2026-08-19, backfilled same day; implemented in the v0.2 tranche)
+Amended-by: 0023, 0024
 
 ## Context
 
@@ -55,3 +56,6 @@ locked sessions and silently selects an older one, or reports "no previous
 session". Until the proposed remediation ADRs land (lock-capability
 session API; explicit stale-lock recovery), treat single-writer as a CLI
 convention, not a core-enforced invariant.
+
+
+Retirement note (2026-09-02): the amendment above described two gaps. Both are closed: 0023 makes single-writer a lock capability enforced at the library boundary, and 0024 replaces silent stale-lock fallback with a loud failure and `pi doctor sessions`. Treat single-writer as core-enforced again.

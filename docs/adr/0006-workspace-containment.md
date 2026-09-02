@@ -1,6 +1,7 @@
 # 0006 — Workspace containment and deny-by-default host bash
 
 Status: accepted (2026-08-19)
+Amended-by: 0022
 
 ## Context
 

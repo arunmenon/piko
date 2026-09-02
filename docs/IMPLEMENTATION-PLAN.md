@@ -37,7 +37,7 @@ statistical bar for self-improvement promotion.
 | G11 | Parser robustness asserted (fail-closed) but not adversarially evidenced | v1.0 roadmap line | Phase 3 pre-publication gate; expanded in Phase 6 |
 | G12 | RPC surface undecided; ACP is a candidate that buys editor integrations | Podcast; roadmap v0.3 | Phase 6 (spike → ADR when decided) |
 | G13 | Sessions, offloads, telemetry, evals, and benchmark trajectories retain sensitive source/output without one lifecycle policy | Security policy; ADR coverage review | Phase 2 (ADR 0021) |
-| G14 | Provider adapters share a terminal contract, but admission, capability, routing, context-window authority, retry/billing, and conformance policy are not recorded together | 0008; ADR coverage review | Phase 3 (ADR 0022) |
+| G14 | Provider adapters share a terminal contract, but admission, capability, routing, context-window authority, retry/billing, and conformance policy are not recorded together | 0008; ADR coverage review | Phase 3 (ADR 0025) |
 
 ## Phases
 
@@ -126,7 +126,7 @@ permissions, provider reachability). Exit: a stranger reaches a completed
 Before any public package or tag, pull forward the safety half of Phase 6:
 property/corpus tests for SSE parsing, session-tail recovery, journal replay,
 and argument validation, with committed seeds and minimized regression cases.
-Accept ADR 0022, the provider-capability contract defining adapter admission, supported
+Accept ADR 0025, the provider-capability contract defining adapter admission, supported
 features, model/context-window authority, profile/alias resolution,
 retry-after-response and billing rules, usage normalization, and the
 conformance suite required before a provider enters the support matrix.

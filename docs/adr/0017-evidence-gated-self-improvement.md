@@ -62,7 +62,11 @@ same stance 0004 takes for sub-agents and 0002 takes for MCP.
   style in-process rebuilds, and any self-modification path that bypasses the
   prove and park stages.
 
-## Proposed amendment (2026-08-25, token rent — awaiting owner ratification)
+## Token-rent rule (re-homed 2026-09-02)
+
+This amendment was moved to ADR 0001 as a proposed amendment to an accepted record, because CI already enforces it and an amendment inside a still-proposed record is structurally ambiguous (owner review, 2026-09-02). The text below is retained for history; the governing copy is in 0001.
+
+### Original text (superseded)
 
 The fitness function above (dollars per completed task) gains an enforcement
 rule for the fixed context specifically:

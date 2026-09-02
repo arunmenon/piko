@@ -56,3 +56,6 @@ The implementation evidence is maintained in
   left unpriced rather than reported as falsely exact.
 - The 0009 principle extends unchanged: enforcement lives in the loop; this
   record only adds a currency to it.
+
+
+Scope note (2026-09-02): `maxSpendUSD` is enforced per user turn (see 0009's scope note). The reservation is conservative (byte-derived input bound, maximum applicable rates), so a nominal cap stops work at roughly half its value on long contexts; the effective ceiling is the number to design against. Aggregate session and child-tree ceilings: ADR 0026 (proposed).

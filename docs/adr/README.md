@@ -31,6 +31,9 @@ new decisions get an ADR in the same change that implements them.
 | 0022 | Descriptor-anchored workspace containment (amends 0006) | accepted |
 | 0023 | Lock-capability session API (amends 0015) | accepted |
 | 0024 | Explicit stale-lock recovery (amends 0015) | accepted |
+| 0025 | Provider capability contract (depends on 0008) | **proposed** |
+| 0026 | Session-scoped and aggregate budget authority (amends 0009, 0020) | **proposed** |
+| 0027 | Cooperative graceful shutdown | **proposed** |
 
 Headers may carry `Amends` / `Amended-by` / `Depends on` lines; the records
 they link are never edited beyond those pointers and dated addenda.

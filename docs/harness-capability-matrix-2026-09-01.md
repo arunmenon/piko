@@ -18,7 +18,7 @@ provider breadth, benchmark evidence, maturity.
 Evidence grades: A = source-read and/or benchmarked by this project
 (Terminus-2, Exo, fusion-harness, pi-mono); B = Harbor-adapter-mined +
 vendor docs, fact-check-corrected (production tier, OpenHands, Aider,
-mini-swe-agent); C = public docs only, unverified (DeepSeek).
+mini-swe-agent); C = public docs only, unverified (DeepSeek at draft time; upgraded to B by the grounding pass recorded below).
 
 Verdict recorded in the artifact: piko wins cost enforcement, session
 durability, benchmark-evidence transparency, and footprint discipline;

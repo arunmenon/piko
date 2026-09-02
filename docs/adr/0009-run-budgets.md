@@ -30,3 +30,6 @@ harness; the model is never asked to respect them, it is stopped by them.
   thread through the loop and every new execution path must respect them.
   Monetary cost is bounded only via token proxies until per-model pricing is
   wired into enforcement.
+
+
+Scope note (2026-09-02): as implemented, every `RunBudget` ceiling is scoped to ONE user turn. In headless `-p` a turn is the run, so the contract holds; in the REPL each ceiling resets per turn and a session may spend any multiple of it. Session-scoped and child-tree aggregate ceilings are proposed in ADR 0026; until it lands, read "run" in this record as "turn".

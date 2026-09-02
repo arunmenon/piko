@@ -46,3 +46,18 @@ One written lifecycle contract covering every artifact class:
   rule above.
 - Full policy text, retention periods, and any tooling (a lifecycle check
   in CI) are implementation work that follows ratification.
+
+
+## Retention classes and defaults (drafted 2026-09-02 for ratification)
+
+| Class | Default retention | Deletion | Notes |
+|---|---|---|---|
+| Session journals and lineage files | Indefinite, owner-only (0600) | Explicit only: a future `pi doctor sessions --prune <id>` with confirmation, journaled | Evidence-grade for audits; never deleted by scratch cleanup |
+| Workspace offloads | With their session | Same act as the session | Contain task output; treated as sensitive |
+| Telemetry JSONL | 30 days | Explicit or scheduled prune, logged | Redacted at write time (0013/0016); retention configurable per sink |
+| Benchmark run directories | Ephemeral by default | Any time | Never the sole home of anything evidence-grade; ledgers and manifests are committed |
+| Committed benchmark artifacts and manifests | Permanent | Never | The evidence tier; regenerated only from committed inputs |
+| Review reports and adjudications | Permanent | Never | Provenance for maturity claims |
+
+Ratification may accept these defaults, or accept the record as principles
+only with defaults deferred; the owner chooses, and the status line says which.

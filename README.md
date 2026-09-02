@@ -100,6 +100,7 @@ node packages/cli/dist/main.js -p "review these files" --max-turns 20
 
 # hard dollar ceiling; exact model key required, with a durable pre-dispatch reservation
 node packages/cli/dist/main.js -p --pricing ./model-prices.json --max-spend-usd 0.50 "review these files"
+# Budget ceilings are enforced per user turn (in -p, the turn is the run); in the REPL they reset each turn. Session-scoped ceilings: ADR 0026, proposed.
 
 # versioned JSONL automation stream; incomplete/capped runs exit nonzero
 node packages/cli/dist/main.js --json "review these files"
