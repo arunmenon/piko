@@ -20,6 +20,37 @@ export class ToolPolicyError extends Error {
   override readonly name = 'ToolPolicyError';
 }
 
+/**
+ * Named points where the path-based implementation stops holding a checked
+ * result and re-traverses it. Those are exactly the windows a parent swap
+ * wins, so ADR 0022's acceptance regression drives its attacks from here.
+ */
+export type ContainmentBarrierName =
+  | 'after-resolve'
+  | 'before-open'
+  | 'before-mkdir'
+  | 'before-temp-create'
+  | 'before-rename'
+  | 'before-cleanup'
+  | 'before-map-directory-open';
+
+/**
+ * Test-only seam: a barrier registered under one of the names above runs at
+ * that point with the path the next step is about to act on. Empty in
+ * production, where the whole cost is one Map lookup per point. Nothing in the
+ * shipped code registers a barrier, and no barrier may change a result: the
+ * containment tests use it to perform a swap mid-call so the attack runs
+ * inside a real `Tool.execute()` instead of beside it.
+ */
+export const containmentBarriers = new Map<ContainmentBarrierName, (path: string) => void>();
+
+/** Run the barrier registered at `barrierName`, if any. */
+export function runContainmentBarrier(barrierName: ContainmentBarrierName, path: string): void {
+  const barrier = containmentBarriers.get(barrierName);
+  if (barrier === undefined) return;
+  barrier(path);
+}
+
 export interface ResolveWorkspacePathOptions {
   /** Require the final path to exist (default true). */
   readonly mustExist?: boolean;
@@ -43,7 +74,7 @@ const PROTECTED_DIRECTORY_NAMES = new Set(['.git', '.pi', '.agent', '.claude']);
 
 /** Files the file tools never write, at the workspace root only. */
 const PROTECTED_WORKSPACE_ROOT_FILES = new Set([
-  'agents.md',
+  'AGENTS.md',
   '.mcp.json',
   '.bashrc',
   '.bash_profile',
@@ -52,23 +83,104 @@ const PROTECTED_WORKSPACE_ROOT_FILES = new Set([
   '.profile',
 ]);
 
+/** Case-folded lookups, used only on a filesystem that folds case itself. */
+const PROTECTED_DIRECTORY_NAMES_FOLDED = new Map(
+  [...PROTECTED_DIRECTORY_NAMES].map((name) => [name.toLowerCase(), name] as const),
+);
+const PROTECTED_WORKSPACE_ROOT_FILES_FOLDED = new Set(
+  [...PROTECTED_WORKSPACE_ROOT_FILES].map((name) => name.toLowerCase()),
+);
+
+/** One answer per workspace root, probed once (ADR 0006 addendum, 2026-09-02). */
+const workspaceCaseFoldingByRoot = new Map<string, boolean>();
+
+/** The same name with the case of its first flippable letter inverted. */
+function caseFlippedName(name: string): string | undefined {
+  for (let index = 0; index < name.length; index++) {
+    const character = name[index]!;
+    const lowered = character.toLowerCase();
+    const flipped = character === lowered ? character.toUpperCase() : lowered;
+    if (flipped !== character) return `${name.slice(0, index)}${flipped}${name.slice(index + 1)}`;
+  }
+  return undefined;
+}
+
+/** True when `otherPath` names the very same inode as `stat`. */
+function resolvesToSameFile(stat: Stats, otherPath: string): boolean {
+  let other: Stats;
+  try {
+    other = statSync(otherPath);
+  } catch {
+    return false;
+  }
+  return other.dev === stat.dev && other.ino === stat.ino;
+}
+
+/**
+ * Ask the filesystem, rather than the platform, whether it folds case: stat the
+ * root under a case-flipped spelling of its own last segment and compare
+ * inodes. A root whose name carries no flippable letter gets a probe file
+ * instead. Any failure answers "folds", which keeps the deny list at its widest.
+ */
+function probeCaseFolding(workspaceRoot: string): boolean {
+  try {
+    const flippedRootName = caseFlippedName(basename(workspaceRoot));
+    if (flippedRootName !== undefined) {
+      return resolvesToSameFile(statSync(workspaceRoot), resolve(dirname(workspaceRoot), flippedRootName));
+    }
+    const probeName = `.pi-case-probe-${process.pid}-${randomUUID()}a`;
+    const probePath = resolve(workspaceRoot, probeName);
+    closeSync(openSync(probePath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600));
+    try {
+      return resolvesToSameFile(statSync(probePath), resolve(workspaceRoot, caseFlippedName(probeName)!));
+    } finally {
+      unlinkSync(probePath);
+    }
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Whether this workspace's filesystem folds path case, probed once per root and
+ * cached. Exported so tests can state which half of the deny-list contract
+ * applies on the filesystem they are running on.
+ */
+export function workspaceFoldsPathCase(workspaceRoot: string): boolean {
+  const cached = workspaceCaseFoldingByRoot.get(workspaceRoot);
+  if (cached !== undefined) return cached;
+  const foldsCase = probeCaseFolding(workspaceRoot);
+  workspaceCaseFoldingByRoot.set(workspaceRoot, foldsCase);
+  return foldsCase;
+}
+
 /**
  * Name the deny-list rule a canonical path breaks, or undefined when it breaks
- * none. Comparison is case-insensitive so a case-insensitive filesystem cannot
- * turn `.GIT/hooks/pre-commit` into a bypass.
+ * none. Segment comparison follows the workspace filesystem: on one that folds
+ * case, `.GIT/hooks/pre-commit` is the same file as `.git/hooks/pre-commit` and
+ * is refused with it; on a case-sensitive one, `.Git/` is a different directory
+ * that git never reads, so refusing it would be a false refusal.
  */
 export function protectedPathRule(workspaceRoot: string, canonicalPath: string): string | undefined {
   const relativePath = relative(workspaceRoot, canonicalPath);
   if (relativePath === '' || relativePath.length === 0) return undefined;
+  const foldsCase = workspaceFoldsPathCase(workspaceRoot);
   const segments = relativePath.split(sep);
   for (const segment of segments) {
-    const normalizedSegment = segment.toLowerCase();
-    if (PROTECTED_DIRECTORY_NAMES.has(normalizedSegment)) {
-      return `${normalizedSegment}/ is protected at any depth in the workspace`;
+    const protectedDirectory = foldsCase
+      ? PROTECTED_DIRECTORY_NAMES_FOLDED.get(segment.toLowerCase())
+      : PROTECTED_DIRECTORY_NAMES.has(segment)
+        ? segment
+        : undefined;
+    if (protectedDirectory !== undefined) {
+      return `${protectedDirectory}/ is protected at any depth in the workspace`;
     }
   }
   const firstSegment = segments[0]!;
-  if (segments.length === 1 && PROTECTED_WORKSPACE_ROOT_FILES.has(firstSegment.toLowerCase())) {
+  const protectedFile = foldsCase
+    ? PROTECTED_WORKSPACE_ROOT_FILES_FOLDED.has(firstSegment.toLowerCase())
+    : PROTECTED_WORKSPACE_ROOT_FILES.has(firstSegment);
+  if (segments.length === 1 && protectedFile) {
     return `${firstSegment} is protected at the workspace root`;
   }
   return undefined;
@@ -190,6 +302,9 @@ export function resolveWorkspacePath(
   }
   assertInside(root, canonicalCandidate);
   if (options.forMutation === true) assertPathNotProtected(context, root, canonicalCandidate, requestedPath);
+  // The checked result leaves this function as a string, which every caller
+  // re-traverses. ADR 0022's tests open that window here on purpose.
+  runContainmentBarrier('after-resolve', canonicalCandidate);
   return canonicalCandidate;
 }
 
@@ -216,12 +331,14 @@ export function atomicWriteTextFile(path: string, content: string, options: { mo
   let descriptor: number | undefined;
   let committed = false;
   try {
+    runContainmentBarrier('before-temp-create', tempPath);
     descriptor = openSync(tempPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, mode);
     if (existing) fchmodSync(descriptor, mode);
     writeFileSync(descriptor, content, 'utf8');
     fsyncSync(descriptor);
     closeSync(descriptor);
     descriptor = undefined;
+    runContainmentBarrier('before-rename', path);
     renameSync(tempPath, path);
     // The rename is now visible and cannot be safely retried as though it never
     // happened. Directory fsync is a best-effort power-loss hardening step;
@@ -248,6 +365,7 @@ export function atomicWriteTextFile(path: string, content: string, options: { mo
     }
     if (!committed) {
       try {
+        runContainmentBarrier('before-cleanup', tempPath);
         unlinkSync(tempPath);
       } catch {
         // The temp file may not have been created.

@@ -62,10 +62,23 @@ be checked against it. This addendum adds the per-tool preconditions that make
 the state actionable, and the conformance test that keeps replay faithful.
 
 - Write gains an optional `expected_sha256` precondition (built alongside this
-  under R2-12; edit already carries an equivalent through its match text). A
-  write that states the digest it expects to overwrite refuses when the file on
-  disk no longer matches, so a resumer can safely reissue a write whose outcome
-  is unknown instead of guessing whether the earlier one landed.
+  under R2-12; edit already carries an equivalent through its match text). It is
+  a stale-at-check-time precondition, not a compare-and-swap. The tool hashes
+  the file, then stages a temporary file and renames it over the target; a
+  writer that lands between the hash and the rename is still overwritten and
+  nothing reports it. What the check catches is a workspace that moved before
+  the call: a resumer facing an `outcome_unknown` write can reissue it with the
+  digest it planned against and be refused, rather than clobbering a file that
+  changed while the outcome was unknown. That is worth having, and it is all
+  that is on offer here; a serialized conditional replacement would need the
+  compare and the rename to happen under one lock or one kernel operation, which
+  this implementation does not do. Correction (R2 finding 3): the first version
+  of this addendum said a resumer could "safely reissue" such a write. That
+  wording was wrong. It promised serialization the mechanism never provided, and
+  the guarantee holds only when piko is the single writer of that path. The hash
+  itself is bounded: it reads through a descriptor in fixed 64 KiB chunks and
+  refuses a file over the same 10 MB ceiling read and edit enforce, before
+  reading any of it, so a precondition cannot be turned into an unbounded read.
 - Bash cannot have a precondition of that shape, because its effects are
   arbitrary. It gets evidence instead: the `tool_planned` row for a bash call
   carries an optional `workspaceDigest`, the planning-time fingerprint of the

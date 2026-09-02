@@ -81,8 +81,18 @@ Resolution rule: the deny list is evaluated on the canonical path, after symlink
 resolution and after the existing containment checks, expressed relative to the
 workspace root. A symlink alias inside the workspace therefore cannot launder a
 protected target, and a path is judged by where it lands rather than by how it
-was spelled. Segment comparison is case-insensitive so a case-insensitive
-filesystem cannot turn `.GIT/hooks/pre-commit` into a bypass. Directory names
+was spelled. Segment comparison follows the workspace filesystem rather than the
+platform (corrected 2026-09-02 after R2 finding 12, which showed the earlier
+unconditional lowercasing refusing `.Git/notes.txt` on Linux). piko probes the
+workspace root once and caches the answer: it stats the root under a case-flipped
+spelling of its own last segment, or creates and stats a probe file when that
+name has no letter to flip, and compares inodes. On a filesystem that folds case,
+`.GIT/hooks/pre-commit` is the same file as `.git/hooks/pre-commit` and is
+refused with it; on a case-sensitive filesystem `.Git/` is a different directory
+that git never reads and `agents.md` a different file than the one loaded into
+the prompt, so refusing them would be a false refusal and they stay writable. A
+probe that cannot run answers "folds case", which keeps the deny list at its
+widest. Directory names
 match at any depth because a nested checkout's `.git/` is exactly as executable
 as the root one; the file entries match at the root only, because only the root
 `AGENTS.md` is loaded into the prompt and a document named `AGENTS.md` deeper in

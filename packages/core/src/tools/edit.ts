@@ -1,5 +1,11 @@
 import { closeSync, constants, fstatSync, openSync, readSync, type Stats } from 'node:fs';
-import { assertRegularFile, atomicWriteTextFile, resolveWorkspacePath, ToolPolicyError } from './filesystem.js';
+import {
+  assertRegularFile,
+  atomicWriteTextFile,
+  resolveWorkspacePath,
+  runContainmentBarrier,
+  ToolPolicyError,
+} from './filesystem.js';
 import { requireString, requireStringAllowEmpty, textOutput, type Tool, type ToolContext, type ToolOutput } from './types.js';
 
 /** Keep edit's input/output ceiling aligned with the read tool's text-file ceiling. */
@@ -100,6 +106,7 @@ export const editTool: Tool = {
   async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolOutput> {
     const requestedPath = requireString(args, 'path');
     const path = resolveWorkspacePath(context, requestedPath, { forMutation: true });
+    runContainmentBarrier('before-open', path);
     const preOpenStat = assertRegularFile(path, 'edit')!;
     if (preOpenStat.size > EDIT_MAX_FILE_BYTES) {
       return textOutput(
