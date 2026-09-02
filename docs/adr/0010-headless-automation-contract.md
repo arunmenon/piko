@@ -46,3 +46,26 @@ can now distinguish it. In --json mode the run_error event carries
 code: "locked_session_head" for the same purpose, and pi doctor sessions
 emits doctor_session / doctor_recover / doctor_error rows under the same
 versioned envelope, keeping argument errors on the typed stdout channel.
+
+## Addendum (2026-09-02, capabilities row)
+
+R2-11 of the red-team remediation plan adds one backward-compatible field to
+this contract. The first row a headless `--json` run emits now carries a
+`capabilities` object alongside the existing `v`, `sessionId`, and `event`
+fields, so an adapter can discover what it is talking to instead of inferring
+it from a piko version string:
+
+- `journalSchemaVersion`: the journal schema generation this build writes
+  (`JOURNAL_SCHEMA_VERSION`).
+- `tools`: the tool names available for this run, after built-ins, host-bash
+  gating, and extensions are resolved.
+- `exitCodes`: the full exit-code set a caller must interpret, as documented
+  above and amended for 0024.
+- `budgetScope`: `turn`, the scope every budget ceiling is enforced against
+  (ADR 0009 scope note; ADR 0026 proposes session scope).
+
+Only the first row gains the field; every later row is byte-identical to what
+it was, and a consumer that ignores unknown fields is unaffected. This is an
+additive extension of the versioned schema, so `v` stays 1. It is deliberately
+a read-only self-description and not an RPC surface: the bidirectional adapter
+work remains future work under R0-6.

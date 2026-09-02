@@ -59,3 +59,41 @@ The implementation evidence is maintained in
 
 
 Scope note (2026-09-02): `maxSpendUSD` is enforced per user turn (see 0009's scope note). The reservation is conservative (byte-derived input bound, maximum applicable rates), so a nominal cap stops work at roughly half its value on long contexts; the effective ceiling is the number to design against. Aggregate session and child-tree ceilings: ADR 0026 (proposed).
+
+## Addendum (2026-09-02, legible ceiling)
+
+R2-2 of the red-team remediation plan makes a dollar ceiling stop explain
+itself without a journal read. Every spend stop now carries four numbers, and
+only four:
+
+- `reservationUSD`: the conservative reservation the refused next provider
+  request would have needed (zero when a completed response, not a pending
+  reservation, was what crossed the line).
+- `actualUSD`: priced spend already recorded for this turn.
+- `reservedUSD`: reservations still outstanding, whose request has produced no
+  priced terminal usage.
+- `ceilingUSD`: the configured `maxSpendUSD` for the turn.
+
+They add up: a stop happens exactly when
+`actualUSD + reservedUSD + reservationUSD > ceilingUSD`. The number to design
+against is the effective ceiling, `ceilingUSD - reservedUSD`, which is what the
+conservatism of the reservation actually leaves spendable.
+
+Where they appear:
+
+- the core `budget_exceeded` event carries them as `spend` whenever its reason
+  is `spend`, at all four stop sites (pre-dispatch reservation, post-response
+  actual overshoot, and both compaction-summary paths);
+- the terminal `turn_done` event repeats the same object, so the last row of a
+  `--json` stream is sufficient on its own;
+- headless (without `--json`) and the REPL print one line,
+  `spend stop: reserved $X for the next request, spent $Y, ceiling $Z,
+  effective ceiling $W (ceiling less $R outstanding reservations)`, in the same
+  six-decimal dollar format the rest of the CLI uses;
+- `--usage` adds a `spendCeiling` object (`ceilingUSD`, `actualUSD`,
+  `reservedUSD`, `effectiveCeilingUSD`) to its `usage_summary` row whenever a
+  ceiling is configured.
+
+This is output only. The reservation math, the enforcement points, and the
+scope of `maxSpendUSD` are unchanged, and ADR 0026's proposed session-scoped
+design is untouched: it inherits this presentation rather than replacing it.

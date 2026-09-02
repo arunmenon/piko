@@ -25,6 +25,7 @@ import {
   costComplete,
   defaultTools,
   discoverSkills,
+  effectiveSpendCeilingUSD,
   emptyCostSummary,
   latestSessionFile,
   listSessionsWithLockState,
@@ -54,6 +55,7 @@ import {
   resolveDecisionFlags,
 } from './approvals.js';
 import { HELP, parseArgs, type CliArgs } from './args.js';
+import { headlessCapabilities } from './capabilities.js';
 import { loadConfiguredExtensions } from './extensions.js';
 import { interpolate, loadTemplates, type PromptTemplate } from './templates.js';
 import {
@@ -62,6 +64,7 @@ import {
   cyan,
   dim,
   formatCost,
+  formatSpendStop,
   formatUsage,
   oneLine,
   red,
@@ -338,6 +341,23 @@ function printUsageSummary(
         ...(lastTurnCostComplete ? { usd: agent.lastTurnCost.actualUSD } : {}),
         complete: lastTurnCostComplete,
       },
+      // The configured per-turn ceiling, reported next to actual and reserved
+      // spend so a stop is legible from this row alone (ADR 0020 addendum).
+      ...(agent.spendCeilingUSD !== undefined
+        ? {
+            spendCeiling: {
+              ceilingUSD: agent.spendCeilingUSD,
+              actualUSD: agent.lastTurnCost.actualUSD,
+              reservedUSD: agent.lastTurnCost.reservedUSD,
+              effectiveCeilingUSD: effectiveSpendCeilingUSD({
+                reservationUSD: 0,
+                actualUSD: agent.lastTurnCost.actualUSD,
+                reservedUSD: agent.lastTurnCost.reservedUSD,
+                ceilingUSD: agent.spendCeilingUSD,
+              }),
+            },
+          }
+        : {}),
       requests: agent.requestCount,
       usageHistoryComplete: agent.usageHistoryComplete,
       unknownPriorRequests: agent.session?.modelRequests.filter((request) => request.status === 'outcome_unknown').length ?? 0,
@@ -382,7 +402,7 @@ async function headless(args: CliArgs): Promise<number> {
     process.stderr.write('no prompt: pass one as an argument or on stdin\n');
     return 1;
   }
-  const { agent, session } = await setup(args);
+  const { agent, session, tools } = await setup(args);
   // A session with undecided approvals cannot accept new input: its transcript
   // still ends at the assistant tool_use whose results are pending.
   if (agent.suspended && !decisionFlags) {
@@ -419,10 +439,22 @@ async function headless(args: CliArgs): Promise<number> {
         controller.signal,
       )
     : agent.run(prompt, controller.signal);
+  // The first --json row advertises the contract this process implements
+  // (0010 addendum): journal generation, tool names, exit codes, budget scope.
+  // Later rows are unchanged, so existing consumers keep parsing them as before.
+  let firstJsonRow = true;
   try {
     for await (const event of turn) {
       if (args.json) {
-        process.stdout.write(`${JSON.stringify({ v: 1, sessionId: (agent.session ?? session).id, event })}\n`);
+        process.stdout.write(
+          `${JSON.stringify({
+            v: 1,
+            sessionId: (agent.session ?? session).id,
+            ...(firstJsonRow ? { capabilities: headlessCapabilities(tools) } : {}),
+            event,
+          })}\n`,
+        );
+        firstJsonRow = false;
       }
       if (event.type === 'response_done') {
         const text = event.message.content
@@ -449,6 +481,7 @@ async function headless(args: CliArgs): Promise<number> {
         process.stderr.write(dim(`offloaded ${event.count} old tool outputs\n`));
       } else if (event.type === 'budget_exceeded') {
         process.stderr.write(`budget exceeded: ${event.reason}\n`);
+        if (event.spend) process.stderr.write(`${formatSpendStop(event.spend)}\n`);
       } else if (event.type === 'approval_decided') {
         process.stderr.write(dim(`approval ${event.decision}: ${oneLine(event.call.name, 64)}\n`));
       }
@@ -465,8 +498,9 @@ async function headless(args: CliArgs): Promise<number> {
   } else if (terminal.status === 'completed') {
     exitCode = 0;
   } else {
+    // "turn", not "run": every ceiling here is scoped to one user turn (ADR 0009 scope note).
     process.stderr.write(
-      `run ${terminal.status}: ${terminal.reason} after ${terminal.iterations} model request(s) and ${terminal.toolCalls} tool call(s)\n`,
+      `turn ${terminal.status}: ${terminal.reason} after ${terminal.iterations} model request(s) and ${terminal.toolCalls} tool call(s)\n`,
     );
     if (terminal.status === 'suspended') reportPendingApprovals(agent);
     exitCode =
@@ -548,6 +582,7 @@ function handleEvent(event: AgentEvent, state: ReplState): void {
     case 'budget_exceeded':
       ensureNewline();
       process.stdout.write(red(`[budget exceeded: ${event.reason}]\n`));
+      if (event.spend) process.stdout.write(red(`[${formatSpendStop(event.spend)}]\n`));
       break;
     case 'turn_done':
       ensureNewline();
