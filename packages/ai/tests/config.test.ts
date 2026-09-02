@@ -26,6 +26,15 @@ test('validateConfig rejects malformed provider and budget fields', () => {
   assert.throws(() => validateConfig({ extensions: ['ok', 2] }), /extensions/);
   assert.throws(() => validateConfig({ profiles: { bad: { provider: 'mystery' } } }), /provider/);
   assert.throws(() => validateConfig({ profiles: { bad: { contextWindow: -1 } } }), /contextWindow/);
+  assert.throws(() => validateConfig({ shutdownGraceSeconds: -1 }), /shutdownGraceSeconds/);
+  assert.throws(() => validateConfig({ shutdownGraceSeconds: 1.5 }), /shutdownGraceSeconds/);
+  assert.throws(() => validateConfig({ shutdownGraceSeconds: '10' }), /shutdownGraceSeconds/);
+});
+
+test('validateConfig accepts a shutdown grace period, including zero (ADR 0027)', () => {
+  assert.equal(validateConfig({ shutdownGraceSeconds: 30 }).shutdownGraceSeconds, 30);
+  assert.equal(validateConfig({ shutdownGraceSeconds: 0 }).shutdownGraceSeconds, 0);
+  assert.equal(validateConfig({}).shutdownGraceSeconds, undefined);
 });
 
 test('approval gating is read from user config, per profile or as a default', () => {

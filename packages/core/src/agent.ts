@@ -634,6 +634,8 @@ export class Agent {
   private activeTelemetryContext?: TelemetryContext;
   private activeRunSignal?: AbortSignal;
   private observerDisabled = false;
+  /** Set once a cooperative shutdown drain began; never cleared (ADR 0027). */
+  private drainRequested = false;
 
   get session(): Session | undefined {
     return this._session;
@@ -642,6 +644,23 @@ export class Agent {
   /** The configured per-turn dollar ceiling, so callers can report it alongside actual and reserved spend. */
   get spendCeilingUSD(): number | undefined {
     return this.options.budget?.maxSpendUSD;
+  }
+
+  /** True once admission has been stopped by a cooperative drain (ADR 0027). */
+  get draining(): boolean {
+    return this.drainRequested;
+  }
+
+  /**
+   * Stop admitting new work without canceling what is already dispatched
+   * (ADR 0027). No further model request is started and no further tool call is
+   * dispatched; operations already in flight keep running to their own terminal
+   * state, and the turn ends `canceled` at the next admission point. The caller
+   * owns the deadline: aborting the run signal is still the forced path, and it
+   * is the only thing that produces `outcome_unknown` rows.
+   */
+  requestDrain(): void {
+    this.drainRequested = true;
   }
 
   constructor(private readonly options: AgentOptions) {
@@ -1427,6 +1446,14 @@ export class Agent {
             }
             break;
           }
+          // ADR 0027 admission gate: a drain stops the next model request from
+          // ever being dispatched, so the turn ends canceled with nothing new in
+          // flight and nothing left in an unknown state.
+          if (this.drainRequested) {
+            status = 'canceled';
+            reason = 'user_abort';
+            break;
+          }
 
           for (const note of steering?.() ?? []) {
             if (Buffer.byteLength(note) > MAX_USER_INPUT_BYTES) {
@@ -2124,6 +2151,24 @@ export class Agent {
               toolCallId: call.id,
               toolName: call.name,
               content: [{ type: 'text', text: 'not run: canceled before execution' }],
+              isError: true,
+            });
+            continue;
+          }
+          // ADR 0027 admission gate: a drain refuses the dispatch outright, so
+          // the call is durably `skipped` (it demonstrably never ran) rather
+          // than left unknown. Calls already dispatched are untouched.
+          if (this.drainRequested) {
+            if (journaled && this._session) {
+              this.journal((session) =>
+                session.skipTool(executionId, 'shutdown drain stopped admission before dispatch'),
+              );
+            }
+            results.push({
+              type: 'toolResult',
+              toolCallId: call.id,
+              toolName: call.name,
+              content: [{ type: 'text', text: 'not run: shutdown drain stopped admission before dispatch' }],
               isError: true,
             });
             continue;

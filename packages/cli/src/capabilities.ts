@@ -7,8 +7,12 @@
  */
 import { JOURNAL_SCHEMA_VERSION } from '@pi/core';
 
-/** Every exit code the headless contract may return (0010 and its 0024 amendment). */
-export const HEADLESS_EXIT_CODES = [0, 1, 2, 3, 4, 5, 130] as const;
+/**
+ * Every exit code the headless contract may return (0010, its 0024 amendment,
+ * and the 2026-09-02 exit-code addendum that reserves 143 for termination by
+ * SIGTERM, cooperative or forced, under 0027).
+ */
+export const HEADLESS_EXIT_CODES = [0, 1, 2, 3, 4, 5, 130, 143] as const;
 
 /** Budget ceilings are enforced per user turn (ADR 0009 scope note; ADR 0026 proposes session scope). */
 export const BUDGET_SCOPE = 'turn';

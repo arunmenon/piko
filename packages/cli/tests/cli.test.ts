@@ -211,7 +211,7 @@ test('the first headless JSON row is the automation contract itself', () => {
   const capabilities = contractRow.capabilities;
   assert.ok(capabilities, 'the first row carries capabilities');
   assert.equal(capabilities.journalSchemaVersion, JOURNAL_SCHEMA_VERSION);
-  assert.deepEqual(capabilities.exitCodes, [0, 1, 2, 3, 4, 5, 130]);
+  assert.deepEqual(capabilities.exitCodes, [0, 1, 2, 3, 4, 5, 130, 143]);
   assert.equal(capabilities.budgetScope, 'turn');
   assert.equal(capabilities.partial, undefined, 'the post-setup row is the full form');
   assert.ok(capabilities.tools?.includes('write'));
@@ -346,7 +346,7 @@ function assertFullCapabilities(row: JsonRow | undefined): void {
   assert.equal(row.event, undefined, 'the contract row carries no event');
   assert.equal(row.capabilities?.partial, undefined, 'the post-setup form is complete');
   assert.equal(row.capabilities?.journalSchemaVersion, JOURNAL_SCHEMA_VERSION);
-  assert.deepEqual(row.capabilities?.exitCodes, [0, 1, 2, 3, 4, 5, 130]);
+  assert.deepEqual(row.capabilities?.exitCodes, [0, 1, 2, 3, 4, 5, 130, 143]);
   assert.equal(row.capabilities?.budgetScope, 'turn');
   assert.ok(row.capabilities?.tools?.includes('read'), JSON.stringify(row));
 }
@@ -356,7 +356,7 @@ function assertPartialCapabilities(row: JsonRow | undefined): void {
   assert.equal(row.event?.type, 'run_error');
   assert.equal(row.capabilities?.partial, true, JSON.stringify(row));
   assert.equal(row.capabilities?.journalSchemaVersion, JOURNAL_SCHEMA_VERSION);
-  assert.deepEqual(row.capabilities?.exitCodes, [0, 1, 2, 3, 4, 5, 130]);
+  assert.deepEqual(row.capabilities?.exitCodes, [0, 1, 2, 3, 4, 5, 130, 143]);
   assert.equal(row.capabilities?.budgetScope, 'turn');
   assert.equal(row.capabilities?.tools, undefined, 'the tool set is omitted, never guessed');
 }

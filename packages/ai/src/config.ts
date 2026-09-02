@@ -51,6 +51,9 @@ export interface PiConfig {
   extensions?: string[];
   /** default approval gating for every profile; user config and CLI flags are its only sources */
   approval?: ApprovalPolicy;
+  /** seconds in-flight work gets after SIGTERM before the run is aborted (ADR 0027);
+   *  --shutdown-grace overrides it, and the built-in default applies when neither is set */
+  shutdownGraceSeconds?: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -79,6 +82,17 @@ export function validateConfig(value: unknown): PiConfig {
   if (defaultProfile) config.defaultProfile = defaultProfile;
   const approval = optionalApproval(value['approval'], 'approval');
   if (approval !== undefined) config.approval = approval;
+  const shutdownGraceSeconds = value['shutdownGraceSeconds'];
+  if (shutdownGraceSeconds !== undefined) {
+    if (
+      !Number.isSafeInteger(shutdownGraceSeconds) ||
+      (shutdownGraceSeconds as number) < 0 ||
+      (shutdownGraceSeconds as number) > 2_147_483
+    ) {
+      throw new TypeError('shutdownGraceSeconds must be an integer between 0 and 2147483');
+    }
+    config.shutdownGraceSeconds = shutdownGraceSeconds as number;
+  }
   if (value['extensions'] !== undefined) {
     if (!Array.isArray(value['extensions']) || value['extensions'].some((item) => typeof item !== 'string' || !item)) {
       throw new TypeError('extensions must be an array of non-empty strings');

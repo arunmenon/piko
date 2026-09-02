@@ -77,3 +77,86 @@ Decision text above stands exactly as proposed until then.
   forced-kill outcomes are recorded.
 - 143 is added to 0010's exit-code table as termination by signal, forced or
   cooperative; see 0010's addendum of the same date.
+
+## Addendum (2026-09-02, cooperative path shipped)
+
+Built under maturity plan T2 5c against the amendment above: the in-process
+cooperative path is the contract, and the supervisor is the named fallback for
+the one case that path cannot cover.
+
+**What SIGTERM now does, in headless and in the REPL.** It stops admission: the
+agent takes a `requestDrain()` that no further model request and no further tool
+dispatch may pass. The two admission gates are the only places the agent changed.
+A call refused at the dispatch gate is journaled `tool_skipped`, because it
+demonstrably never ran; work already dispatched is left alone. A
+`run_drain_requested` row is appended by the process holding the lock, carrying
+the signal name, the grace period in milliseconds, and the instant admission
+stopped. The row is additive on the existing v2 shape, so
+`JOURNAL_SCHEMA_VERSION` does not move. The grace period is
+`--shutdown-grace <seconds>`, the `shutdownGraceSeconds` config key, then a
+default of 10; zero means abort immediately.
+
+**Outcome semantics, both paths.** Cooperative: every in-flight operation
+reaches its own terminal row inside the grace period, the turn ends `canceled`
+at the next admission gate, and the journal carries no `outcome_unknown` rows.
+Forced: the deadline aborts the run signal, which is the only thing that
+produces unknown rows, so every dispatched provider or tool operation without a
+durable terminal acknowledgement is marked `outcome_unknown` exactly as 0007
+requires, and the run is still journaled `canceled`. Nothing about 0007's
+semantics was softened to make the cooperative path look tidy: the tidiness is a
+consequence of not aborting, not a change of rule.
+
+**Exit codes.** 143 for termination by SIGTERM on both paths, distinct from
+SIGINT's 130, which is unchanged. 143 is added to `HEADLESS_EXIT_CODES`, so it
+appears in the `capabilities` row of every `--json` run, and to the README
+table. One refinement the plan text did not anticipate: 143 replaces the exit
+code only for work the drain actually cut short, meaning a run with no terminal
+row or one that ended `canceled`. A turn that had already reached `completed`,
+`suspended`, or `budget_exceeded` when the signal landed keeps the code that
+describes it, because that status is still the truth about the run and a fleet
+operator reading 143 over a completed answer would be reading a lie. The REPL,
+which has no single run to describe, exits 143 whenever it drains.
+
+**The `--json` terminal row** carries `drain: "cooperative" | "forced"` beside
+the `turn_done` event when a drain happened, and carries nothing new otherwise.
+It is an additive field on the envelope, so `v` stays 1.
+
+**The supervisor.** `--supervise` is headless-only and optional. It re-executes
+this CLI as a child in its own process group with the same arguments minus the
+flag, forwards SIGTERM (and SIGINT), waits the grace period plus a two-second
+margin, then SIGKILLs the child's whole process group and reports 143 with one
+line on stderr. It never opens, locks, or writes the session journal: 0023's
+single writer is the child, and the amendment's talk of a supervisor write path
+is satisfied by not needing one. A child killed mid-tool leaves a `tool_started`
+row with no terminal row, and the next open of that journal marks it
+`outcome_unknown`. That is the honest record and it is what the regression
+asserts. A fleet with its own supervisor (systemd's `TimeoutStopSec` then
+SIGKILL, a Kubernetes `terminationGracePeriodSeconds`) already owns this
+deadline and should not run `--supervise`.
+
+**Limitations, stated rather than implied.**
+
+- A synchronously blocking extension defeats the in-process path completely: no
+  timer fires, no drain marker is written, and the journal shows only the
+  started row. The supervisor bounds the damage in wall-clock time; it cannot
+  make the record better than "unknown", and nothing can.
+- The drain marker is best-effort. A journal that refuses the append (a
+  poisoned write path, a full disk) logs one line to stderr and the drain
+  continues; the run's own terminal row remains authoritative.
+- Where the signal lands inside a turn is not under piko's control. A SIGTERM
+  that arrives after the last model response has already been consumed leaves a
+  `completed` run and exit 0, which the fleet regression asserts as one of two
+  admissible outcomes rather than pretending the race does not exist.
+- The supervisor adds one process per headless run and puts the child in its own
+  process group, so a terminal's Ctrl+C reaches the supervisor and is forwarded
+  rather than being delivered to the child directly.
+
+Regressions, all against real spawned processes with the fake provider
+(`packages/cli/tests/shutdown.test.ts`): cooperative drain of an in-flight tool
+call ends `canceled` with no unknown rows and exit 143; a forced drain of a tool
+that outlives a one-second grace leaves that call `outcome_unknown` with the run
+`canceled`, exit 143, and the drain row present; a blocking-extension fixture
+under `--supervise` is killed at the deadline, exits 143, and its journal
+reopens with the tool `outcome_unknown`; a fleet-style SIGTERM with nothing
+dispatched leaves no unknown rows; the REPL drains and exits 143; the `--json`
+terminal row names the path; SIGINT still exits 130.

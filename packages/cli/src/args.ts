@@ -31,6 +31,12 @@ export interface CliArgs {
   parentRunId?: string;
   /** deepest PI_DEPTH this process will still run at (ADR 0004) */
   maxDepth: number;
+  /** seconds in-flight work gets after SIGTERM before the abort (ADR 0027);
+   *  undefined leaves the choice to config and then to the built-in default */
+  shutdownGraceSeconds?: number;
+  /** run the real work as a supervised child so a blocked event loop cannot
+   *  outlive the deadline (ADR 0027); headless only */
+  supervise: boolean;
   /** tool names gated behind a human decision, or '*' for all (ADR 0011) */
   requireApproval?: readonly string[] | '*';
   /** decisions applied to a suspended session when it is reopened */
@@ -52,6 +58,12 @@ export interface CliArgs {
 /** Deepest nesting a piko child may still start at when --max-depth is absent (ADR 0004). */
 export const DEFAULT_MAX_DEPTH = 2;
 
+/**
+ * Seconds of grace in-flight work gets between SIGTERM and the abort when
+ * neither --shutdown-grace nor the config key sets one (ADR 0027).
+ */
+export const DEFAULT_SHUTDOWN_GRACE_SECONDS = 10;
+
 export function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
     print: false,
@@ -67,6 +79,7 @@ export function parseArgs(argv: string[]): CliArgs {
     allowProtectedPaths: false,
     approvals: [],
     approveAll: false,
+    supervise: false,
     extensions: [],
     usage: false,
     help: false,
@@ -190,6 +203,15 @@ export function parseArgs(argv: string[]): CliArgs {
       case '--max-depth':
         args.maxDepth = nonNegativeInteger('--max-depth', next());
         break;
+      case '--shutdown-grace': {
+        const seconds = nonNegativeInteger('--shutdown-grace', next());
+        if (seconds > 2_147_483) throw new Error('--shutdown-grace is too large for the runtime timer');
+        args.shutdownGraceSeconds = seconds;
+        break;
+      }
+      case '--supervise':
+        args.supervise = true;
+        break;
       case '--no-auto-compact':
         args.autoCompact = false;
         break;
@@ -286,6 +308,12 @@ export function parseArgs(argv: string[]): CliArgs {
     }
     decided.add(decision.executionId);
   }
+  // 0027: the supervisor exists for unattended runs. An interactive REPL
+  // already has a human holding the deadline, and re-execing one behind a
+  // supervisor would put the terminal on the wrong side of the process group.
+  if (args.supervise && !args.print) {
+    throw new Error('--supervise applies to headless runs; add -p/--print');
+  }
   args.prompt = positional.join(' ');
   return args;
 }
@@ -340,6 +368,13 @@ options:
                        spawned from a tool call sees its own nesting depth. Depth is the
                        only tree bound today; concurrency and tree-wide spend caps arrive
                        with ADR 0026.
+  --shutdown-grace <seconds>  seconds in-flight work gets after SIGTERM before the run is
+                       aborted (default 10; config key shutdownGraceSeconds). SIGTERM stops
+                       admission, journals a drain marker, then exits 143 either way.
+  --supervise          headless only: run the work as a child in its own process group and
+                       let this process own the hard-kill deadline, so a synchronously
+                       blocking extension cannot outlive it. Unnecessary under systemd,
+                       Kubernetes, or any fleet supervisor that already sends SIGKILL.
   --ext <path>[@sha256:<hex>]  load a compiled JavaScript extension module (repeatable);
                        with a pin the file's SHA-256 must match or pi refuses to start
   --usage              print a JSON usage summary to stderr when done

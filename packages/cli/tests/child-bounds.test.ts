@@ -86,7 +86,7 @@ test('a child started past the depth cap exits 1 before any provider request', a
     assert.equal(refusalRow.event.type, 'run_error');
     assert.match(refusalRow.event.error, /spawn depth 3 exceeds --max-depth 2/);
     assert.equal(refusalRow.capabilities?.partial, true, JSON.stringify(refusalRow));
-    assert.deepEqual(refusalRow.capabilities?.exitCodes, [0, 1, 2, 3, 4, 5, 130]);
+    assert.deepEqual(refusalRow.capabilities?.exitCodes, [0, 1, 2, 3, 4, 5, 130, 143]);
     assert.equal(refusalRow.capabilities?.budgetScope, 'turn');
     assert.equal(refusalRow.capabilities?.tools, undefined, 'the tool set is unknown before setup');
     assert.equal(provider.requests.length, 0, 'the refusal precedes every model call');

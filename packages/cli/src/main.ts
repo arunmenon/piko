@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawn } from 'node:child_process';
 import { existsSync, unlinkSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -58,7 +59,7 @@ import {
   parseEditedArguments,
   resolveDecisionFlags,
 } from './approvals.js';
-import { HELP, parseArgs, type CliArgs } from './args.js';
+import { DEFAULT_SHUTDOWN_GRACE_SECONDS, HELP, parseArgs, type CliArgs } from './args.js';
 import { headlessCapabilities, partialHeadlessCapabilities } from './capabilities.js';
 import { loadConfiguredExtensions } from './extensions.js';
 import { interpolate, loadTemplates, type PromptTemplate } from './templates.js';
@@ -421,6 +422,168 @@ function reportPendingApprovals(agent: Agent): void {
   for (const item of pending) process.stderr.write(`  ${describePendingApproval(item)}\n`);
 }
 
+/**
+ * Termination by signal, cooperative or forced (ADR 0010 exit-code addendum,
+ * ADR 0027). Deliberately distinct from SIGINT's 130: a fleet restart and a
+ * human pressing Ctrl+C are different events.
+ */
+const TERMINATED_BY_SIGNAL_EXIT_CODE = 143;
+
+/**
+ * How long the supervisor waits past the child's own grace period before it
+ * kills the child's process group. It covers the child's terminal journal write
+ * and process teardown, nothing more: the supervisor's whole reason to exist is
+ * that a blocked child cannot be trusted to observe its own deadline.
+ */
+const SUPERVISOR_KILL_MARGIN_MS = 2_000;
+
+/** Which shutdown path a drain actually took, reported on the terminal JSON row. */
+type DrainPath = 'cooperative' | 'forced';
+
+interface ShutdownDrain {
+  /** True once a termination signal has been seen and admission has stopped. */
+  readonly requested: boolean;
+  /** `forced` only once the grace deadline fired and aborted in-flight work. */
+  readonly path: DrainPath;
+  begin(signalName: string): void;
+  /** Disarm the deadline: the work it bounded has reached its terminal row. */
+  settle(): void;
+}
+
+/** --shutdown-grace, else the config key, else the built-in default (ADR 0027). */
+function resolveShutdownGraceMs(args: CliArgs, config: PiConfig): number {
+  const seconds = args.shutdownGraceSeconds ?? config.shutdownGraceSeconds ?? DEFAULT_SHUTDOWN_GRACE_SECONDS;
+  return seconds * 1_000;
+}
+
+/**
+ * The ADR 0027 cooperative path. SIGTERM stops admission of new model requests
+ * and tool dispatches, journals the drain marker through the process that holds
+ * the lock (0023: nothing else ever opens this journal), and grants the grace
+ * period to whatever is already dispatched. Only the deadline aborts, and only
+ * an abort turns dispatched work into `outcome_unknown` rows (0007), so a run
+ * whose in-flight work settles inside the grace period carries none.
+ */
+function createShutdownDrain(options: {
+  graceMs: number;
+  agent: () => Agent;
+  session: () => Session | undefined;
+  abort: (reason: Error) => void;
+  report: (line: string) => void;
+}): ShutdownDrain {
+  let requested = false;
+  let forced = false;
+  let deadline: NodeJS.Timeout | undefined;
+  const force = (): void => {
+    forced = true;
+    deadline = undefined;
+    options.report(`shutdown: ${options.graceMs}ms grace period expired; aborting in-flight work\n`);
+    options.abort(new Error(`shutdown grace period of ${options.graceMs}ms expired`));
+  };
+  return {
+    get requested(): boolean {
+      return requested;
+    },
+    get path(): DrainPath {
+      return forced ? 'forced' : 'cooperative';
+    },
+    begin(signalName: string): void {
+      if (requested) return;
+      requested = true;
+      options.agent().requestDrain();
+      const session = options.session();
+      if (session) {
+        try {
+          session.recordDrainRequested(signalName, options.graceMs);
+        } catch (error) {
+          // A journal that cannot take the marker must not turn a drain into a
+          // crash; the run's own terminal row remains the authoritative record.
+          options.report(`shutdown: drain marker could not be journaled: ${String(error)}\n`);
+        }
+      }
+      options.report(`${signalName}: draining, ${options.graceMs}ms of grace for in-flight work\n`);
+      if (options.graceMs === 0) {
+        force();
+        return;
+      }
+      // Deliberately not unref'd: the deadline must outlive an otherwise idle
+      // event loop, or a drain could exit before it decides its own path.
+      deadline = setTimeout(force, options.graceMs);
+    },
+    settle(): void {
+      if (deadline) {
+        clearTimeout(deadline);
+        deadline = undefined;
+      }
+    },
+  };
+}
+
+/**
+ * The ADR 0027 forced path, for the one case the in-process deadline cannot
+ * cover: an extension whose tool blocks the event loop synchronously, where no
+ * timer in that process can ever fire. This process re-executes piko as a child
+ * in its own process group, forwards the termination signal, and owns the
+ * hard-kill deadline the child cannot be trusted to observe.
+ *
+ * The supervisor never opens or writes the session journal: 0023's single
+ * writer is the child, and the unknown rows the child's next open produces are
+ * the honest record of what a SIGKILL interrupted. A fleet that already has a
+ * supervisor (systemd, Kubernetes, any orchestrator that escalates to SIGKILL)
+ * does not need this and should not pay for the extra process.
+ */
+function supervise(rawArgs: readonly string[], graceMs: number): Promise<number> {
+  const childArguments = rawArgs.filter((argument) => argument !== '--supervise');
+  const entryPoint = process.argv[1];
+  if (entryPoint === undefined) throw new Error('--supervise cannot re-execute piko without an entry point path');
+  const child = spawn(process.execPath, [entryPoint, ...childArguments], {
+    stdio: 'inherit',
+    // Its own process group, so the kill covers the child and anything it
+    // spawned rather than only the child itself.
+    detached: true,
+  });
+  return new Promise<number>((resolveSupervisor, rejectSupervisor) => {
+    let killDeadline: NodeJS.Timeout | undefined;
+    let forwardedSignal: NodeJS.Signals | undefined;
+    const forward = (signalName: NodeJS.Signals): void => {
+      if (forwardedSignal !== undefined || child.pid === undefined) return;
+      forwardedSignal = signalName;
+      try {
+        process.kill(child.pid, signalName);
+      } catch {
+        /* the child is already gone; its close event carries the outcome */
+      }
+      killDeadline = setTimeout(() => {
+        process.stderr.write(
+          `supervisor: child ${child.pid} did not exit within ${graceMs + SUPERVISOR_KILL_MARGIN_MS}ms of ${signalName}; killing its process group\n`,
+        );
+        try {
+          process.kill(-child.pid!, 'SIGKILL');
+        } catch {
+          /* the group is already gone; the close event still resolves this */
+        }
+      }, graceMs + SUPERVISOR_KILL_MARGIN_MS);
+    };
+    process.on('SIGTERM', () => forward('SIGTERM'));
+    process.on('SIGINT', () => forward('SIGINT'));
+    child.on('error', rejectSupervisor);
+    child.on('close', (code, signalName) => {
+      if (killDeadline) clearTimeout(killDeadline);
+      // A child that died by signal reports the signal's code, whether the
+      // supervisor's SIGKILL or the forwarded signal did it. A child that exited
+      // on its own keeps its own code, including the 143 its cooperative drain
+      // already chose.
+      if (signalName !== null) {
+        resolveSupervisor(
+          signalName === 'SIGINT' || forwardedSignal === 'SIGINT' ? 130 : TERMINATED_BY_SIGNAL_EXIT_CODE,
+        );
+        return;
+      }
+      resolveSupervisor(code ?? 1);
+    });
+  });
+}
+
 async function headless(args: CliArgs): Promise<number> {
   const decisionFlags = args.approveAll || args.approvals.length > 0;
   let prompt = args.prompt;
@@ -442,7 +605,7 @@ async function headless(args: CliArgs): Promise<number> {
     process.stderr.write('no prompt: pass one as an argument or on stdin\n');
     return 1;
   }
-  const { agent, session, tools } = await setup(args);
+  const { agent, session, tools, config } = await setup(args);
   // ADR 0010 addendum: the contract is its own first row, written as soon as
   // setup succeeds and before the turn is iterated. Attaching it to the first
   // agent event lost it on every run that failed before that event arrived.
@@ -482,7 +645,17 @@ async function headless(args: CliArgs): Promise<number> {
     controller.abort();
     process.stderr.write('interrupting — Ctrl+C again to force quit\n');
   });
-  process.once('SIGTERM', () => controller.abort(new Error('terminated')));
+  // ADR 0027: SIGTERM is a cooperative drain, not an abort. Admission stops, the
+  // marker is journaled, in-flight work keeps its grace period, and only the
+  // deadline aborts. Either way the process exits 143.
+  const drain = createShutdownDrain({
+    graceMs: resolveShutdownGraceMs(args, config),
+    agent: () => agent,
+    session: () => agent.session ?? session,
+    abort: (reason) => controller.abort(reason),
+    report: (line) => process.stderr.write(dim(line)),
+  });
+  process.once('SIGTERM', () => drain.begin('SIGTERM'));
 
   let finalText = '';
   let terminal: Extract<AgentEvent, { type: 'turn_done' }> | undefined;
@@ -494,12 +667,17 @@ async function headless(args: CliArgs): Promise<number> {
     : agent.run(prompt, controller.signal);
   try {
     for await (const event of turn) {
+      // 0027: the deadline stops mattering the moment the turn reaches its
+      // terminal row, and that row is where a --json consumer reads which
+      // shutdown path was taken.
+      if (event.type === 'turn_done') drain.settle();
       if (args.json) {
         process.stdout.write(
           `${JSON.stringify({
             v: 1,
             sessionId: (agent.session ?? session).id,
             ...(args.parentRunId ? { parentRunId: args.parentRunId } : {}),
+            ...(event.type === 'turn_done' && drain.requested ? { drain: drain.path } : {}),
             event,
           })}\n`,
         );
@@ -556,6 +734,16 @@ async function headless(args: CliArgs): Promise<number> {
           : terminal.status === 'suspended'
             ? 4
             : 3;
+  }
+  // ADR 0010 addendum: termination by SIGTERM exits 143 on both drain paths and
+  // stays distinct from the 130 a user's Ctrl+C produces. It replaces the code
+  // only for work the drain actually cut short; a turn that reached its own
+  // terminal status first (completed, suspended, budget_exceeded) keeps the code
+  // that describes it, because that status is still the truth about the run.
+  drain.settle();
+  if (drain.requested && (!terminal || terminal.status === 'canceled')) {
+    process.stderr.write(dim(`shutdown: ${drain.path} drain complete\n`));
+    exitCode = TERMINATED_BY_SIGNAL_EXIT_CODE;
   }
   // Keep this typed record last on stderr. Legacy benchmark panes may combine
   // stdout/stderr, so emitting it after model text prevents echoed JSON from
@@ -913,6 +1101,31 @@ async function repl(args: CliArgs): Promise<number> {
       if (args.usage) printUsageSummary(agent, session, undefined, args.parentRunId);
       resolveRepl(exitCode);
     };
+    // ADR 0027: the REPL gets the same cooperative drain as headless. An idle
+    // prompt has nothing in flight and stops at once; a running turn keeps the
+    // work it already dispatched until the grace deadline, and either way the
+    // process exits 143.
+    const drain = createShutdownDrain({
+      graceMs: resolveShutdownGraceMs(args, runtimeSetup.config),
+      agent: () => agent,
+      session: () => agent.session ?? session,
+      abort: (reason) => state.running?.abort(reason),
+      report: (line) => process.stdout.write(dim(line)),
+    });
+    const stopForDrain = (): void => {
+      drain.settle();
+      exitCode = TERMINATED_BY_SIGNAL_EXIT_CODE;
+      pending.length = 0;
+      process.stdout.write(dim(`\n[shutdown: ${drain.path} drain; exiting ${TERMINATED_BY_SIGNAL_EXIT_CODE}]\n`));
+      // A piped stdin still holds the loop open after readline lets go of it.
+      process.stdin.pause();
+      rl.close();
+    };
+    process.once('SIGTERM', () => {
+      drain.begin('SIGTERM');
+      if (!state.running) stopForDrain();
+    });
+
     // stdin EOF (piped input) closes readline immediately — queued lines must still run
     rl.on('close', () => {
       eof = true;
@@ -1065,6 +1278,13 @@ async function repl(args: CliArgs): Promise<number> {
       }
       if (input) {
         const turn = await runInput(agent, { input }, state, collectDecisions);
+        // 0027: a drained turn ends the process, not just the line. The turn's
+        // own terminal row is already durable by the time runInput returns.
+        if (drain.requested) {
+          if (agent.session && agent.session !== session) session = agent.session;
+          stopForDrain();
+          return true;
+        }
         if (turn.suspended) reportSuspension(agent);
         if (scripted && turn.exitCode !== 0 && exitCode === 0) exitCode = turn.exitCode;
         // auto-compaction may have moved the agent to a fresh session file
@@ -1154,6 +1374,10 @@ async function repl(args: CliArgs): Promise<number> {
         }
       } finally {
         processing = false;
+      }
+      if (drain.requested) {
+        stopForDrain();
+        return;
       }
       const queued = pending.shift();
       if (queued !== undefined) {
@@ -1327,6 +1551,13 @@ async function main(): Promise<void> {
       if (args.json) throw new JsonRunFailure(refusal);
       process.stderr.write(`${red(oneLine(refusal, 512))}\n`);
       process.exitCode = 1;
+      return;
+    }
+    if (args.supervise) {
+      // 0027: the supervisor decides nothing about the run. It re-executes this
+      // CLI without the flag and owns only the hard-kill deadline; the child
+      // remains the single writer of the session journal (0023).
+      process.exitCode = await supervise(rawArgs, resolveShutdownGraceMs(args, loadConfig()));
       return;
     }
     process.exitCode = args.print ? await headless(args) : await repl(args);
