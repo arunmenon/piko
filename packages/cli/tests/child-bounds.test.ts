@@ -50,7 +50,7 @@ test('--parent-run reaches telemetry and every headless JSON row', async () => {
     const rows = result.stdout
       .trim()
       .split('\n')
-      .map((line) => JSON.parse(line) as { v: number; parentRunId?: string; event: { type: string } });
+      .map((line) => JSON.parse(line) as { v: number; parentRunId?: string; event?: { type: string } });
     assert.ok(rows.length > 0, 'the headless stream produced rows');
     for (const row of rows) assert.equal(row.parentRunId, 'run_parent_1', JSON.stringify(row));
 
@@ -70,14 +70,37 @@ test('a child started past the depth cap exits 1 before any provider request', a
   const workspace = mkdtempSync(join(tmpdir(), 'pi-cli-max-depth-'));
   try {
     const environment = { ...cleanEnvironment(workspace, provider.url), PI_DEPTH: '3' };
+    // --json: the refusal is a typed run_error row on stdout carrying the
+    // static partial contract (0010 addendum, R2-5), not an empty stream.
     const refused = await runCli([cli, '--json', '--profile', 'openai', '--model', 'fake-model', 'go'], {
       cwd: workspace,
       env: environment,
     });
     assert.equal(refused.status, 1);
-    assert.equal(refused.stdout, '');
-    assert.equal(refused.stderr.trim().split('\n').length, 1, refused.stderr);
-    assert.match(refused.stderr, /spawn depth 3 exceeds --max-depth 2/);
+    const refusalRow = JSON.parse(refused.stdout.trim()) as {
+      v: number;
+      capabilities?: { journalSchemaVersion: number; exitCodes: number[]; budgetScope: string; partial?: boolean; tools?: string[] };
+      event: { type: string; error: string };
+    };
+    assert.equal(refusalRow.v, 1);
+    assert.equal(refusalRow.event.type, 'run_error');
+    assert.match(refusalRow.event.error, /spawn depth 3 exceeds --max-depth 2/);
+    assert.equal(refusalRow.capabilities?.partial, true, JSON.stringify(refusalRow));
+    assert.deepEqual(refusalRow.capabilities?.exitCodes, [0, 1, 2, 3, 4, 5, 130]);
+    assert.equal(refusalRow.capabilities?.budgetScope, 'turn');
+    assert.equal(refusalRow.capabilities?.tools, undefined, 'the tool set is unknown before setup');
+    assert.equal(provider.requests.length, 0, 'the refusal precedes every model call');
+    assert.equal(existsSync(join(workspace, '.pi')), false, 'no session is opened past the cap');
+
+    // The human surface is unchanged: one line on stderr, nothing on stdout.
+    const refusedHuman = await runCli([cli, '-p', '--profile', 'openai', '--model', 'fake-model', 'go'], {
+      cwd: workspace,
+      env: environment,
+    });
+    assert.equal(refusedHuman.status, 1);
+    assert.equal(refusedHuman.stdout, '');
+    assert.equal(refusedHuman.stderr.trim().split('\n').length, 1, refusedHuman.stderr);
+    assert.match(refusedHuman.stderr, /spawn depth 3 exceeds --max-depth 2/);
     assert.equal(provider.requests.length, 0, 'the refusal precedes every model call');
     assert.equal(existsSync(join(workspace, '.pi')), false, 'no session is opened past the cap');
 

@@ -71,10 +71,31 @@ that without changing the trust model.
   only when it is a full 64-character digest, so an `@` inside an ordinary path
   stays part of the path.
 - Every loaded extension, pinned or not, appends an `extension_loaded`
-  lifecycle row to the session: path, SHA-256 of the imported bytes, the tool
-  names it contributed, and whether a pin was given. The row lands on the
-  locked session handle before the first model call, so a transcript says what
-  code the run actually carried.
+  lifecycle row to the session: path, SHA-256 of the entry module's bytes, the
+  tool names it contributed, whether a pin was given, and `entryOnly: true`.
+  The row lands on the locked session handle before the first model call, so a
+  transcript says what code the run actually carried. `entryOnly` is an
+  optional boolean in the row schema, so it is additive under 0019 and older
+  rows without it stay valid.
+
+What the digest covers (R2-2). It covers the entry module's own bytes, as read
+around the import, and nothing else.
+
+- Node imports a pathname, not a byte buffer, so hashing and importing cannot
+  be one atomic operation. The loader reads and hashes the entry module, checks
+  any pin, imports it, then re-reads and re-hashes the same path immediately
+  after the import returns and before the default export is touched. A
+  difference between the two digests refuses to start with exit 1 and a message
+  saying the entry module changed on disk during load, naming both digests.
+- That check **detects** a swap inside the read-import window; it does not
+  **prevent** one. By the time the second read happens the module's top level
+  has already executed. The refusal stops the run from proceeding and stops the
+  benign digest from being journaled; it cannot un-run the code.
+- Transitive imports are not hashed. A module the entry file imports, relatively
+  or by specifier, can change with no effect on the digest and no refusal. A pin
+  therefore says "this entry file's bytes", not "this dependency closure".
+  Pinning a whole closure needs a content-addressed snapshot, which is out of
+  scope for this record.
 
 Scope. This is provenance, not sandboxing: a pinned extension still runs with
 the process user's authority, and pinning the digest of a malicious module

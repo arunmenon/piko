@@ -18,11 +18,20 @@ export interface LoadExtensionsOptions {
 export interface LoadedExtension {
   /** The path as written, with any pin suffix removed. */
   readonly path: string;
-  /** SHA-256 of the file bytes that were imported, lowercase hex. */
+  /**
+   * SHA-256 of the entry module's bytes as read around the import, lowercase
+   * hex. The same digest was observed immediately before and immediately after
+   * the dynamic import.
+   */
   readonly sha256: string;
   readonly toolNames: readonly string[];
   /** True when the caller supplied a digest and it matched. */
   readonly pinned: boolean;
+  /**
+   * The digest covers this entry module's bytes only. Nothing it imports is
+   * hashed, so a changed relative import is not detected.
+   */
+  readonly entryOnly: true;
 }
 
 export interface ExtensionLoadResult {
@@ -68,6 +77,8 @@ export async function loadExtensions(
 
     // Hash the bytes before the import so a mismatched pin refuses to start
     // rather than refusing after the module's top level has already run.
+    // Scope (ADR 0012 addendum): the digest covers this entry module's bytes
+    // only, never its transitive imports.
     let sha256: string;
     try {
       sha256 = createHash('sha256').update(readFileSync(resolved)).digest('hex');
@@ -88,6 +99,29 @@ export async function loadExtensions(
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`extension ${path}: failed to load: ${detail}`, { cause: error });
     }
+
+    // Node imports a pathname, not a byte buffer, so the hashed read and the
+    // import cannot be made one atomic operation. Re-reading immediately after
+    // the import closes the window as far as the runtime allows: a swap between
+    // the two reads is detected and the run refuses to start. It is not
+    // prevented, and the module's top level has already run by this point.
+    let digestAfterImport: string;
+    try {
+      digestAfterImport = createHash('sha256').update(readFileSync(resolved)).digest('hex');
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `extension ${path}: cannot re-read the module to confirm the bytes that were imported: ${detail}`,
+        { cause: error },
+      );
+    }
+    if (digestAfterImport !== sha256) {
+      throw new Error(
+        `extension ${path}: the entry module changed on disk during load; hashed ${sha256} before the import and ${digestAfterImport} after, so the code that ran is not the code the digest names. ` +
+          'This check detects a swap in the read-import window; it cannot prevent one.',
+      );
+    }
+
     let exported = module.default;
     if (typeof exported === 'function') exported = await (exported as () => unknown)();
     const list = Array.isArray(exported) ? exported : (exported as { tools?: unknown })?.tools;
@@ -102,6 +136,7 @@ export async function loadExtensions(
       sha256,
       toolNames: validated.map((tool) => tool.name),
       pinned: expectedDigest !== undefined,
+      entryOnly: true,
     });
   }
   return {

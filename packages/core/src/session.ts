@@ -1218,6 +1218,8 @@ export class Session {
     sha256: string;
     toolNames: readonly string[];
     pinned: boolean;
+    /** The digest covers the entry module's bytes only, not its imports. */
+    entryOnly?: boolean;
   }): void {
     this.append({
       t: 'extension_loaded',
@@ -1227,6 +1229,7 @@ export class Session {
       sha256: extension.sha256,
       toolNames: [...extension.toolNames],
       pinned: extension.pinned,
+      ...(extension.entryOnly === true ? { entryOnly: true } : {}),
     });
   }
 

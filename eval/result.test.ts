@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { formatTurnIncomplete } from '@pi/cli';
 import { classifyEvalOutcome, parseUsageSummary, type UsageSummary } from './result.js';
 
 const usage: UsageSummary = {
@@ -71,6 +72,46 @@ test('incomplete terminal marker fails even if the process exits zero', () => {
     ).reason,
     'incomplete',
   );
+});
+
+/**
+ * R2-10: the CLI renamed the terminal line from "run <status>" to
+ * "turn <status>" and the detector kept matching only the old spelling, so a
+ * truncated run scored as a pass. The string here is produced by the CLI's own
+ * formatter, so the test cannot drift from the producer again.
+ */
+test('the detector matches the exact terminal line the CLI produces', () => {
+  const producedLine = formatTurnIncomplete({
+    status: 'incomplete',
+    reason: 'provider stream ended prematurely',
+    iterations: 1,
+    toolCalls: 0,
+  });
+  assert.match(producedLine, /^turn incomplete: /);
+
+  const outcome = classifyEvalOutcome(
+    processResult({ stderr: `${producedLine}\n` }),
+    { passed: true },
+    { ...usage, status: undefined },
+  );
+  assert.equal(outcome.pass, false);
+  assert.equal(outcome.reason, 'incomplete');
+  assert.match(outcome.detail ?? '', /provider stream ended prematurely/);
+
+  // Every terminal status the CLI can print is recognized in both spellings.
+  for (const status of ['incomplete', 'budget_exceeded', 'failed', 'canceled', 'suspended']) {
+    for (const noun of ['turn', 'run']) {
+      assert.equal(
+        classifyEvalOutcome(
+          processResult({ stderr: `${noun} ${status}: because\n` }),
+          { passed: true },
+          { ...usage, status: undefined },
+        ).reason,
+        'incomplete',
+        `${noun} ${status}`,
+      );
+    }
+  }
 });
 
 test('usage and verification are required for a pass', () => {

@@ -137,7 +137,10 @@ function incompleteMarker(stderr: string, usage: UsageSummary | undefined): stri
   if (usage?.status && usage.status !== 'completed') {
     return `usage reported status ${usage.status}${usage.reason ? `: ${usage.reason}` : ''}`;
   }
-  const match = stderr.match(/^run (incomplete|budget_exceeded|failed|canceled|suspended):\s*(.*)$/m);
+  // The CLI prints "turn <status>: ..." (ADR 0009 scope note); older builds
+  // printed "run <status>: ...". Both spellings are accepted so the fallback
+  // detector keeps working across the rename in either direction.
+  const match = stderr.match(/^(?:run|turn) (incomplete|budget_exceeded|failed|canceled|suspended):\s*(.*)$/m);
   return match ? `${match[1]}${match[2] ? `: ${match[2]}` : ''}` : undefined;
 }
 

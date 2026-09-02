@@ -247,11 +247,12 @@ test('a gated tool suspends a headless run with exit 4, and a resume decision co
     const rows = suspended.stdout
       .trim()
       .split('\n')
-      .map((line) => JSON.parse(line) as { v: number; event: { type: string; [key: string]: unknown } });
-    const required = rows.find((row) => row.event.type === 'approval_required');
+      .map((line) => JSON.parse(line) as { v: number; event?: { type: string; [key: string]: unknown } });
+    // Row 0 is the 0010 capabilities contract row and carries no event.
+    const required = rows.find((row) => row.event?.type === 'approval_required');
     assert.ok(required, `no approval_required row in ${suspended.stdout}`);
     assert.equal(required.v, 1);
-    const executions = required.event['executions'] as { executionId: string; call: { name: string } }[];
+    const executions = required.event!['executions'] as { executionId: string; call: { name: string } }[];
     assert.equal(executions.length, 1);
     assert.equal(executions[0]?.call.name, 'write');
     const terminal = rows.at(-1)?.event as { type: string; status?: string; reason?: string };
@@ -284,10 +285,10 @@ test('a gated tool suspends a headless run with exit 4, and a resume decision co
       .map((line) => JSON.parse(line) as {
         v: number;
         sessionId: string;
-        event: { type: string; executionId?: string; decision?: string; status?: string };
+        event?: { type: string; executionId?: string; decision?: string; status?: string };
       });
     assert.ok(resumedRows.every((row) => row.v === 1 && typeof row.sessionId === 'string'));
-    const decided = resumedRows.find((row) => row.event.type === 'approval_decided');
+    const decided = resumedRows.find((row) => row.event?.type === 'approval_decided');
     assert.deepEqual(
       decided?.event,
       {
@@ -303,8 +304,8 @@ test('a gated tool suspends a headless run with exit 4, and a resume decision co
       },
       '0010 additions remain inside the versioned event envelope',
     );
-    assert.equal(resumedRows.at(-1)?.event.type, 'turn_done');
-    assert.equal(resumedRows.at(-1)?.event.status, 'completed');
+    assert.equal(resumedRows.at(-1)?.event?.type, 'turn_done');
+    assert.equal(resumedRows.at(-1)?.event?.status, 'completed');
     const resumedUsage = JSON.parse(resumed.stderr.trim().split('\n').at(-1)!) as {
       cost: { actualUSD: number; pricedRequests: number; complete: boolean };
       status: string;

@@ -93,10 +93,12 @@ unchanged; 143 joins 130 as a signal outcome, not a success.
 ## Addendum (2026-09-02, capabilities row)
 
 R2-11 of the red-team remediation plan adds one backward-compatible field to
-this contract. The first row a headless `--json` run emits now carries a
-`capabilities` object alongside the existing `v`, `sessionId`, and `event`
-fields, so an adapter can discover what it is talking to instead of inferring
-it from a piko version string:
+this contract, corrected by R2-5 below. A headless `--json` run emits a
+dedicated first row that carries a `capabilities` object alongside the existing
+`v` and `sessionId` fields (and `parentRunId` when one was given). The row has
+no `event`: it is the contract, not a turn event. An adapter reads it to
+discover what it is talking to instead of inferring it from a piko version
+string:
 
 - `journalSchemaVersion`: the journal schema generation this build writes
   (`JOURNAL_SCHEMA_VERSION`).
@@ -107,8 +109,39 @@ it from a piko version string:
 - `budgetScope`: `turn`, the scope every budget ceiling is enforced against
   (ADR 0009 scope note; ADR 0026 proposes session scope).
 
-Only the first row gains the field; every later row is byte-identical to what
-it was, and a consumer that ignores unknown fields is unaffected. This is an
-additive extension of the versioned schema, so `v` stays 1. It is deliberately
-a read-only self-description and not an RPC surface: the bidirectional adapter
-work remains future work under R0-6.
+Event rows are byte-identical to what they were, and a consumer that ignores
+unknown rows and fields is unaffected. This is an additive extension of the
+versioned schema, so `v` stays 1. It is deliberately a read-only
+self-description and not an RPC surface: the bidirectional adapter work remains
+future work under R0-6.
+
+### Correction (R2-5): which rows carry capabilities
+
+The original shape attached `capabilities` to the first `Agent.run()` event.
+Any run that failed before that event produced no capabilities at all, which is
+exactly when a caller most needs to know what it is talking to: a provider
+transport failure before the first event, an extension or config failure, a
+suspended session resumed without a decision, a locked newest head, and the
+`--max-depth` refusal all emitted either a bare `run_error` or, for the depth
+refusal, no stdout bytes whatsoever. The corrected contract is:
+
+- **Full capabilities**, all four fields and no `partial` flag: the dedicated
+  first row, emitted as soon as setup succeeds and before the turn is iterated.
+  Setup succeeding is what makes `tools` knowable, so this is the earliest
+  honest point for the complete form.
+- **Partial capabilities**, `journalSchemaVersion`, `exitCodes` and
+  `budgetScope` with `partial: true` and `tools` omitted: every `run_error`
+  row. A failure can land before the tool set is resolved, so the tool names
+  are omitted rather than guessed, and `partial: true` says so explicitly, so
+  an absent list is never read as an empty list. A run that got past setup and
+  then failed emits the full row first and the partial `run_error` row after
+  it; the fuller row wins for any consumer that keeps the first one it sees.
+- **No capabilities**: every event row other than the contract row, exactly as
+  before. `doctor sessions --json` also carries none: it is a separate
+  read-only surface with its own `doctor_*` row types, and it never runs a
+  turn.
+
+The `--max-depth` refusal, which previously wrote nothing to stdout in `--json`
+mode, now emits a `run_error` row with the partial form and still exits 1. The
+non-JSON surface is unchanged: one line on stderr, exit 1. Exit codes are
+unchanged on every one of these paths.

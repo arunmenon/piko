@@ -27,12 +27,12 @@ function deadLockRecord(): string {
   })}\n`;
 }
 
-function rows(stdout: string): { v: number; event: Record<string, unknown> }[] {
+function rows(stdout: string): { v: number; capabilities?: Record<string, unknown>; event: Record<string, unknown> }[] {
   return stdout
     .trim()
     .split('\n')
     .filter(Boolean)
-    .map((line) => JSON.parse(line) as { v: number; event: Record<string, unknown> });
+    .map((line) => JSON.parse(line) as { v: number; capabilities?: Record<string, unknown>; event: Record<string, unknown> });
 }
 
 test('0024 CLI acceptance: crash, exit 5 with typed JSON, doctor list, recovery, resume', () => {
@@ -48,14 +48,23 @@ test('0024 CLI acceptance: crash, exit 5 with typed JSON, doctor list, recovery,
   // pi -c: exit 5, versioned JSON row with the typed code, nothing created.
   const blocked = run(['-p', '-c', '--json', '--model', 'test-model', 'continue'], workspace);
   assert.equal(blocked.status, 5, blocked.stdout + blocked.stderr);
+  assert.equal(rows(blocked.stdout).length, 1, 'the head is refused before setup completes');
   const errorRow = rows(blocked.stdout)[0]!;
   assert.equal(errorRow.v, 1);
   assert.equal(errorRow.event['type'], 'run_error');
   assert.equal(errorRow.event['code'], 'locked_session_head');
+  // 0010 addendum (R2-5): a failure before setup still advertises the static
+  // part of the contract, with the tool set omitted rather than guessed.
+  assert.equal(errorRow.capabilities?.['partial'], true, blocked.stdout);
+  assert.deepEqual(errorRow.capabilities?.['exitCodes'], [0, 1, 2, 3, 4, 5, 130]);
+  assert.equal(errorRow.capabilities?.['budgetScope'], 'turn');
+  assert.equal(errorRow.capabilities?.['tools'], undefined);
 
   // Doctor JSON listing: versioned rows, removable classification, no token.
   const listing = run(['doctor', 'sessions', '--json'], workspace);
   assert.equal(listing.status, 0, listing.stdout + listing.stderr);
+  // doctor is a separate read-only surface: its rows carry no capabilities.
+  assert.ok(rows(listing.stdout).every((row) => row.capabilities === undefined), listing.stdout);
   const lockedRow = rows(listing.stdout).find(
     (row) => row.event['type'] === 'doctor_session' && row.event['file'] === session.file,
   );

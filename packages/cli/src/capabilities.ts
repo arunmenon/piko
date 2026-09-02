@@ -28,3 +28,27 @@ export function headlessCapabilities(tools: readonly { name: string }[]): Headle
     budgetScope: BUDGET_SCOPE,
   };
 }
+
+/**
+ * The honest subset a `run_error` row can carry. A run that fails before the
+ * tool set is resolved (a bad flag, an extension refusal, a locked head, the
+ * depth refusal) still knows its schema generation, its exit-code set, and its
+ * budget scope, but it does not know the tool names. `tools` is therefore
+ * omitted rather than guessed, and `partial` says so explicitly so a consumer
+ * never mistakes the absence of a tool list for an empty tool list.
+ */
+export interface PartialHeadlessCapabilities {
+  journalSchemaVersion: number;
+  exitCodes: number[];
+  budgetScope: string;
+  partial: true;
+}
+
+export function partialHeadlessCapabilities(): PartialHeadlessCapabilities {
+  return {
+    journalSchemaVersion: JOURNAL_SCHEMA_VERSION,
+    exitCodes: [...HEADLESS_EXIT_CODES],
+    budgetScope: BUDGET_SCOPE,
+    partial: true,
+  };
+}
