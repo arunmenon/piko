@@ -51,16 +51,18 @@ Every user-visible change since the 0.2.0 tree. No tag exists yet; ADR 0019
   rest of the old fragment as another undelimited tail, which the next open
   tolerates and records as a second row, so no discarded byte goes
   unrecorded. (ADR 0015 addendum and correction; R2 finding 4)
-- Bash calls record an optional planning-time `workspaceDigest` on their
-  `tool_planned` row (SHA-256 over `git rev-parse HEAD` and
-  `git status --porcelain=v1 -z`, best effort under 2 seconds, omitted outside
-  a git checkout) so a resumer can tell whether the workspace moved under an
-  unknown outcome; write takes an optional `expected_sha256` precondition,
-  a stale-at-check-time check hashed through a bounded descriptor (files over
-  the 10 MB ceiling are refused before reading), not a compare-and-swap: a
-  writer landing between the check and the rename is still overwritten; an
-  example-based replay conformance test covers the journal. (ADR 0007
-  addendum; R2 finding 3)
+- Bash calls record an optional dispatch-time `workspaceDigest` on their
+  `tool_started` row (SHA-256 over the raw bytes of `git rev-parse HEAD` and
+  `git status --porcelain=v1 -z --ignore-submodules=all`, best effort under a
+  single 2 second budget for all invocations, further capped by the turn's
+  remaining wall time, omitted outside a git checkout) so a resumer can tell
+  whether the workspace moved under an unknown outcome; write takes an
+  optional `expected_sha256` precondition, a stale-at-check-time check hashed
+  through a bounded descriptor (files over the 10 MB ceiling are refused
+  before reading), not a compare-and-swap: a writer landing between the check
+  and the rename is still overwritten; an example-based replay conformance
+  test covers the journal. Additive fields, no schema generation bump.
+  (ADR 0007 addendum; R2 findings 1 and 3)
 - An additive `extension_loaded` journal row (path, sha256, tool names,
   pinned, entryOnly) is written for every loaded extension. The digest covers
   the entry module's bytes as read around the import, not transitive imports;
@@ -84,6 +86,16 @@ Every user-visible change since the 0.2.0 tree. No tag exists yet; ADR 0019
   to narrative after its artifacts were lost.
 
 ### Containment
+- The bash workspace digest no longer runs git before policy. It is taken
+  only after the call clears validation, the tool-call budget, approval, and
+  cancellation, and it runs with `GIT_CONFIG_NOSYSTEM=1`,
+  `GIT_CONFIG_GLOBAL=/dev/null`, `core.fsmonitor`, `core.hooksPath`,
+  `core.untrackedCache`, and the pager disabled, `--no-optional-locks`, and
+  submodules ignored, so reading a workspace cannot execute a program the
+  workspace named. Each probe is spawned detached, its whole process group is
+  killed on deadline or abort, and the turn's AbortSignal ends it. BREAKING
+  for readers that expected `workspaceDigest` on `tool_planned`. (R2 finding
+  1; ADR 0007 addendum and correction)
 - Protected-path deny list inside the workspace: write and edit refuse
   `.git/`, `.pi/`, `.agent/`, `.claude/`, `AGENTS.md`, `.mcp.json`, and the
   workspace-root shell rc files, evaluated on the resolved path after symlink
