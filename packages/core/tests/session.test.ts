@@ -2,14 +2,18 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import {
   appendFileSync,
+  closeSync,
   existsSync,
+  fsyncSync,
   linkSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   statSync,
   unlinkSync,
   utimesSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -177,6 +181,103 @@ test('0015: a crash-shaped partial tail leaves a durable repair row with its byt
   stillLocked.setRunStatus('completed', 'end_turn');
   stillLocked.close();
   assert.equal(Session.open(crashed.file).journalRepairs.length, 1);
+});
+
+/** A torn row whose tail is one repeated digit: every suffix of it is valid JSON. */
+function longTornRow(digits: number): string {
+  return `{"t":"msg","message":{"role":"assistant","content":[{"type":"text","text":"torn"}],"n":${'7'.repeat(digits)}`;
+}
+
+test('0015: a fragment longer than the rows written over it is truncated and recorded once', () => {
+  const repairDir = mkdtempSync(join(tmpdir(), 'pi-repair-truncate-'));
+  const crashed = Session.create('/some/project', 'test-model', repairDir);
+  crashed.append({ t: 'msg', message: message('user', 'kept') });
+  const intactBytes = statSync(crashed.file).size;
+  const partialTail = longTornRow(400);
+  appendFileSync(crashed.file, partialTail, 'utf8');
+  crashed.close();
+
+  const recovered = Session.openLocked(crashed.file)!;
+  recovered.setRunStatus('running');
+  recovered.close();
+
+  const repaired = readFileSync(crashed.file, 'utf8');
+  assert.ok(repaired.endsWith('\n'), 'the repaired journal ends on a row boundary');
+  assert.ok(!repaired.includes('7777'), 'the fragment is truncated away, not left after the new rows');
+  assert.ok(
+    statSync(crashed.file).size < intactBytes + Buffer.byteLength(partialTail, 'utf8'),
+    'the file is shorter than it was, so the truncate half of the protocol ran',
+  );
+
+  const reopened = Session.open(crashed.file);
+  assert.equal(reopened.messages.length, 1);
+  assert.equal(reopened.runStatus?.status, 'running');
+  const repairs = reopened.journalRepairs;
+  assert.equal(repairs.length, 1, 'the completed protocol records exactly one repair');
+  assert.equal(repairs[0]?.offset, intactBytes);
+  assert.equal(repairs[0]?.discardedBytes, Buffer.byteLength(partialTail, 'utf8'));
+});
+
+test('0015: a crash between the repair rows and the truncate records the leftover as a second repair', () => {
+  const repairDir = mkdtempSync(join(tmpdir(), 'pi-repair-crash-window-'));
+  const crashed = Session.create('/some/project', 'test-model', repairDir);
+  crashed.append({ t: 'msg', message: message('user', 'kept') });
+  const intactBytes = statSync(crashed.file).size;
+  const partialTail = longTornRow(400);
+  const partialTailBytes = Buffer.byteLength(partialTail, 'utf8');
+  appendFileSync(crashed.file, partialTail, 'utf8');
+  crashed.close();
+
+  // Learn the exact bytes one repaired append writes at the repair offset by
+  // running the real append against a byte-identical copy of the crashed file.
+  const probeFile = join(repairDir, `${randomUUID()}.jsonl`);
+  writeFileSync(probeFile, readFileSync(crashed.file));
+  const probe = Session.openLocked(probeFile)!;
+  probe.setRunStatus('running');
+  probe.close();
+  const repairRowBytes = readFileSync(probeFile).subarray(intactBytes);
+  assert.ok(repairRowBytes.length < partialTailBytes, 'the rows must be shorter than the fragment they overwrite');
+
+  // The crash: the positional row write lands and is fsynced, the truncate that
+  // would remove the rest of the fragment never runs.
+  const crashedFd = openSync(crashed.file, 'r+');
+  try {
+    writeSync(crashedFd, repairRowBytes, 0, repairRowBytes.length, intactBytes);
+    fsyncSync(crashedFd);
+  } finally {
+    closeSync(crashedFd);
+  }
+  const leftoverBytes = partialTailBytes - repairRowBytes.length;
+  assert.equal(statSync(crashed.file).size, intactBytes + repairRowBytes.length + leftoverBytes);
+  const leftoverText = readFileSync(crashed.file, 'utf8').slice(-leftoverBytes);
+  assert.ok(!leftoverText.includes('\n'), "the leftover inherits the fragment's missing delimiter");
+  assert.doesNotThrow(
+    () => JSON.parse(leftoverText),
+    'the leftover is well-formed JSON, the case a reader must tolerate rather than fail closed on',
+  );
+
+  // Reopening tolerates the leftover as what it is: another undelimited tail.
+  const secondRecovery = Session.openLocked(crashed.file)!;
+  secondRecovery.setRunStatus('completed', 'end_turn');
+  secondRecovery.close();
+
+  const reopened = Session.open(crashed.file);
+  const repairs = reopened.journalRepairs;
+  assert.equal(repairs.length, 2, 'both discards are on the record');
+  assert.equal(repairs[0]?.repair, 'truncated_partial_line', 'the pre-crash repair row survived the crash');
+  assert.equal(repairs[0]?.offset, intactBytes);
+  assert.equal(repairs[0]?.discardedBytes, partialTailBytes);
+  assert.equal(repairs[1]?.repair, 'truncated_partial_line');
+  assert.equal(repairs[1]?.offset, intactBytes + repairRowBytes.length, 'the second repair starts where the rows end');
+  assert.equal(repairs[1]?.discardedBytes, leftoverBytes, 'the second row accounts for exactly the leftover fragment');
+
+  // Nothing written before the crash was lost, and nothing is silently discarded.
+  assert.equal(reopened.messages.length, 1);
+  assert.equal(reopened.runStatus?.status, 'completed');
+  const settled = readFileSync(crashed.file, 'utf8');
+  assert.ok(settled.endsWith('\n'), 'the repaired journal ends on a row boundary');
+  assert.ok(!settled.includes('7777'), 'the leftover is gone only once its discard is recorded');
+  assert.equal(countJournalRepairs(crashed.file), 2);
 });
 
 test('0015: a valid but undelimited final row records the newline repair and discards nothing', () => {

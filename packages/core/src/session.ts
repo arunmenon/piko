@@ -16,6 +16,7 @@ import {
   statSync,
   unlinkSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
@@ -220,6 +221,74 @@ function durableAppend(file: string, content: string): void {
     fchmodSync(fd, 0o600);
     writeFileSync(fd, content, 'utf8');
     fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Apply a tolerated tail repair and write `content` as ONE durable operation
+ * (0015). `content` leads with the `journal_repaired` row that describes this
+ * very repair, so a crash can no longer land the repair without its evidence.
+ *
+ * The descriptor is opened deliberately WITHOUT O_APPEND: Linux ignores the
+ * offset argument of a positional write on an O_APPEND descriptor and appends
+ * instead, which would leave the discarded fragment in place ahead of the rows.
+ * The journal keeps its inode (no temp file, no rename), so the single-link and
+ * pathname-keyed lock invariants hold throughout.
+ *
+ * Crash window 1, before the first fsync returns: every byte written lies at or
+ * after `repair.size`, inside the region the reader already refuses to trust.
+ * The file still ends without a trailing newline, so the next open tolerates the
+ * tail again and repairs it from the same offset. No row can claim a repair that
+ * did not land, because that row is part of the same unfinished write.
+ *
+ * Crash window 2, after the rows are durable but before the truncate: the tail
+ * of the old fragment survives after the new rows. The original fragment held no
+ * newline (it is everything after the last delimiter in the file), so the
+ * leftover holds none either and the file again ends without a trailing newline.
+ * The next open tolerates that leftover exactly like the first partial tail and
+ * records a SECOND journal_repaired row whose discardedBytes is the leftover
+ * length. Nothing is ever discarded without a row that says so.
+ */
+function durableRepairAndAppend(file: string, repair: TailRepair, content: string): void {
+  // The newline kind adds the delimiter a complete but undelimited final row is
+  // missing; the truncate kind overwrites the fragment from its offset onward.
+  const bytes = Buffer.from(repair.kind === 'newline' ? `\n${content}` : content, 'utf8');
+  const expectedSizeBeforeRepair = repair.kind === 'truncate' ? repair.size + repair.discardedBytes : repair.size;
+  const fd = openSync(file, constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const stats = fstatSync(fd);
+    if (!stats.isFile()) throw new TypeError(`session is not a regular file: ${file}`);
+    if (stats.nlink !== 1) {
+      throw new SessionPersistenceError(
+        `session journal has ${stats.nlink} links; journals must be single-link files`,
+        file,
+      );
+    }
+    if (stats.size !== expectedSizeBeforeRepair) {
+      // The parse that measured this tail ran under the lock this writer holds,
+      // so a different size means another writer moved the append boundary. The
+      // repair offset no longer describes it: refuse rather than overwrite rows.
+      throw new SessionPersistenceError(
+        `session is ${stats.size} bytes where its tail repair expected ${expectedSizeBeforeRepair}; another writer moved the append boundary`,
+        file,
+      );
+    }
+    fchmodSync(fd, 0o600);
+    let writtenBytes = 0;
+    while (writtenBytes < bytes.length) {
+      writtenBytes += writeSync(fd, bytes, writtenBytes, bytes.length - writtenBytes, repair.size + writtenBytes);
+    }
+    fsyncSync(fd);
+    const repairedEnd = repair.size + bytes.length;
+    if (stats.size > repairedEnd) {
+      // Only the truncate kind reaches here, and only when the rows were shorter
+      // than the fragment they replaced. Crash window 2 is exactly the gap
+      // between the fsync above and the fsync below.
+      ftruncateSync(fd, repairedEnd);
+      fsyncSync(fd);
+    }
   } finally {
     closeSync(fd);
   }
@@ -842,6 +911,15 @@ function parseFile(file: string): { entries: SessionEntry[]; tailRepair?: TailRe
     try {
       entries.push(parseSessionEntry(value));
     } catch (error) {
+      if (index === lastNonEmpty && hasPartialTail) {
+        // Crash window 2 of the repair protocol (durableRepairAndAppend): the
+        // leftover of an overwritten fragment is a suffix of a torn row, and a
+        // suffix can still be well-formed JSON (a bare number or string) while
+        // being no session row at all. It is undelimited, so it is partial-write
+        // evidence like any other torn tail: discard it and record the discard.
+        skippedTail = true;
+        continue;
+      }
       throw new SessionCorruptionError(`invalid session entry at line ${index + 1}: ${String(error)}`, file, index + 1, {
         cause: error,
       });
@@ -1035,31 +1113,6 @@ export class Session {
     }
   }
 
-  private repairAppendBoundary(): void {
-    const repair = this.tailRepair;
-    if (!repair) return;
-    if (repair.kind === 'newline') {
-      durableAppend(this.file, '\n');
-    } else {
-      const fd = openSync(this.file, constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0));
-      try {
-        const stats = fstatSync(fd);
-        if (!stats.isFile()) throw new TypeError(`session is not a regular file: ${this.file}`);
-        if (stats.nlink !== 1) {
-          throw new SessionPersistenceError(
-            `session journal has ${stats.nlink} links; journals must be single-link files`,
-            this.file,
-          );
-        }
-        ftruncateSync(fd, repair.size);
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
-      }
-    }
-    this.tailRepair = undefined;
-  }
-
   append(entry: SessionEntry): void {
     this.appendMany([entry]);
   }
@@ -1086,7 +1139,8 @@ export class Session {
     }
     // 0015: a tolerated partial tail leaves a durable record, not only a stderr
     // warning. The row describes the repair this very append is about to make,
-    // so it leads the batch and lands in the same fsync as the rows that follow.
+    // so it leads the batch and is written by the same positional write that
+    // overwrites the discarded fragment (see durableRepairAndAppend).
     const pendingRepair = this.tailRepair;
     const withRepairRecord = pendingRepair ? [journalRepairEntry(pendingRepair), ...entries] : entries;
     const serialized = withRepairRecord.map((entry) => serializeEntry(entry));
@@ -1122,8 +1176,14 @@ export class Session {
       );
     }
     try {
-      this.repairAppendBoundary();
-      durableAppend(this.file, content);
+      if (pendingRepair) {
+        // One durable operation: the repair and the journal_repaired row that
+        // records it are never separated by a crash.
+        durableRepairAndAppend(this.file, pendingRepair, content);
+        this.tailRepair = undefined;
+      } else {
+        durableAppend(this.file, content);
+      }
     } catch (error) {
       // Repair and write/fsync failures are outcome-ambiguous: the row may
       // already be on disk even though the in-memory lifecycle has not accepted it.
