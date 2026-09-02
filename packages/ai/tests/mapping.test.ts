@@ -121,6 +121,22 @@ test('anthropic body: maxTokens remains a hard cap and safely disables oversized
   }
 });
 
+test('toolChoice none disables tool use without dropping the cached tool list', () => {
+  const anthropic = buildAnthropicBody({ ...request, toolChoice: 'none' }) as any;
+  assert.deepEqual(anthropic.tool_choice, { type: 'none' });
+  assert.equal(anthropic.tools.length, 1, 'the tool list stays in the prefix so the cache still applies');
+  assert.equal((buildAnthropicBody(request) as any).tool_choice, undefined);
+
+  const openai = buildOpenAIBody({ ...request, toolChoice: 'none' }) as any;
+  assert.equal(openai.tool_choice, 'none');
+  assert.equal(openai.tools.length, 1);
+  assert.equal((buildOpenAIBody(request) as any).tool_choice, undefined);
+
+  // an empty tool list already forbids tool use; no provider gets a dangling tool_choice
+  assert.equal((buildAnthropicBody({ ...request, tools: [], toolChoice: 'none' }) as any).tool_choice, undefined);
+  assert.equal((buildOpenAIBody({ ...request, tools: [], toolChoice: 'none' }) as any).tool_choice, undefined);
+});
+
 test('openai body: reasoning models get max_completion_tokens and no temperature', () => {
   assert.equal(usesCompletionTokensParam('gpt-5.2'), true);
   assert.equal(usesCompletionTokensParam('o3-mini'), true);

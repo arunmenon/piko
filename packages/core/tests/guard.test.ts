@@ -44,6 +44,21 @@ const failingTool: Tool = {
   },
 };
 
+const readingTool: Tool = {
+  name: 'read',
+  description: 'always succeeds',
+  parameters: { type: 'object', properties: { path: { type: 'string' }, limit: { type: 'number' } } },
+  async execute(args: Record<string, unknown>) {
+    return { content: [{ type: 'text', text: `contents of ${String(args['path'])}` }] };
+  },
+};
+
+function finalReportOn(request: CompletionRequest): AssistantMessage | undefined {
+  return lastText(request).includes('Stopping this turn')
+    ? { role: 'assistant', content: [{ type: 'text', text: 'final report' }] }
+    : undefined;
+}
+
 test('flail guard: identical failing call nudges then stops the turn with a final report', async () => {
   let callId = 0;
   const client = scriptedClient((request) => {
@@ -128,6 +143,120 @@ test('flail guard stops the remainder of one large failing tool batch before dis
   assert.ok(results?.role === 'user');
   assert.equal(results.content.filter((block) => block.type === 'toolResult').length, 20);
   assert.match(JSON.stringify(results.content), /remaining tool batch/);
+});
+
+test('flail guard: eleven identical successful reads nudge then stop the turn', async () => {
+  let toolCalls = 0;
+  const client = scriptedClient((request) => {
+    const report = finalReportOn(request);
+    if (report) return report;
+    if (toolCalls >= 11) return { role: 'assistant', content: [{ type: 'text', text: 'done' }] };
+    return toolCallResponse('read', { path: 'src/agent.ts' }, `c${++toolCalls}`);
+  });
+  const agent = new Agent({ client, model: 'fake', systemPrompt: 't', tools: [readingTool], cwd: '/tmp' });
+  const events: string[] = [];
+  for await (const event of agent.run('read the file')) events.push(event.type);
+
+  assert.ok(events.includes('flail_nudge'), `no nudge in ${events.join(',')}`);
+  assert.ok(events.includes('flail_stop'), `no stop in ${events.join(',')}`);
+  // relaxed successful-repeat thresholds: nudge on the 4th identical success,
+  // stop on the 8th, then one final-report round
+  assert.equal(client.requests.length, 9);
+  assert.equal(toolCalls, 8, 'the guard must stop the loop well before the eleventh read');
+  const transcript = JSON.stringify(agent.messages);
+  assert.match(transcript, /succeeding but repeating/);
+  assert.match(transcript, /Stopping this turn: the same tool call keeps succeeding and repeating/);
+  assert.doesNotMatch(transcript, /Several tool calls in a row have failed/);
+});
+
+test('flail guard: argument key order cannot hide an identical successful repeat', async () => {
+  let toolCalls = 0;
+  const client = scriptedClient((request) => {
+    const report = finalReportOn(request);
+    if (report) return report;
+    toolCalls++;
+    // same call, two key orders: the canonical signature must collapse them
+    const args = toolCalls % 2 === 1 ? { path: 'a.ts', limit: 10 } : { limit: 10, path: 'a.ts' };
+    return toolCallResponse('read', args, `c${toolCalls}`);
+  });
+  const agent = new Agent({ client, model: 'fake', systemPrompt: 't', tools: [readingTool], cwd: '/tmp' });
+  const events: string[] = [];
+  for await (const event of agent.run('read the file')) events.push(event.type);
+  assert.ok(events.includes('flail_stop'), `no stop in ${events.join(',')}`);
+  assert.equal(toolCalls, 8);
+});
+
+test('flail guard: an alternating pair of identical calls is detected', async () => {
+  let toolCalls = 0;
+  const client = scriptedClient((request) => {
+    const report = finalReportOn(request);
+    if (report) return report;
+    toolCalls++;
+    return toolCallResponse('read', { path: toolCalls % 2 === 1 ? 'a.ts' : 'b.ts' }, `c${toolCalls}`);
+  });
+  const agent = new Agent({
+    client,
+    model: 'fake',
+    systemPrompt: 't',
+    tools: [readingTool],
+    cwd: '/tmp',
+    // the identical-success counters are pushed out of the way so the assertion
+    // is about the alternating detector and nothing else
+    flailGuard: { successNudgeAfter: 50, successStopAfter: 60, alternatingNudgeAfter: 3, alternatingStopAfter: 4 },
+  });
+  const events: string[] = [];
+  for await (const event of agent.run('look around')) events.push(event.type);
+
+  assert.ok(events.includes('flail_nudge'), `no nudge in ${events.join(',')}`);
+  assert.ok(events.includes('flail_stop'), `no stop in ${events.join(',')}`);
+  assert.equal(toolCalls, 8, 'four A,B cycles is eight calls');
+  const transcript = JSON.stringify(agent.messages);
+  assert.match(transcript, /alternating between the same two tool calls/);
+  assert.match(transcript, /Stopping this turn: the same two tool calls keep alternating/);
+});
+
+test('flail guard: a genuinely new call resets the successful-repeat counters', async () => {
+  // three identical reads, one different read, three identical reads again:
+  // six calls to the same file, but never four in a row without new work
+  const paths = ['a.ts', 'a.ts', 'a.ts', 'b.ts', 'a.ts', 'a.ts', 'a.ts'];
+  let toolCalls = 0;
+  const client = scriptedClient((request) => {
+    const report = finalReportOn(request);
+    if (report) return report;
+    const path = paths[toolCalls];
+    if (path === undefined) return { role: 'assistant', content: [{ type: 'text', text: 'done' }] };
+    toolCalls++;
+    return toolCallResponse('read', { path }, `c${toolCalls}`);
+  });
+  const agent = new Agent({ client, model: 'fake', systemPrompt: 't', tools: [readingTool], cwd: '/tmp' });
+  const events: string[] = [];
+  for await (const event of agent.run('read some files')) events.push(event.type);
+
+  assert.equal(toolCalls, paths.length);
+  assert.ok(!events.includes('flail_nudge'), `unexpected nudge in ${events.join(',')}`);
+  assert.ok(!events.includes('flail_stop'), `unexpected stop in ${events.join(',')}`);
+});
+
+test('flail guard: failure thresholds and wording are unchanged by success tracking', async () => {
+  let toolCalls = 0;
+  const client = scriptedClient((request) => {
+    const report = finalReportOn(request);
+    if (report) return report;
+    return toolCallResponse('boom', { attempt: ++toolCalls }, `c${toolCalls}`); // args vary: identical-call detectors stay quiet
+  });
+  const agent = new Agent({ client, model: 'fake', systemPrompt: 't', tools: [failingTool], cwd: '/tmp' });
+  const events: string[] = [];
+  for await (const event of agent.run('go')) events.push(event.type);
+
+  assert.ok(events.includes('flail_nudge'));
+  assert.ok(events.includes('flail_stop'));
+  // defaults are untouched: nudge on the 5th consecutive failure, stop on the 10th
+  assert.equal(toolCalls, 10);
+  assert.equal(client.requests.length, 11);
+  const transcript = JSON.stringify(agent.messages);
+  assert.match(transcript, /Several tool calls in a row have failed/);
+  assert.match(transcript, /Stopping this turn: repeated tool failures with no progress/);
+  assert.doesNotMatch(transcript, /succeeding but repeating/);
 });
 
 test('flail guard: disabled means no interference', async () => {

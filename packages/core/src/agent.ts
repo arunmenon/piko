@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync, statSync, unlinkSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import {
@@ -80,8 +81,11 @@ export const MIN_TOOL_OUTPUT_BYTES = 256;
 export const MAX_USER_INPUT_BYTES = 1_048_576;
 const COMPACTION_SUMMARY_INPUT_RESERVE_TOKENS = 1_024;
 const COMPACTION_SUMMARY_MAX_TOKENS = 768;
-const COMPACTION_SYSTEM_PROMPT =
-  'You condense coding sessions into faithful handoff notes. Be terse, concrete, and never invent omitted details.';
+const DEFAULT_REHYDRATED_FILE_COUNT = 5;
+const DEFAULT_MAX_COMPACTIONS_PER_TURN = 3;
+const REHYDRATED_PATH_MAX_CHARS = 256;
+const PROJECT_INSTRUCTIONS_OPEN = '<project-instructions>';
+const PROJECT_INSTRUCTIONS_CLOSE = '</project-instructions>';
 const DEFAULT_REQUEST_MAX_TOKENS = 8_192;
 const THINKING_RESPONSE_RESERVE_TOKENS = 1_024;
 const OBSERVER_OPERATION_TIMEOUT_MS = 1_000;
@@ -296,8 +300,8 @@ export type AgentEvent =
   | { type: 'response_done'; message: AssistantMessage; stopReason: StopReason; usage: Usage; cost?: RequestCost }
   | { type: 'compacted'; dropped: number; sessionFile?: string }
   | { type: 'session_rotated'; sessionFile: string }
-  | { type: 'flail_nudge'; consecutiveFailures: number }
-  | { type: 'flail_stop'; consecutiveFailures: number }
+  | { type: 'flail_nudge'; consecutiveFailures: number; kind: FlailKind }
+  | { type: 'flail_stop'; consecutiveFailures: number; kind: FlailKind }
   | { type: 'offloaded'; count: number; savedChars: number }
   | { type: 'steered'; text: string }
   | { type: 'approval_required'; executions: PendingApproval[] }
@@ -362,10 +366,25 @@ export interface AgentOptions {
   /** set false to disable auto-compaction (default on when contextWindow is known) */
   autoCompact?: boolean;
   /** doom-loop guard: nudge after N consecutive tool failures, stop the turn after M (default 5/10;
-   *  identical failing calls escalate faster via repeatNudgeAfter/repeatStopAfter, default 2/4; false disables) */
+   *  identical failing calls escalate faster via repeatNudgeAfter/repeatStopAfter, default 2/4;
+   *  identical SUCCEEDING calls use the relaxed successNudgeAfter/successStopAfter, default 4/8, and an
+   *  A,B,A,B alternation of identical call pairs uses alternatingNudgeAfter/alternatingStopAfter cycles,
+   *  default 6/8; false disables) */
   flailGuard?:
     | false
-    | { nudgeAfter?: number; stopAfter?: number; repeatNudgeAfter?: number; repeatStopAfter?: number };
+    | {
+        nudgeAfter?: number;
+        stopAfter?: number;
+        repeatNudgeAfter?: number;
+        repeatStopAfter?: number;
+        successNudgeAfter?: number;
+        successStopAfter?: number;
+        alternatingNudgeAfter?: number;
+        alternatingStopAfter?: number;
+      };
+  /** compaction bounds: files listed in the post-compaction rehydration block (default 5) and
+   *  compactions allowed inside one turn before it ends incomplete with context_window (default 3) */
+  compaction?: { rehydrateFileCount?: number; maxPerTurn?: number };
   /** microcompaction: offload old bulky tool outputs to disk, leaving a re-readable path stub (false disables) */
   offload?: false | { thresholdChars?: number; keepRecentMessages?: number };
 }
@@ -374,7 +393,122 @@ const NUDGE_TEXT =
   '[harness] Several tool calls in a row have failed. Step back: re-read the errors, question the current approach, and try a different strategy instead of repeating the same command.';
 const STOP_TEXT =
   '[harness] Stopping this turn: repeated tool failures with no progress. Do not call more tools. Summarize what you tried, the current state of the work, and what is blocking you.';
+const SUCCESSFUL_REPEAT_NUDGE_TEXT =
+  '[harness] These tool calls are succeeding but repeating: the same call with the same arguments keeps returning information you already have. Step back: use what the earlier results already told you and take a different next step instead of running it again.';
+const SUCCESSFUL_REPEAT_STOP_TEXT =
+  '[harness] Stopping this turn: the same tool call keeps succeeding and repeating without progress. Do not call more tools. Summarize what you have learned, the current state of the work, and what is blocking you.';
+const ALTERNATING_NUDGE_TEXT =
+  '[harness] You are alternating between the same two tool calls without progress. Step back: that pair is not producing new information, so change the approach instead of cycling between them.';
+const ALTERNATING_STOP_TEXT =
+  '[harness] Stopping this turn: the same two tool calls keep alternating without progress. Do not call more tools. Summarize what you tried, the current state of the work, and what is blocking you.';
 const OFFLOAD_BATCH_MIN_CHARS = 8_000; // offloading rewrites history (a cache break), so only do it in worthwhile batches
+
+/** Which repetition the flail guard reacted to; selects the harness message the model is shown. */
+export type FlailKind = 'failure' | 'successful_repeat' | 'alternating';
+
+function flailNudgeText(kind: FlailKind): string {
+  if (kind === 'successful_repeat') return SUCCESSFUL_REPEAT_NUDGE_TEXT;
+  if (kind === 'alternating') return ALTERNATING_NUDGE_TEXT;
+  return NUDGE_TEXT;
+}
+
+function flailStopText(kind: FlailKind): string {
+  if (kind === 'successful_repeat') return SUCCESSFUL_REPEAT_STOP_TEXT;
+  if (kind === 'alternating') return ALTERNATING_STOP_TEXT;
+  return STOP_TEXT;
+}
+
+/**
+ * Deterministic JSON with object keys sorted, so two calls the model wrote with
+ * the same arguments in a different key order hash to the same signature. Bounded
+ * against depth and cycles: provider-supplied arguments are not trusted to be a
+ * finite tree.
+ */
+export function canonicalJson(value: unknown, depth = 0, seen = new Set<object>()): string {
+  if (depth > 32) return '"[depth-limited]"';
+  if (value === null || typeof value !== 'object') {
+    const rendered = JSON.stringify(value);
+    return rendered === undefined ? 'null' : rendered;
+  }
+  const container = value as object;
+  if (seen.has(container)) return '"[circular]"';
+  seen.add(container);
+  try {
+    if (Array.isArray(value)) {
+      return `[${value.map((element) => canonicalJson(element, depth + 1, seen)).join(',')}]`;
+    }
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, element]) => element !== undefined)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+    return `{${entries
+      .map(([key, element]) => `${JSON.stringify(key)}:${canonicalJson(element, depth + 1, seen)}`)
+      .join(',')}}`;
+  } finally {
+    seen.delete(container);
+  }
+}
+
+/**
+ * Stable bounded identity for one tool call: the tool name plus a canonical
+ * rendering of its arguments. Hashing keeps the guard's memory constant per
+ * distinct call rather than proportional to argument size.
+ */
+export function flailSignature(toolName: string, argumentRendering: string): string {
+  return createHash('sha256').update(`${toolName}\u0000${argumentRendering}`).digest('hex').slice(0, 32);
+}
+
+/**
+ * Length of the A,B,A,B alternation ending at the newest call, counted in A,B
+ * cycles. Any third distinct call breaks the run, so the count only survives
+ * while the model keeps flipping between exactly the same two calls.
+ */
+export function countAlternatingCycles(signatures: string[]): number {
+  if (signatures.length < 4) return 0;
+  const newest = signatures[signatures.length - 1]!;
+  const previous = signatures[signatures.length - 2]!;
+  if (newest === previous) return 0;
+  let matched = 2;
+  for (let index = signatures.length - 3; index >= 0; index--) {
+    const expected = matched % 2 === 0 ? newest : previous;
+    if (signatures[index] !== expected) break;
+    matched++;
+  }
+  return Math.floor(matched / 2);
+}
+
+/** The AGENTS.md body a trusted run placed in its system prompt; undefined for an untrusted run. */
+function extractProjectInstructions(systemPrompt: string): string | undefined {
+  const start = systemPrompt.indexOf(PROJECT_INSTRUCTIONS_OPEN);
+  if (start < 0) return undefined;
+  const end = systemPrompt.indexOf(PROJECT_INSTRUCTIONS_CLOSE, start);
+  if (end < 0) return undefined;
+  const content = systemPrompt.slice(start + PROJECT_INSTRUCTIONS_OPEN.length, end).trim();
+  return content.length > 0 ? content : undefined;
+}
+
+/**
+ * Workspace paths the given history wrote or edited, most recent last and
+ * deduplicated to the last occurrence. Paths only: the rehydration list is a
+ * pointer set the model can re-read, never a copy of the content it lost.
+ */
+export function touchedFilePaths(messages: Message[], limit: number): string[] {
+  if (limit <= 0) return [];
+  const paths: string[] = [];
+  for (const message of messages) {
+    if (message.role !== 'assistant') continue;
+    for (const block of message.content) {
+      if (block.type !== 'toolCall') continue;
+      if (block.name !== 'write' && block.name !== 'edit') continue;
+      const requestedPath = block.arguments['path'];
+      if (typeof requestedPath !== 'string' || requestedPath.length === 0) continue;
+      const bounded = truncateMiddle(requestedPath, REHYDRATED_PATH_MAX_CHARS);
+      const alreadyListed = paths.indexOf(bounded);
+      if (alreadyListed >= 0) paths.splice(alreadyListed, 1);
+      paths.push(bounded);
+    }
+  }
+  return paths.slice(-limit);
+}
 
 function inputTokens(usage: Usage): number {
   return usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
@@ -1104,6 +1238,11 @@ export class Agent {
     if (openRun) addCostSummary(turnCost, openRun.cost);
     let iterations = openRun?.modelRequests ?? 0;
     let toolCalls = openRun?.toolCalls ?? 0;
+    // Compaction is bounded explicitly rather than by trusting the turn to
+    // terminate: repeated compaction inside one turn means the working set no
+    // longer fits, and each round costs a billed summary (ADR 0003 addendum).
+    let compactionsThisTurn = 0;
+    const maxCompactionsPerTurn = this.options.compaction?.maxPerTurn ?? DEFAULT_MAX_COMPACTIONS_PER_TURN;
     let status: TurnStatus = 'incomplete';
     let reason: TurnStopReason = 'empty_response';
     /** Set only by a dollar ceiling stop, and carried into the terminal row. */
@@ -1159,11 +1298,25 @@ export class Agent {
               stopAfter: 10,
               repeatNudgeAfter: 2,
               repeatStopAfter: 4,
+              successNudgeAfter: 4,
+              successStopAfter: 8,
+              alternatingNudgeAfter: 6,
+              alternatingStopAfter: 8,
               ...(typeof guardOption === 'object' ? guardOption : {}),
             };
       let consecutiveFailures = 0;
       const failCounts = new Map<string, number>();
-      let nudged = false;
+      // Successful repeats are tracked for the whole turn: a success no longer
+      // clears them, so eleven identical successful reads are visible even though
+      // every one of them "worked" (ADR 0005 addendum, 2026-09-02).
+      const successCounts = new Map<string, number>();
+      const seenCallSignatures = new Set<string>();
+      const callSignatureHistory: string[] = [];
+      const callHistoryLimit = guard
+        ? Math.max(4, 2 * Math.max(guard.alternatingStopAfter, guard.alternatingNudgeAfter) + 2)
+        : 4;
+      let failureNudged = false;
+      let repeatNudged = false;
       let stopping = false;
       // A resume re-enters the loop at the suspended batch: no new user input,
       // and no model request until the batch has been settled in order.
@@ -1325,6 +1478,23 @@ export class Agent {
               );
               break;
             }
+            if (compactionsThisTurn >= maxCompactionsPerTurn) {
+              status = 'incomplete';
+              reason = 'context_window';
+              await this.observe(
+                createRuntimeEvent(telemetryContext, {
+                  name: 'context.preflight_failed',
+                  level: 'warn',
+                  attributes: {
+                    projectedTokens: this.projectedContextTokens(),
+                    threshold,
+                    compactionsThisTurn,
+                    maxCompactionsPerTurn,
+                  },
+                }),
+              );
+              break;
+            }
             const keepFrom = chooseKeepBoundary(this.messages, this.compactionKeepTokens());
             const retainedProjection =
               keepFrom < this.messages.length
@@ -1384,6 +1554,7 @@ export class Agent {
               }
               break;
             }
+            compactionsThisTurn++;
             telemetryContext = this.activeTelemetryContext ?? telemetryContext;
             if (this._session && !runSessions.some((session) => session.id === this._session!.id)) {
               runSessions.push(this._session);
@@ -1821,18 +1992,65 @@ export class Agent {
 
         const results: ToolResultBlock[] = [];
         let repeatMax = 0;
+        let successRepeatMax = 0;
         let toolBudgetHit = false;
         let guardStoppedThisBatch = false;
         let guardNudgedThisBatch = false;
-        const evaluateFlail = (): 'stop' | 'nudge' | undefined => {
+        let guardSignalKind: FlailKind = 'failure';
+        const recordCallSignature = (signature: string): void => {
+          if (!seenCallSignatures.has(signature)) {
+            // A call the turn has never made before is progress, and it is the
+            // only thing that clears the identical-success counters.
+            seenCallSignatures.add(signature);
+            successCounts.clear();
+            successRepeatMax = 0;
+            repeatNudged = false;
+          }
+          callSignatureHistory.push(signature);
+          if (callSignatureHistory.length > callHistoryLimit) callSignatureHistory.shift();
+        };
+        const recordFailedCall = (signature: string): void => {
+          recordCallSignature(signature);
+          consecutiveFailures++;
+          const repeats = (failCounts.get(signature) ?? 0) + 1;
+          failCounts.set(signature, repeats);
+          if (repeats > repeatMax) repeatMax = repeats;
+        };
+        const recordSucceededCall = (signature: string): void => {
+          recordCallSignature(signature);
+          consecutiveFailures = 0;
+          failCounts.clear();
+          failureNudged = false;
+          const repeats = (successCounts.get(signature) ?? 0) + 1;
+          successCounts.set(signature, repeats);
+          if (repeats > successRepeatMax) successRepeatMax = repeats;
+        };
+        const evaluateFlail = (): { action: 'stop' | 'nudge'; kind: FlailKind } | undefined => {
           if (!guard) return undefined;
+          const alternatingCycles = countAlternatingCycles(callSignatureHistory);
           if (consecutiveFailures >= guard.stopAfter || repeatMax >= guard.repeatStopAfter) {
             stopping = true;
-            return 'stop';
+            return { action: 'stop', kind: 'failure' };
           }
-          if (!nudged && (consecutiveFailures >= guard.nudgeAfter || repeatMax >= guard.repeatNudgeAfter)) {
-            nudged = true;
-            return 'nudge';
+          if (successRepeatMax >= guard.successStopAfter) {
+            stopping = true;
+            return { action: 'stop', kind: 'successful_repeat' };
+          }
+          if (alternatingCycles >= guard.alternatingStopAfter) {
+            stopping = true;
+            return { action: 'stop', kind: 'alternating' };
+          }
+          if (!failureNudged && (consecutiveFailures >= guard.nudgeAfter || repeatMax >= guard.repeatNudgeAfter)) {
+            failureNudged = true;
+            return { action: 'nudge', kind: 'failure' };
+          }
+          if (!repeatNudged && successRepeatMax >= guard.successNudgeAfter) {
+            repeatNudged = true;
+            return { action: 'nudge', kind: 'successful_repeat' };
+          }
+          if (!repeatNudged && alternatingCycles >= guard.alternatingNudgeAfter) {
+            repeatNudged = true;
+            return { action: 'nudge', kind: 'alternating' };
           }
           return undefined;
         };
@@ -1958,20 +2176,18 @@ export class Agent {
               content: [{ type: 'text', text: explanation }],
               isError: true,
             });
-            consecutiveFailures++;
             // Validation may reject non-JSON/circular input from an embedded
             // provider. Do not stringify that hostile value for flail tracking.
-            const key = `${call.name}:rejected:${rejectedBeforeDispatch.slice(0, 256)}`;
-            const repeats = (failCounts.get(key) ?? 0) + 1;
-            failCounts.set(key, repeats);
-            if (repeats > repeatMax) repeatMax = repeats;
+            recordFailedCall(flailSignature(call.name, `rejected:${rejectedBeforeDispatch.slice(0, 256)}`));
             const decision = evaluateFlail();
-            if (decision === 'stop') {
+            if (decision?.action === 'stop') {
               guardStoppedThisBatch = true;
-              yield { type: 'flail_stop', consecutiveFailures };
-            } else if (decision === 'nudge') {
+              guardSignalKind = decision.kind;
+              yield { type: 'flail_stop', consecutiveFailures, kind: decision.kind };
+            } else if (decision?.action === 'nudge') {
               guardNudgedThisBatch = true;
-              yield { type: 'flail_nudge', consecutiveFailures };
+              guardSignalKind = decision.kind;
+              yield { type: 'flail_nudge', consecutiveFailures, kind: decision.kind };
             }
             continue;
           }
@@ -2109,16 +2325,14 @@ export class Agent {
             }),
           );
           yield { type: 'tool_end', call: dispatchCall, result };
+          // Every settled outcome is classified, not only the failures: the
+          // signature covers the tool name and its canonical arguments, so a
+          // successful repeat is as visible as a failing one (ADR 0005 addendum).
+          const outcomeSignature = flailSignature(call.name, canonicalJson(dispatchCall.arguments));
           if (result.isError && !runController.signal.aborted) {
-            consecutiveFailures++;
-            const key = `${call.name}:${JSON.stringify(dispatchCall.arguments)}`;
-            const repeats = (failCounts.get(key) ?? 0) + 1;
-            failCounts.set(key, repeats);
-            if (repeats > repeatMax) repeatMax = repeats;
+            recordFailedCall(outcomeSignature);
           } else if (!result.isError) {
-            consecutiveFailures = 0;
-            failCounts.clear();
-            nudged = false;
+            recordSucceededCall(outcomeSignature);
           }
           // The model must not be told its own arguments ran when a human
           // changed them. The note sits beside the tool's own output rather
@@ -2134,12 +2348,14 @@ export class Agent {
             ...(result.isError ? { isError: true } : {}),
           });
           const decision = evaluateFlail();
-          if (decision === 'stop') {
+          if (decision?.action === 'stop') {
             guardStoppedThisBatch = true;
-            yield { type: 'flail_stop', consecutiveFailures };
-          } else if (decision === 'nudge') {
+            guardSignalKind = decision.kind;
+            yield { type: 'flail_stop', consecutiveFailures, kind: decision.kind };
+          } else if (decision?.action === 'nudge') {
             guardNudgedThisBatch = true;
-            yield { type: 'flail_nudge', consecutiveFailures };
+            guardSignalKind = decision.kind;
+            yield { type: 'flail_nudge', consecutiveFailures, kind: decision.kind };
           }
         }
         if (suspendedThisBatch) {
@@ -2175,9 +2391,9 @@ export class Agent {
           }
           terminal = true;
         } else if (guardStoppedThisBatch) {
-          content.push({ type: 'text', text: STOP_TEXT });
+          content.push({ type: 'text', text: flailStopText(guardSignalKind) });
         } else if (guardNudgedThisBatch) {
-          content.push({ type: 'text', text: NUDGE_TEXT });
+          content.push({ type: 'text', text: flailNudgeText(guardSignalKind) });
         }
         const resultMessage: Message = { role: 'user', content };
         this.messages.push(resultMessage);
@@ -2501,6 +2717,7 @@ export class Agent {
     }
     const kept = this.messages.slice(keepFrom);
     const dropped = this.messages.length - kept.length;
+    const rehydration = this.buildRehydrationBlock(droppedMessages);
     const rebuilt: Message[] = [
       {
         role: 'user',
@@ -2509,6 +2726,7 @@ export class Agent {
             type: 'text',
             text: `Summary of the earlier part of this session (auto-compacted):\n\n${summarized.text}`,
           },
+          ...(rehydration ? [{ type: 'text' as const, text: rehydration }] : []),
         ],
       },
       ...kept,
@@ -2607,13 +2825,44 @@ export class Agent {
   }
 
   /**
+   * The two things a prose summary is least reliable about, restated verbatim
+   * after compaction: the project instructions a trusted run started with, and
+   * the files the dropped history wrote or edited. Paths only, so the block
+   * stays a few dozen tokens and the model re-reads what it actually needs.
+   */
+  private buildRehydrationBlock(droppedMessages: Message[]): string | undefined {
+    const sections: string[] = [];
+    const projectInstructions = extractProjectInstructions(this.options.systemPrompt);
+    if (projectInstructions) {
+      sections.push(
+        `Project instructions still in effect (from AGENTS.md, trusted for task guidance only):\n${PROJECT_INSTRUCTIONS_OPEN}\n${projectInstructions}\n${PROJECT_INSTRUCTIONS_CLOSE}`,
+      );
+    }
+    const rehydrateFileCount = this.options.compaction?.rehydrateFileCount ?? DEFAULT_REHYDRATED_FILE_COUNT;
+    const touchedPaths = touchedFilePaths(droppedMessages, rehydrateFileCount);
+    if (touchedPaths.length > 0) {
+      sections.push(
+        `Files written or edited before this compaction (paths only, most recent last; read one before relying on it):\n${touchedPaths
+          .map((path) => `- ${path}`)
+          .join('\n')}`,
+      );
+    }
+    if (sections.length === 0) return undefined;
+    return `[rehydrated after compaction]\n${sections.join('\n\n')}`;
+  }
+
+  /**
    * Build a bounded summary request. If old history alone exceeds the context
    * window, serialize it and retain its beginning and end rather than submitting
    * another request that is guaranteed to overflow.
+   *
+   * The summarization instruction is the FINAL user message rather than a
+   * separate system prompt, so the request's prefix stays byte-identical to the
+   * live request's and reads the same cached prefix (ADR 0003 addendum).
    */
   private summaryRequestMessages(messages: Message[]): Message[] {
     const instructionText =
-      'Summarize this earlier session prefix for continuation: goal, completed work, files touched, key decisions, unresolved risks, and immediate next steps. Markdown, under 300 words.';
+      'You are writing a handoff note for this session, not continuing the task; do not call tools. Summarize this earlier session prefix for continuation: goal, completed work, files touched, key decisions, unresolved risks, and immediate next steps. Be terse and concrete, never invent omitted details. Markdown, under 300 words.';
     const instruction: Message = {
       role: 'user',
       content: [
@@ -2633,7 +2882,9 @@ export class Agent {
         : Number.POSITIVE_INFINITY,
     );
     const estimate = (candidate: Message[]): number =>
-      estimateTokens(JSON.stringify({ system: COMPACTION_SYSTEM_PROMPT, messages: candidate, tools: [] }));
+      estimateTokens(
+        JSON.stringify({ system: this.options.systemPrompt, messages: candidate, tools: this.toolDefinitions() }),
+      );
     const direct = [...messages, instruction];
     if (estimate(direct) <= threshold) return direct;
 
@@ -2696,7 +2947,11 @@ export class Agent {
         : Number.POSITIVE_INFINITY,
     );
     const summaryEstimate = estimateTokens(
-      JSON.stringify({ system: COMPACTION_SYSTEM_PROMPT, messages: summaryMessages, tools: [] }),
+      JSON.stringify({
+        system: this.options.systemPrompt,
+        messages: summaryMessages,
+        tools: this.toolDefinitions(),
+      }),
     );
     if (summaryEstimate > summaryThreshold) {
       throw new RangeError(
@@ -2705,9 +2960,14 @@ export class Agent {
     }
     const summaryRequest: CompletionRequest = {
       model: this.model,
-      system: COMPACTION_SYSTEM_PROMPT,
+      // Byte-identical prefix to the live request (system, then the same tool
+      // list) so the summary request reads the cached prefix instead of paying
+      // full price for it. Tool use is disabled for this request rather than the
+      // tool list being dropped, which would change the prefix (ADR 0003 addendum).
+      system: this.options.systemPrompt,
       messages: summaryMessages,
-      tools: [],
+      tools: this.toolDefinitions(),
+      toolChoice: 'none',
       maxAttempts: 1,
       maxTokens: COMPACTION_SUMMARY_MAX_TOKENS,
       timeoutMs: this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,

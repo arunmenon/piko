@@ -37,10 +37,12 @@ industry harnesses.
   pre-compaction transcript stays on disk untouched. `/compact` does the same on demand;
   `--no-auto-compact` turns the automatic path off. The window comes from a per-model-family
   table, overridable per profile (`contextWindow`) or with `PI_CONTEXT_WINDOW`.
-- **Flail guard (doom-loop protection)**: after repeated tool failures the
-  harness nudges the model to change approach with a short message, and if failures continue
-  it ends the turn with a demanded final report instead of burning the budget. `--no-flail-guard`
-  to disable.
+- **Flail guard (doom-loop protection)**: the harness hashes every tool call (name plus
+  canonical arguments) and counts what it sees, whether the call failed or succeeded. Repeated
+  failures escalate on tight thresholds, identical *succeeding* calls on relaxed ones, and an
+  A,B,A,B alternation of the same pair on a cycle count. At the nudge threshold it injects a
+  short message asking for a change of approach; if the pattern continues it ends the turn with
+  a demanded final report instead of burning the budget. `--no-flail-guard` to disable.
 - **Microcompaction**: old bulky tool outputs are offloaded to disk and replaced with a path
   stub the model can re-read: nothing summarized away, no model call paid, batched to respect
   the prompt cache. Each run uses a random owner-only `.pi/artifacts/` subdirectory with a local
