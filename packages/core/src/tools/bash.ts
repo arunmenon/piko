@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
+import { BUDGET_AUTHORITY_ENVIRONMENT_NAME, readBudgetAuthorityPath } from '../budget-authority.js';
 import type { WorkspaceDigest } from '../journal.js';
 import { truncateMiddle } from '../truncate.js';
 import { resolveWorkspacePath, resolveWorkspaceRoot } from './filesystem.js';
@@ -38,6 +39,11 @@ const SAFE_ENVIRONMENT_NAMES = [
   // one: passing the parent's own number through would let every generation
   // claim the same depth and defeat --max-depth.
   'PI_DEPTH',
+  // ADR 0026 root-budget ledger path. Allowlisted because a `pi -p` child is
+  // meant to join the tree and have its spend charged to every ancestor; like
+  // PI_DEPTH it is set explicitly below rather than inherited blindly, so a
+  // tree that no longer has an authority cannot leave a stale path behind.
+  'PI_BUDGET_AUTHORITY',
   // Required to locate executables on Windows environments that provide bash.
   'SystemRoot',
   'WINDIR',
@@ -92,6 +98,12 @@ export function sanitizedBashEnvironment(policy?: BashExecutionPolicy): NodeJS.P
   // do, so --max-depth can stop an unbounded spawn chain. Set explicitly on
   // every call; a malformed inherited value counts as the root depth.
   environment[DEPTH_ENVIRONMENT_NAME] = String((readProcessDepth() ?? 0) + 1);
+  // ADR 0026: a child joins this process's budget tree, so it receives the
+  // ledger path this process actually holds. Set explicitly and deleted when
+  // absent, so an inherited value can never point a child at a foreign tree.
+  const budgetAuthorityPath = readBudgetAuthorityPath();
+  if (budgetAuthorityPath) environment[BUDGET_AUTHORITY_ENVIRONMENT_NAME] = budgetAuthorityPath;
+  else delete environment[BUDGET_AUTHORITY_ENVIRONMENT_NAME];
   for (const [name, value] of Object.entries(policy?.environment ?? {})) {
     if (value === undefined) delete environment[name];
     else environment[name] = value;

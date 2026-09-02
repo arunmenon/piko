@@ -31,6 +31,7 @@ import {
 import {
   addCostSummary,
   addRequestCost,
+  conservativeInputTokenBound,
   costComplete,
   costForUsage,
   emptyCostSummary,
@@ -42,6 +43,13 @@ import {
   type RequestCost,
   type SpendReservation,
 } from './pricing.js';
+import {
+  BudgetReminderTracker,
+  type BudgetRefusalReason,
+  type BudgetReminderPolicy,
+  type RootBudgetAuthority,
+  type RootBudgetSnapshot,
+} from './budget-authority.js';
 import {
   defaultToolExecutionPolicy,
   requiresApproval,
@@ -132,6 +140,61 @@ export function effectiveSpendCeilingUSD(spend: SpendStop): number {
   return Math.max(0, Math.round((spend.ceilingUSD - spend.reservedUSD) * 1_000_000) / 1_000_000);
 }
 
+/**
+ * The session-tree half of a ceiling stop (ADR 0026). It carries the same four
+ * numbers as `SpendStop`, scoped to the whole tree rather than this turn,
+ * whenever the tree has a dollar ceiling, plus whatever else the tree bounds.
+ */
+export interface TreeBudgetStop {
+  rootRunId: string;
+  /** Which tree ceiling refused the request. */
+  reason: BudgetRefusalReason;
+  /** The four numbers for the tree, present only when the tree has a dollar ceiling. */
+  spend?: SpendStop;
+  remainingUSD?: number;
+  remainingTokens?: number;
+  remainingActiveTimeMs?: number;
+  remainingElapsedTimeMs?: number;
+}
+
+/** Map a tree refusal onto the turn's typed stop reason. */
+function treeStopReason(reason: BudgetRefusalReason): TurnStopReason {
+  if (reason === 'spend') return 'session_spend';
+  if (reason === 'tokens') return 'session_tokens';
+  if (reason === 'active_time') return 'active_time';
+  return 'elapsed_time';
+}
+
+/** Assemble the tree half of a stop from the snapshot the authority refused against. */
+function treeStopFor(
+  snapshot: RootBudgetSnapshot,
+  reason: BudgetRefusalReason,
+  reservationUSD: number,
+): TreeBudgetStop {
+  return {
+    rootRunId: snapshot.rootRunId,
+    reason,
+    ...(snapshot.ceilings.maxSpendUSD !== undefined
+      ? {
+          spend: {
+            reservationUSD,
+            actualUSD: snapshot.reconciledUSD,
+            reservedUSD: snapshot.outstandingUSD,
+            ceilingUSD: snapshot.ceilings.maxSpendUSD,
+          },
+        }
+      : {}),
+    ...(snapshot.remainingUSD !== undefined ? { remainingUSD: snapshot.remainingUSD } : {}),
+    ...(snapshot.remainingTokens !== undefined ? { remainingTokens: snapshot.remainingTokens } : {}),
+    ...(snapshot.remainingActiveTimeMs !== undefined
+      ? { remainingActiveTimeMs: snapshot.remainingActiveTimeMs }
+      : {}),
+    ...(snapshot.remainingElapsedTimeMs !== undefined
+      ? { remainingElapsedTimeMs: snapshot.remainingElapsedTimeMs }
+      : {}),
+  };
+}
+
 export type TurnStatus = 'completed' | 'incomplete' | 'budget_exceeded' | 'canceled' | 'suspended';
 export type TurnStopReason =
   | 'end_turn'
@@ -147,6 +210,11 @@ export type TurnStopReason =
   | 'output_tokens'
   | 'total_tokens'
   | 'spend'
+  // ADR 0026 session-tree ceilings, enforced alongside the per-turn ones.
+  | 'session_spend'
+  | 'session_tokens'
+  | 'active_time'
+  | 'elapsed_time'
   | 'flail_stop'
   | 'persistence'
   | 'user_abort';
@@ -199,6 +267,14 @@ class CompactionPersistenceError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = 'CompactionPersistenceError';
+  }
+}
+
+/** A session-tree ceiling refused a compaction-summary request (ADR 0026). */
+class TreeBudgetExceededError extends Error {
+  constructor(readonly tree: TreeBudgetStop) {
+    super(`session-tree ${tree.reason} ceiling refused the next provider request`);
+    this.name = 'TreeBudgetExceededError';
   }
 }
 
@@ -314,9 +390,22 @@ export type AgentEvent =
     }
   | {
       type: 'budget_exceeded';
-      reason: 'model_requests' | 'tool_calls' | 'wall_time' | 'input_tokens' | 'output_tokens' | 'total_tokens' | 'spend';
+      reason:
+        | 'model_requests'
+        | 'tool_calls'
+        | 'wall_time'
+        | 'input_tokens'
+        | 'output_tokens'
+        | 'total_tokens'
+        | 'spend'
+        | 'session_spend'
+        | 'session_tokens'
+        | 'active_time'
+        | 'elapsed_time';
       /** Present whenever `reason` is `spend`: the four numbers that explain the stop. */
       spend?: SpendStop;
+      /** Present whenever a session-tree ceiling refused the request (ADR 0026). */
+      tree?: TreeBudgetStop;
     }
   | {
       type: 'turn_done';
@@ -328,6 +417,8 @@ export type AgentEvent =
       reason: TurnStopReason;
       /** Present whenever `reason` is `spend`: the same four numbers the stop event carried. */
       spend?: SpendStop;
+      /** Present whenever a session-tree ceiling ended the turn (ADR 0026). */
+      tree?: TreeBudgetStop;
     };
 
 export interface AgentOptions {
@@ -351,6 +442,21 @@ export interface AgentOptions {
   credential?: CredentialDescriptor;
   /** optional parent run correlation for embedded/subagent use */
   parentRunId?: string;
+  /**
+   * Root-budget authority for the session tree (ADR 0026). When present, every
+   * provider request is admitted against the tree's remaining budget before
+   * dispatch, in addition to the per-turn ceilings of 0009/0020, and its
+   * exposure is charged to the root and to every ancestor.
+   */
+  budgetAuthority?: RootBudgetAuthority;
+  /** This run's identity in the tree ledger; defaults to the session id. */
+  runId?: string;
+  /**
+   * Budget reminders injected as `[harness]` turn messages when remaining root
+   * budget crosses a threshold (ADR 0026). False disables them; the default is
+   * off, so a caller opts in per surface (the CLI turns them on in the REPL).
+   */
+  budgetReminders?: false | BudgetReminderPolicy;
   /** cap on model calls per user input — the headless --max-turns guard */
   maxIterations?: number;
   /** hard per-turn budgets; individual values override the safe defaults */
@@ -642,6 +748,42 @@ export class Agent {
   /** The configured per-turn dollar ceiling, so callers can report it alongside actual and reserved spend. */
   get spendCeilingUSD(): number | undefined {
     return this.options.budget?.maxSpendUSD;
+  }
+
+  /** The session-tree authority this run is admitted against, if any (ADR 0026). */
+  get budgetAuthority(): RootBudgetAuthority | undefined {
+    return this.options.budgetAuthority;
+  }
+
+  /** This run's identity in the tree ledger. */
+  get treeRunId(): string {
+    return this.options.runId ?? this.options.session?.id ?? 'root';
+  }
+
+  /**
+   * Reminder state is per Agent instance, not per turn: a REPL session must not
+   * repeat the 50-percent reminder on every turn once it has been given.
+   */
+  private budgetReminders?: BudgetReminderTracker;
+
+  private budgetReminderTracker(): BudgetReminderTracker | undefined {
+    const policy = this.options.budgetReminders;
+    if (policy === false || policy === undefined) return undefined;
+    this.budgetReminders ??= new BudgetReminderTracker(policy);
+    return this.budgetReminders;
+  }
+
+  /** Charge model or tool wall time to this run and every ancestor; never fatal. */
+  private recordTreeActiveTime(milliseconds: number): void {
+    const authority = this.options.budgetAuthority;
+    if (!authority) return;
+    try {
+      authority.recordActiveTime(this.treeRunId, milliseconds);
+    } catch (error) {
+      // Losing an active-time sample is a reporting gap, not a correctness
+      // failure: the dollar and token ceilings are unaffected.
+      process.stderr.write(`warning: root-budget active time not recorded: ${String(error)}\n`);
+    }
   }
 
   constructor(private readonly options: AgentOptions) {
@@ -1242,6 +1384,27 @@ export class Agent {
       throw new Error('cannot resume a spend-capped run whose prior request cost is unpriced or outcome-unknown');
     }
 
+    // ADR 0026. The tree ceilings live in the ledger, not in RunBudget, so they
+    // are read once per turn and enforced alongside the per-turn ones.
+    const budgetAuthority = this.options.budgetAuthority;
+    const treeRunId = this.treeRunId;
+    let treeCeilings;
+    try {
+      treeCeilings = budgetAuthority?.ceilings;
+    } catch (error) {
+      this.running = false;
+      throw new Error(`root-budget ledger is unavailable: ${String(error)}`);
+    }
+    // Same fail-closed pairing 0020 decision 4 applies to the per-turn ceiling:
+    // a dollar ceiling over a model with no exact price is an error, not a warning.
+    if (treeCeilings?.maxSpendUSD !== undefined && !this.options.pricing) {
+      this.running = false;
+      throw new Error(
+        `a session-tree spend ceiling requires an exact price for model ${this.model}; provide a pricing table containing that model`,
+      );
+    }
+    const budgetReminders = budgetAuthority ? this.budgetReminderTracker() : undefined;
+
     const runController = new AbortController();
     this.activeRunSignal = runController.signal;
     let deadlineExceeded = false;
@@ -1271,6 +1434,8 @@ export class Agent {
     let reason: TurnStopReason = 'empty_response';
     /** Set only by a dollar ceiling stop, and carried into the terminal row. */
     let spendStop: SpendStop | undefined;
+    /** Set only by a session-tree ceiling stop, and carried into the terminal row. */
+    let treeStop: TreeBudgetStop | undefined;
     let failed = false;
     let failedError: unknown;
     let runBodyCompleted = false;
@@ -1564,6 +1729,18 @@ export class Agent {
                 yield { type: 'budget_exceeded', reason: 'spend', spend: spendStop };
                 break;
               }
+              if (error instanceof TreeBudgetExceededError) {
+                status = 'budget_exceeded';
+                reason = treeStopReason(error.tree.reason);
+                treeStop = error.tree;
+                await this.observeBudget(telemetryContext, reason);
+                yield {
+                  type: 'budget_exceeded',
+                  reason: reason as 'session_spend' | 'session_tokens' | 'active_time' | 'elapsed_time',
+                  tree: treeStop,
+                };
+                break;
+              }
               if (!runController.signal.aborted && error instanceof CompactionPersistenceError) {
                 status = 'incomplete';
                 reason = 'persistence';
@@ -1629,6 +1806,30 @@ export class Agent {
             break;
           }
 
+          // ADR 0026 budget reminder. A `[harness]` turn message, exactly like
+          // the flail guard's: never part of the fixed prefix, and injected
+          // before the request it is meant to influence so the model can plan
+          // the rest of the work against what the tree has left.
+          let budgetReminderInjected = false;
+          if (budgetAuthority && budgetReminders) {
+            let reminderText: string | undefined;
+            try {
+              reminderText = budgetReminders.next(budgetAuthority.snapshot());
+            } catch (error) {
+              process.stderr.write(`warning: root-budget reminder skipped: ${String(error)}\n`);
+            }
+            if (reminderText) {
+              const reminderMessage: Message = { role: 'user', content: [{ type: 'text', text: reminderText }] };
+              this.messages.push(reminderMessage);
+              if (!this.persist(reminderMessage)) {
+                status = 'incomplete';
+                reason = 'persistence';
+                break;
+              }
+              budgetReminderInjected = true;
+            }
+          }
+
           const requestEstimate = this.estimateCurrentRequestTokens();
           const outputLimits = [
             Math.max(
@@ -1666,8 +1867,10 @@ export class Agent {
             maxTokens: requestMaxTokens,
             ...(requestThinkingBudget !== undefined ? { thinkingBudget: requestThinkingBudget } : {}),
           };
+          // A tree dollar ceiling needs the same conservative reservation the
+          // per-turn ceiling does, even when only the tree is capped.
           const spendReservation =
-            budget.maxSpendUSD !== undefined
+            budget.maxSpendUSD !== undefined || treeCeilings?.maxSpendUSD !== undefined
               ? reserveRequestSpend(completionRequest, this.options.pricing!)
               : undefined;
           if (
@@ -1683,6 +1886,45 @@ export class Agent {
           }
           let done: { message: AssistantMessage; stopReason: StopReason; usage: Usage } | undefined;
           const requestId = createTelemetryId('request');
+          // ADR 0026: the tree admits or refuses before dispatch. The per-turn
+          // reservation above bounds this turn; this one bounds the whole tree,
+          // including every concurrent child, under one exclusive lock.
+          if (budgetAuthority) {
+            const treeReservationTokens =
+              conservativeInputTokenBound(completionRequest) + (completionRequest.maxTokens ?? 0);
+            let admission;
+            try {
+              admission = budgetAuthority.reserve({
+                runId: treeRunId,
+                requestId,
+                amountUSD: spendReservation?.usd ?? 0,
+                tokens: treeReservationTokens,
+              });
+            } catch (error) {
+              // An unusable ledger is a durability failure, not a budget stop:
+              // nothing was admitted, so nothing may be dispatched either.
+              process.stderr.write(`warning: root-budget reservation failed: ${String(error)}\n`);
+              status = 'incomplete';
+              reason = 'persistence';
+              break;
+            }
+            if (!admission.admitted) {
+              status = 'budget_exceeded';
+              reason = treeStopReason(admission.reason);
+              treeStop = treeStopFor(admission.snapshot, admission.reason, spendReservation?.usd ?? 0);
+              if (budget.maxSpendUSD !== undefined) {
+                spendStop = spendStopFor(turnCost, budget.maxSpendUSD, spendReservation?.usd ?? 0);
+              }
+              await this.observeBudget(telemetryContext, reason);
+              yield {
+                type: 'budget_exceeded',
+                reason: reason as 'session_spend' | 'session_tokens' | 'active_time' | 'elapsed_time',
+                ...(spendStop ? { spend: spendStop } : {}),
+                tree: treeStop,
+              };
+              break;
+            }
+          }
           const requestJournaled =
             !this._session ||
             this.journal((session) => {
@@ -1704,7 +1946,13 @@ export class Agent {
           const requestSpan = createSpanStarted(requestContext, {
             name: 'model.request',
             parentSpanId: runSpan.spanId,
-            attributes: { model: this.model, messageCount: this.messages.length },
+            attributes: {
+              model: this.model,
+              messageCount: this.messages.length,
+              // ADR 0026: a reminder is a harness-authored message in the
+              // request, so the span says which requests carried one.
+              ...(budgetReminderInjected ? { budgetReminder: true } : {}),
+            },
           });
           const requestStartedAt = Date.now();
           await this.observe(requestSpan);
@@ -1746,6 +1994,7 @@ export class Agent {
             }
             requestLifecycleTerminal = true;
             recordUnknownCost();
+            this.recordTreeActiveTime(Date.now() - requestStartedAt);
             await this.observe(
               createSpanEnded(requestContext, {
                 name: 'model.request',
@@ -1848,6 +2097,18 @@ export class Agent {
           addRequestCost(turnCost, requestCost);
           addRequestCost(this.costTotal, requestCost);
           requestCostTerminal = true;
+          // ADR 0026: a terminal usage row replaces the tree reservation with
+          // what the request actually cost. An interrupted or failed request
+          // deliberately does not reach here, so its reservation stays as
+          // exposure on every ancestor until someone reconciles it explicitly.
+          if (budgetAuthority) {
+            try {
+              budgetAuthority.reconcile(requestId, requestCost?.usd ?? 0, totalTokens(done.usage));
+            } catch (error) {
+              process.stderr.write(`warning: root-budget reconcile failed, reservation retained: ${String(error)}\n`);
+            }
+          }
+          this.recordTreeActiveTime(Date.now() - requestStartedAt);
           this.lastContextTokens = totalTokens(done.usage);
           if (!responseJournaled) {
             status = 'incomplete';
@@ -2332,6 +2593,9 @@ export class Agent {
           }
           const execution = await executionPromise;
           const result = boundToolOutput(execution.result, budget.maxToolOutputBytes);
+          // ADR 0026 active time is model plus tool wall time attributable to
+          // this tree; parallel children sum into the same ceiling.
+          this.recordTreeActiveTime(Date.now() - toolStartedAt);
           if (this._session) {
             this.journal((session) => {
               if (execution.outcomeUnknown) {
@@ -2533,6 +2797,7 @@ export class Agent {
       status,
       reason,
       ...(spendStop ? { spend: spendStop } : {}),
+      ...(treeStop ? { tree: treeStop } : {}),
     };
   }
 
@@ -3055,8 +3320,21 @@ export class Agent {
         `maxSpendUSD requires an exact price for model ${this.model}; provide a pricing table containing that model`,
       );
     }
+    // A compaction summary is a billed provider request like any other, so both
+    // ceilings apply to it: this turn's (0020) and the session tree's (0026).
+    const budgetAuthority = this.options.budgetAuthority;
+    const treeSpendCapped = budgetAuthority !== undefined && budgetAuthority.ceilings.maxSpendUSD !== undefined;
+    // A manual /compact reaches here without the turn's own preflight, so the
+    // fail-closed pairing is restated rather than assumed.
+    if (treeSpendCapped && !this.options.pricing) {
+      throw new Error(
+        `a session-tree spend ceiling requires an exact price for model ${this.model}; provide a pricing table containing that model`,
+      );
+    }
     const spendReservation =
-      budget?.maxSpendUSD !== undefined ? reserveRequestSpend(summaryRequest, this.options.pricing!) : undefined;
+      budget?.maxSpendUSD !== undefined || treeSpendCapped
+        ? reserveRequestSpend(summaryRequest, this.options.pricing!)
+        : undefined;
     const activeCost = turnCost ?? emptyCostSummary();
     if (
       budget?.maxSpendUSD !== undefined &&
@@ -3067,6 +3345,19 @@ export class Agent {
       );
     }
     const requestId = createTelemetryId('request');
+    if (budgetAuthority) {
+      const admission = budgetAuthority.reserve({
+        runId: this.treeRunId,
+        requestId,
+        amountUSD: spendReservation?.usd ?? 0,
+        tokens: conservativeInputTokenBound(summaryRequest) + (summaryRequest.maxTokens ?? 0),
+      });
+      if (!admission.admitted) {
+        throw new TreeBudgetExceededError(
+          treeStopFor(admission.snapshot, admission.reason, spendReservation?.usd ?? 0),
+        );
+      }
+    }
     const requestJournaled =
       !this._session ||
       this.journal((session) => {
@@ -3173,6 +3464,14 @@ export class Agent {
     addRequestCost(this.costTotal, requestCost);
     addRequestCost(activeCost, requestCost);
     requestCostTerminal = true;
+    if (budgetAuthority) {
+      try {
+        budgetAuthority.reconcile(requestId, requestCost?.usd ?? 0, totalTokens(done.usage));
+      } catch (error) {
+        process.stderr.write(`warning: root-budget reconcile failed, reservation retained: ${String(error)}\n`);
+      }
+    }
+    this.recordTreeActiveTime(Date.now() - requestStartedAt);
     const actualSpendExceeded =
       budget?.maxSpendUSD !== undefined && spendExposure(activeCost) > budget.maxSpendUSD;
     await this.observe(
