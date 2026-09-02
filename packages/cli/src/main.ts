@@ -43,11 +43,13 @@ import {
   releaseSessionLock,
   resolveBudgetAuthority,
   resolveModelPrice,
+  selectSandboxExecutor,
   sessionsDirFor,
   tryLockSession,
   validateToolSet,
   type AgentEvent,
   type ApprovalDecisionInput,
+  type SandboxExecutor,
   type FlailKind,
   type Observer,
   type PendingApproval,
@@ -104,6 +106,8 @@ interface Setup {
   allowHostBash: boolean;
   /** opt-out from the protected-path deny list; CLI flag only (ADR 0006) */
   allowProtectedPaths: boolean;
+  /** the acquired operating-system sandbox, when one passed its self-test (ADR 0018) */
+  sandboxExecutor?: SandboxExecutor;
   /** gated tool names; only CLI flags and user config can reach this */
   approval?: readonly string[] | '*';
   /** argument-prefix rules, compiled and self-tested before the agent exists (ADR 0011 addendum) */
@@ -246,7 +250,13 @@ function buildAgent(setup: Omit<Setup, 'agent'>, cwd: string, model: string): Ag
     session: setup.session,
     toolPolicy: {
       workspaceRoot: cwd,
-      bash: { allowHostExecution: setup.allowHostBash },
+      bash: {
+        allowHostExecution: setup.allowHostBash,
+        // A shell inside the executor is a different capability from a shell on
+        // the host: the executor gate never widens the host one.
+        ...(setup.sandboxExecutor ? { sandboxedExecution: true } : {}),
+      },
+      ...(setup.sandboxExecutor ? { executor: setup.sandboxExecutor } : {}),
       ...(setup.allowProtectedPaths ? { allowProtectedPaths: true } : {}),
       ...(setup.approval !== undefined ? { approval: setup.approval } : {}),
       ...(setup.approvalRules.length > 0 ? { approvalRules: setup.approvalRules } : {}),
@@ -309,9 +319,22 @@ async function setup(args: CliArgs): Promise<Setup> {
       ),
     );
   }
-  const builtins = defaultTools().filter((tool) => tool.name !== 'bash' || args.allowHostBash);
-  if (args.allowHostBash) {
+  // ADR 0018: one line on stderr says which boundary this run has, before any
+  // tool can run. `require` refuses to start rather than quietly degrading.
+  const sandboxSelection = await selectSandboxExecutor({ workspaceRoot: cwd, mode: args.sandbox });
+  if (args.sandbox === 'require' && !sandboxSelection.executor) {
+    throw new Error(`--sandbox require: ${sandboxSelection.summary.replace(/^sandbox: /u, '')}`);
+  }
+  process.stderr.write(dim(`${sandboxSelection.summary}\n`));
+  const sandboxExecutor = sandboxSelection.executor;
+  // Bash becomes available either way it can be contained: inside the executor,
+  // or on the host behind its own explicit flag.
+  const bashAvailable = args.allowHostBash || sandboxExecutor !== undefined;
+  const builtins = defaultTools().filter((tool) => tool.name !== 'bash' || bashAvailable);
+  if (args.allowHostBash && sandboxExecutor === undefined) {
     process.stderr.write(dim('warning: host bash enabled without OS isolation; commands run as your user and can inspect this process and its credentials; use only where you would run the model as yourself\n'));
+  } else if (args.allowHostBash) {
+    process.stderr.write(dim('note: --allow-host-bash is superseded this run; the sandbox executor is active, so bash runs inside it rather than on the host\n'));
   }
   if (args.allowProtectedPaths) {
     process.stderr.write(dim('warning: protected-path deny list disabled; write and edit can now change .git/, .pi/, .agent/, .claude/, AGENTS.md, .mcp.json, and shell rc files in this workspace, which is how a repository makes the agent persist\n'));
@@ -323,7 +346,7 @@ async function setup(args: CliArgs): Promise<Setup> {
     cwd,
   });
   const tools = validateToolSet([...builtins, ...loadedExtensions.tools], { source: 'configured tools' });
-  const systemPrompt = buildSystemPrompt({ cwd, agentsMd, skills, bashAvailable: args.allowHostBash });
+  const systemPrompt = buildSystemPrompt({ cwd, agentsMd, skills, bashAvailable });
   // ADR 0014: state the cache-eligibility measurement once per process, on
   // stderr so it never enters the typed stdout stream. The prefix measured here
   // is this run's real one, project instructions and extensions included.
@@ -429,6 +452,7 @@ async function setup(args: CliArgs): Promise<Setup> {
           ...(args.budgetReminderEvery !== undefined ? { everyRequests: args.budgetReminderEvery } : {}),
         }
       : false,
+    ...(sandboxExecutor ? { sandboxExecutor } : {}),
     // Provenance is restricted to the flag and the user config file. Project
     // content loaded by --trust-project and extensions never reach this field.
     ...(approval !== undefined ? { approval } : {}),

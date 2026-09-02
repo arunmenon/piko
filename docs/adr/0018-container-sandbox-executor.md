@@ -110,3 +110,125 @@ owner records the decision.
 - Host bash gets a fresh PID namespace on Linux wherever bwrap is present, which
   closes the read of the parent process environment that 0016 records as
   residual risk.
+
+## Addendum (2026-09-02, first executor: bubblewrap and Seatbelt providers, tool worker)
+
+What shipped, in `packages/core/src/executor/`.
+
+The seam is the one this record names: `SandboxProvider` with
+`acquire(spec) -> handle`, `exec(handle, request) -> result`, and
+`release(handle)`. `bindSandboxExecutor` pairs an acquired handle with the
+provider that made it; that pair is what `ToolExecutionPolicy.executor` carries,
+so the agent loop never sees a provider, a spec, a mount, or a profile.
+
+The thing inside the sandbox is a tool worker: piko's own built code
+(`packages/core/dist/executor/worker.js`, produced by the ordinary `tsc -b`)
+started as a child process with cwd at the workspace root, speaking
+newline-delimited JSON over stdio. The worker writes a `ready` line carrying a
+protocol version the parent refuses to guess about, then answers
+`{id, tool, arguments, policy, cwd}` with `{id, result, cwd, observations}`. It
+hosts the five existing tool implementations in-process, so read, write, edit,
+map, and bash all execute inside the boundary with no second implementation to
+keep in step. `cwd` travels both ways because bash's `cd` persistence is state
+the parent stays authoritative over. `observations` exists because telemetry is
+control plane: the worker records what the sanitized-environment policy withheld
+and the parent replays it through its own observer.
+
+The worker's environment is the sanitized allowlist from `tools/bash.ts`, built
+by the parent, with `TMPDIR`/`TEMP`/`TMP` redirected into a private temporary
+directory the sandbox owns. It therefore never receives provider credentials.
+The session store is not made visible: `~/.pi` is not bound on Linux and not in
+the read allowlist on macOS, and `selectSandboxExecutor` refuses to offer any
+sandbox at all when this run's session directory would land inside the workspace
+(a home directory opened as the workspace), rather than shipping a mount that
+contains the journal.
+
+Where the effect happens moved; nothing else did. `Agent.dispatchToolExecution`
+is the single branch, taken after argument validation, the tool-call budget,
+approval, the abort check, and the workspace digest have all run in the parent.
+Only the five built-in implementations are routed, matched by object identity
+rather than by name, so an extension tool called `read` stays trusted controller
+code in the parent process (0012). With no executor the in-process path is
+unchanged, byte for byte.
+
+Providers. Linux is bubblewrap: `--unshare-all --die-with-parent --new-session`,
+`--proc /proc`, `--dev /dev`, `--tmpfs /tmp`, read-only binds of the system
+paths a dynamically linked node needs plus the resolved node install prefix and
+piko's own package root, a read-write bind of the workspace at its own path and
+of the private temporary directory, and `--chdir <workspace>`. Networking is
+absent by construction because `--unshare-all` includes the network namespace,
+so there is no egress allowlist to get wrong. macOS is Seatbelt through
+`sandbox-exec -p <profile>` with a generated profile: `(deny default)`,
+`(deny network*)`, `process-fork` and `process-exec` limited to the node bin
+directory, `/bin/bash`, and the standard tool directories, `file-read*` over the
+system trees plus the node prefix, piko's package root, the workspace, and the
+private temporary directory, and `file-write*` over the workspace, the private
+temporary directory, and the usual writable character devices.
+
+Two Seatbelt details were determined empirically on macOS 26.3 (build 25D125,
+node v23.8.0) and are load-bearing rather than decorative. First, node aborts in
+`node::InitializeOncePerProcessInternal` unless the root directory node itself is
+readable, so the profile carries `(allow file-read* (literal "/"))`, which grants
+the root entry and nothing below it. Second, node canonicalises its entry script
+with `realpath`, which lstats every path component, so each ancestor of each
+allowed tree needs `file-read-metadata` even though its contents stay
+unreadable; the profile generator emits those ancestors. A blanket
+`(allow sysctl-read)` was tightened to a named list by removing it until node
+aborted in `node::os::GetOSInformation` and re-adding names until it started
+again; `NODE_STARTUP_SYSCTL_NAMES` is that list, and everything else is denied.
+`(allow mach-lookup)` turned out not to be needed at all and is not granted.
+
+Fail closed, and proved rather than assumed. A provider is usable only if its
+binary exists and an acquire-time self-test passes inside the sandbox: reading a
+canary file the parent just created outside the workspace must fail, connecting
+to a loopback listener the parent really opened must fail, and a marker variable
+the parent really holds must be absent. Each check is written so that any
+failure to perform the forbidden action counts as a pass and only an
+unambiguous success counts as a failure. A provider that acquires but fails a
+check is released and reported, never used. If no provider is usable, behaviour
+is exactly today's: bash disabled unless `--allow-host-bash`, file tools in
+process. There is no silent host fallback anywhere on the path.
+
+CLI. `--sandbox auto|off|require`, default `auto`. `require` exits 1 with a
+one-line reason when no provider passes; `off` is today's behaviour. One stderr
+line at startup names the provider in use or says why there is none. Bash is
+available when either gate allows it: `bash.allowHostExecution` for the host
+shell as before, and a new `bash.sandboxedExecution` for the shell inside the
+executor. They are separate fields because they enable different shells, and the
+sandboxed one is not an opt-in to the host; when both are set the executor wins
+and the CLI says so instead of printing the host-bash warning.
+
+Divergence from the R0-2 amendment, recorded rather than quietly taken. That
+amendment says fail-closed means the run refuses to start when no provider is
+found. This first executor refuses only under `--sandbox require`; under the
+default `auto` a host with no provider gets exactly the contained behaviour it
+has today. Refusing to start would have made piko unusable on every host without
+bwrap or Seatbelt the day this landed, including Windows and containers without
+user namespaces, so the flag carries the choice and the stderr line makes the
+weaker state legible. `auto` is the default and `require` is one flag away.
+
+Deferred, and named as deferred. Seccomp is not attempted: bwrap takes a
+compiled BPF program on a file descriptor, and shipping one would mean either a
+native dependency, which the zero-dependency property forbids, or a
+hand-assembled filter nothing in this repository can test. There is no Docker
+provider and no Windows provider. The egress proxy that 0016 wants as the
+credential injection point is not built, because v1 networking is none and there
+is nothing yet to inject through. Snapshot and rewind stay deferred as the
+original decision says. Contained delegation for headless children (0004) is not
+wired: this executor is per-run, not per-child.
+
+Limitations found on this macOS host, stated plainly. The Seatbelt profile
+grants read over `/usr`, `/System`, `/Library`, `/private/etc`, and `/dev`
+because node and bash cannot start without them, so system configuration such as
+`/etc/hosts` remains readable inside the sandbox. What is not readable is the
+user's home directory, the session store, the piko configuration, and anything
+else outside the workspace, and nothing outside the workspace and the private
+temporary directory is writable. Seatbelt is also a deprecated Apple interface
+with no supported replacement for this use, which is a real dependency risk
+rather than a hypothetical one. The Linux provider is written but was not
+executed on this host: its tests skip with a stated reason where `bwrap` is
+absent, and CI is where they run.
+
+ADR 0022's eight containment attacks are deliberately not routed through the
+executor in this change; they remain red against the in-process path, and the
+follow-on that runs them through the worker is what closes 0022's addendum.

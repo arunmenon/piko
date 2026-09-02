@@ -16,3 +16,16 @@ export { DEPTH_ENVIRONMENT_NAME, readProcessDepth } from './bash.js';
 export function defaultTools(): Tool[] {
   return [readTool, writeTool, editTool, bashTool, mapTool];
 }
+
+/** Identity, not name: the five implementations the sandbox worker also hosts. */
+const BUILT_IN_TOOLS: ReadonlySet<Tool> = new Set<Tool>([readTool, writeTool, editTool, bashTool, mapTool]);
+
+/**
+ * Whether this is one of piko's own tool implementations. The sandbox executor
+ * routes exactly these, because the worker hosts exactly these; an extension
+ * tool that happened to be named `read` is trusted controller code (ADR 0012)
+ * and keeps running in the parent process.
+ */
+export function isBuiltInTool(tool: Tool): boolean {
+  return BUILT_IN_TOOLS.has(tool);
+}
