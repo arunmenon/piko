@@ -185,42 +185,56 @@ function runToSpendCeiling(jsonStream = true): { status: number | null; rows: Js
 interface JsonRow {
   v: number;
   sessionId?: string;
-  capabilities?: { journalSchemaVersion: number; tools: string[]; exitCodes: number[]; budgetScope: string };
-  event: {
+  capabilities?: {
+    journalSchemaVersion: number;
+    tools?: string[];
+    exitCodes: number[];
+    budgetScope: string;
+    partial?: boolean;
+  };
+  event?: {
     type: string;
     reason?: string;
+    error?: string;
+    code?: string;
     spend?: { reservationUSD: number; actualUSD: number; reservedUSD: number; ceilingUSD: number };
   };
 }
 
-test('the first headless JSON row advertises the automation contract', () => {
+test('the first headless JSON row is the automation contract itself', () => {
   const { rows } = runToSpendCeiling();
   assert.ok(rows.length > 0);
-  const capabilities = rows[0]!.capabilities;
+  const contractRow = rows[0]!;
+  // 0010 addendum as corrected by R2-5: a dedicated row, not a field riding an
+  // event, so a run that fails before the first event still advertises itself.
+  assert.equal(contractRow.event, undefined, 'the contract row carries no event');
+  const capabilities = contractRow.capabilities;
   assert.ok(capabilities, 'the first row carries capabilities');
   assert.equal(capabilities.journalSchemaVersion, JOURNAL_SCHEMA_VERSION);
   assert.deepEqual(capabilities.exitCodes, [0, 1, 2, 3, 4, 5, 130]);
   assert.equal(capabilities.budgetScope, 'turn');
-  assert.ok(capabilities.tools.includes('write'));
-  assert.ok(capabilities.tools.includes('read'));
-  // additive and first-row only: no later row gains the field
+  assert.equal(capabilities.partial, undefined, 'the post-setup row is the full form');
+  assert.ok(capabilities.tools?.includes('write'));
+  assert.ok(capabilities.tools?.includes('read'));
+  // additive and first-row only: no later event row gains the field
   assert.deepEqual(rows.slice(1).map((row) => row.capabilities), rows.slice(1).map(() => undefined));
+  assert.ok(rows.slice(1).every((row) => row.event !== undefined), 'every later row is an event row');
 });
 
 test('a headless spend stop carries its four numbers on the stop row and the terminal row', () => {
   const { status, rows, stderr } = runToSpendCeiling();
   assert.equal(status, 2);
-  const stop = rows.find((row) => row.event.type === 'budget_exceeded');
-  assert.equal(stop?.event.reason, 'spend');
-  const spend = stop?.event.spend;
+  const stop = rows.find((row) => row.event?.type === 'budget_exceeded');
+  assert.equal(stop?.event?.reason, 'spend');
+  const spend = stop?.event?.spend;
   assert.ok(spend);
   assert.equal(spend.ceilingUSD, 0.000001);
   assert.equal(spend.actualUSD, 0);
   assert.equal(spend.reservedUSD, 0);
   assert.ok(spend.reservationUSD > spend.ceilingUSD);
   const terminal = rows.at(-1)!;
-  assert.equal(terminal.event.type, 'turn_done');
-  assert.deepEqual(terminal.event.spend, spend);
+  assert.equal(terminal.event?.type, 'turn_done');
+  assert.deepEqual(terminal.event?.spend, spend);
   const usageRow = stderr
     .split('\n')
     .filter((line) => line.startsWith('{'))
@@ -233,10 +247,13 @@ test('a headless spend stop carries its four numbers on the stop row and the ter
 test('a human headless spend stop explains itself on stderr in one line', () => {
   const { status, stderr } = runToSpendCeiling(false);
   assert.equal(status, 2);
+  // Seven decimals, not six: a $0.000001 ceiling needs one more place to show
+  // two significant digits (R2-11 adaptive precision).
   assert.match(
     stderr,
-    /spend stop: reserved \$[\d.]+ for the next request, spent \$0\.000000, ceiling \$0\.000001, effective ceiling \$0\.000001 \(ceiling less \$0\.000000 outstanding reservations\)/,
+    /spend stop: reserved \$[\d.]+ for the next request, spent \$0\.0000000, ceiling \$0\.0000010, effective ceiling \$0\.0000010 \(ceiling less \$0\.0000000 outstanding reservations\)/,
   );
+  assert.doesNotMatch(stderr, /spend stop:.*e[+-]\d/i, 'no scientific notation on the human surface');
   // 0009 wording: the stop is scoped to a turn, not to a whole run.
   assert.match(stderr, /turn budget_exceeded: spend/);
 });
@@ -289,6 +306,102 @@ test('an explicitly requested locked session fails instead of silently starting 
   } finally {
     session.close();
   }
+});
+
+/**
+ * R2-5: the contract used to ride the first Agent.run() event, so every run
+ * that failed before that event advertised nothing. These five paths are the
+ * ones the review executed. Each asserts the exit code is what it was, plus
+ * whichever capabilities form the corrected 0010 addendum promises.
+ */
+function headlessJsonRows(
+  argv: readonly string[],
+  workspace: string,
+  environmentOverrides: NodeJS.ProcessEnv = {},
+): { status: number | null; rows: JsonRow[]; stderr: string } {
+  const cli = resolve(import.meta.dirname, '..', 'dist', 'main.js');
+  const environment: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: workspace,
+    OPENAI_API_KEY: 'test-key',
+    // A closed port: the transport fails before the first agent event.
+    OPENAI_BASE_URL: 'http://127.0.0.1:1/v1',
+    ...environmentOverrides,
+  };
+  delete environment['ANTHROPIC_API_KEY'];
+  delete environment['PI_DEPTH'];
+  const result = spawnSync(process.execPath, [cli, ...argv], { cwd: workspace, encoding: 'utf8', env: environment });
+  return {
+    status: result.status,
+    rows: result.stdout
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as JsonRow),
+    stderr: result.stderr,
+  };
+}
+
+function assertFullCapabilities(row: JsonRow | undefined): void {
+  assert.ok(row, 'a contract row was emitted');
+  assert.equal(row.event, undefined, 'the contract row carries no event');
+  assert.equal(row.capabilities?.partial, undefined, 'the post-setup form is complete');
+  assert.equal(row.capabilities?.journalSchemaVersion, JOURNAL_SCHEMA_VERSION);
+  assert.deepEqual(row.capabilities?.exitCodes, [0, 1, 2, 3, 4, 5, 130]);
+  assert.equal(row.capabilities?.budgetScope, 'turn');
+  assert.ok(row.capabilities?.tools?.includes('read'), JSON.stringify(row));
+}
+
+function assertPartialCapabilities(row: JsonRow | undefined): void {
+  assert.ok(row, 'a run_error row was emitted');
+  assert.equal(row.event?.type, 'run_error');
+  assert.equal(row.capabilities?.partial, true, JSON.stringify(row));
+  assert.equal(row.capabilities?.journalSchemaVersion, JOURNAL_SCHEMA_VERSION);
+  assert.deepEqual(row.capabilities?.exitCodes, [0, 1, 2, 3, 4, 5, 130]);
+  assert.equal(row.capabilities?.budgetScope, 'turn');
+  assert.equal(row.capabilities?.tools, undefined, 'the tool set is omitted, never guessed');
+}
+
+test('a provider transport failure before the first event still carries the contract', () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'pi-cli-caps-transport-'));
+  const { status, rows } = headlessJsonRows(
+    ['--json', '--profile', 'openai', '--model', 'fake-model', '--offline-pricing', 'hello'],
+    workspace,
+  );
+  assert.equal(status, 1, JSON.stringify(rows));
+  assertFullCapabilities(rows[0]);
+  assertPartialCapabilities(rows.find((row) => row.event?.type === 'run_error'));
+});
+
+test('an extension failure before setup completes carries the partial contract', () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'pi-cli-caps-ext-'));
+  const { status, rows } = headlessJsonRows(
+    ['--json', '--profile', 'openai', '--model', 'fake-model', '--offline-pricing', '--ext', 'absent.mjs', 'hello'],
+    workspace,
+  );
+  assert.equal(status, 1, JSON.stringify(rows));
+  assert.equal(rows.length, 1, 'setup never completed, so there is no full contract row');
+  assertPartialCapabilities(rows[0]);
+  assert.match(String(rows[0]?.event?.error), /absent\.mjs/);
+});
+
+test('a suspended session resumed without a decision carries the contract', () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'pi-cli-caps-suspended-'));
+  const session = Session.create(workspace, 'fake-model', workspace);
+  const call = { type: 'toolCall' as const, id: 'call_1', name: 'write', arguments: { path: 'gated.txt', content: 'ok' } };
+  session.append({ t: 'msg', message: { role: 'assistant', content: [call] } });
+  session.requestToolApproval(session.planTool(call));
+  session.setRunStatus('suspended', 'awaiting_approval');
+  session.close(); // the spawned pi must be able to take the lock (0023)
+
+  const { status, rows } = headlessJsonRows(
+    ['--json', '--profile', 'openai', '--model', 'fake-model', '--offline-pricing', '--session', session.file, 'anything'],
+    workspace,
+  );
+  assert.equal(status, 1, JSON.stringify(rows));
+  assertFullCapabilities(rows[0]);
+  const failure = rows.find((row) => row.event?.type === 'run_error');
+  assertPartialCapabilities(failure);
+  assert.match(String(failure?.event?.error), /suspended awaiting tool approval/);
 });
 
 /** A REPL that never contacts a provider: only slash commands are typed. */

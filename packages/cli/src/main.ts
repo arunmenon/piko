@@ -59,7 +59,7 @@ import {
   resolveDecisionFlags,
 } from './approvals.js';
 import { HELP, parseArgs, type CliArgs } from './args.js';
-import { headlessCapabilities } from './capabilities.js';
+import { headlessCapabilities, partialHeadlessCapabilities } from './capabilities.js';
 import { loadConfiguredExtensions } from './extensions.js';
 import { interpolate, loadTemplates, type PromptTemplate } from './templates.js';
 import {
@@ -69,6 +69,7 @@ import {
   dim,
   formatCost,
   formatSpendStop,
+  formatTurnIncomplete,
   formatUsage,
   oneLine,
   red,
@@ -442,6 +443,19 @@ async function headless(args: CliArgs): Promise<number> {
     return 1;
   }
   const { agent, session, tools } = await setup(args);
+  // ADR 0010 addendum: the contract is its own first row, written as soon as
+  // setup succeeds and before the turn is iterated. Attaching it to the first
+  // agent event lost it on every run that failed before that event arrived.
+  if (args.json) {
+    process.stdout.write(
+      `${JSON.stringify({
+        v: 1,
+        sessionId: (agent.session ?? session).id,
+        ...(args.parentRunId ? { parentRunId: args.parentRunId } : {}),
+        capabilities: headlessCapabilities(tools),
+      })}\n`,
+    );
+  }
   // A session with undecided approvals cannot accept new input: its transcript
   // still ends at the assistant tool_use whose results are pending.
   if (agent.suspended && !decisionFlags) {
@@ -478,10 +492,6 @@ async function headless(args: CliArgs): Promise<number> {
         controller.signal,
       )
     : agent.run(prompt, controller.signal);
-  // The first --json row advertises the contract this process implements
-  // (0010 addendum): journal generation, tool names, exit codes, budget scope.
-  // Later rows are unchanged, so existing consumers keep parsing them as before.
-  let firstJsonRow = true;
   try {
     for await (const event of turn) {
       if (args.json) {
@@ -489,12 +499,10 @@ async function headless(args: CliArgs): Promise<number> {
           `${JSON.stringify({
             v: 1,
             sessionId: (agent.session ?? session).id,
-            ...(firstJsonRow ? { capabilities: headlessCapabilities(tools) } : {}),
             ...(args.parentRunId ? { parentRunId: args.parentRunId } : {}),
             event,
           })}\n`,
         );
-        firstJsonRow = false;
       }
       if (event.type === 'response_done') {
         const text = event.message.content
@@ -538,10 +546,7 @@ async function headless(args: CliArgs): Promise<number> {
   } else if (terminal.status === 'completed') {
     exitCode = 0;
   } else {
-    // "turn", not "run": every ceiling here is scoped to one user turn (ADR 0009 scope note).
-    process.stderr.write(
-      `turn ${terminal.status}: ${terminal.reason} after ${terminal.iterations} model request(s) and ${terminal.toolCalls} tool call(s)\n`,
-    );
+    process.stderr.write(`${formatTurnIncomplete(terminal)}\n`);
     if (terminal.status === 'suspended') reportPendingApprovals(agent);
     exitCode =
       terminal.status === 'canceled'
@@ -1316,6 +1321,10 @@ async function main(): Promise<void> {
     // only a run is refused, and it is refused before any provider setup.
     const refusal = depthRefusal(args.maxDepth);
     if (refusal !== undefined) {
+      // 0010 addendum: in --json the refusal is a typed run_error row on
+      // stdout, not a silent stream with one human line on stderr. The human
+      // surface keeps the single stderr line and both exit 1.
+      if (args.json) throw new JsonRunFailure(refusal);
       process.stderr.write(`${red(oneLine(refusal, 512))}\n`);
       process.exitCode = 1;
       return;
@@ -1340,6 +1349,10 @@ async function main(): Promise<void> {
           v: 1,
           ...(failure.sessionId ? { sessionId: failure.sessionId } : {}),
           ...(parentRunId ? { parentRunId } : {}),
+          // A failure can land before the tool set exists, so every run_error
+          // row carries the static partial contract (0010 addendum). A run that
+          // got past setup already emitted the full capabilities row above it.
+          capabilities: partialHeadlessCapabilities(),
           event: {
             type: 'run_error',
             error: text,

@@ -216,6 +216,12 @@ export type LifecycleEntry =
       sha256: string;
       toolNames: string[];
       pinned: boolean;
+      /**
+       * True when the digest covers the entry module's own bytes only, read
+       * around the import, and not its transitive imports. Optional so older
+       * rows stay valid; the loader always writes it (ADR 0012 addendum).
+       */
+      entryOnly?: boolean;
     })
   | (LifecycleBase & {
       t: 'journal_repaired';
@@ -615,6 +621,7 @@ export function validateSessionEntry(value: unknown): asserts value is SessionEn
       if (!Array.isArray(toolNames)) throw new TypeError(`${type}.toolNames must be an array`);
       toolNames.forEach((name, index) => requireString(name, `${type}.toolNames[${index}]`));
       requireBoolean(entry['pinned'], `${type}.pinned`);
+      optionalBoolean(entry['entryOnly'], `${type}.entryOnly`);
       return;
     }
     case 'journal_repaired':

@@ -137,7 +137,28 @@ test('a matching sha256 pin loads the extension and records it as pinned', async
     ['pinned_tool'],
   );
   assert.deepEqual(loaded.extensions, [
-    { path: 'pinned.mjs', sha256: digest, toolNames: ['pinned_tool'], pinned: true },
+    // entryOnly: the digest covers this module's bytes, not its imports (0012).
+    { path: 'pinned.mjs', sha256: digest, toolNames: ['pinned_tool'], pinned: true, entryOnly: true },
+  ]);
+});
+
+test('a transitive import is outside what the pin covers', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'pi-extensions-transitive-'));
+  extensionFile(directory, 'helper.mjs', 'export const label = "original";\n');
+  const entryPath = extensionFile(
+    directory,
+    'entry.mjs',
+    `import { label } from './helper.mjs';\nexport default [${validToolSource('transitive_tool')}];\nexport const usedLabel = label;\n`,
+  );
+  const entryDigest = digestOf(entryPath);
+
+  // The imported helper changes; the entry module's bytes do not, so the pin
+  // still matches and the load still succeeds. This is the documented scope
+  // limit, asserted so it cannot regress into a false promise.
+  extensionFile(directory, 'helper.mjs', 'export const label = "replaced";\n');
+  const loaded = await loadExtensions([`entry.mjs@sha256:${entryDigest}`], directory);
+  assert.deepEqual(loaded.extensions, [
+    { path: 'entry.mjs', sha256: entryDigest, toolNames: ['transitive_tool'], pinned: true, entryOnly: true },
   ]);
 });
 
