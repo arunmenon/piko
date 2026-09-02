@@ -51,6 +51,23 @@ jobs:
               }
             }
           '
+      - name: Seatbelt exec diagnostics (macOS only, informational)
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        run: |
+          set +e
+          echo "node: $(node -e 'console.log(process.execPath)') -> $(node -e 'console.log(require("fs").realpathSync(process.execPath))')"
+          echo "bash: $(command -v bash) -> $(node -e 'console.log(require("fs").realpathSync(process.argv[1]))' "$(command -v bash)")"
+          sw_vers
+          for profile in '(version 1)(allow default)' \
+            '(version 1)(deny default)(allow process-exec)(allow process-fork)(allow file-read*)(allow sysctl-read)(allow mach-lookup)' \
+            '(version 1)(deny default)(allow process-exec)(allow process-fork)(allow file-read*)(allow sysctl-read)' \
+            '(version 1)(deny default)(allow process-exec* (literal "/bin/bash"))(allow process-fork)(allow file-read*)(allow sysctl-read)'; do
+            echo "--- profile: $profile"
+            sandbox-exec -p "$profile" /bin/bash -c 'echo bash-ok' 2>&1 | head -3
+            sandbox-exec -p "$profile" node -e 'require("child_process").spawnSync("/bin/bash",["-c","echo node-spawn-ok"],{stdio:"inherit"})' 2>&1 | head -3
+          done
+          log show --last 3m --predicate 'process == "sandboxd" OR subsystem == "com.apple.sandbox.reporting"' 2>/dev/null | rg -i 'deny' | head -20
       - run: npm test
       - run: npm run check-budget
       - name: Benchmark manifest matches results.json
