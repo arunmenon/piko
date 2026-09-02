@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
-import { MAX_USER_INPUT_BYTES, Session, tryLockSession } from '@pi/core';
+import { JOURNAL_SCHEMA_VERSION, MAX_USER_INPUT_BYTES, Session, tryLockSession } from '@pi/core';
 import { parseArgs } from '../src/args.js';
 import { interpolate } from '../src/templates.js';
 
@@ -116,6 +116,114 @@ test('a CLI spend ceiling fails closed before session/provider setup when the mo
   const row = JSON.parse(result.stdout.trim()) as { event: { type: string; error: string } };
   assert.equal(row.event.type, 'run_error');
   assert.match(row.event.error, /requires an exact price/);
+});
+
+/**
+ * Drives a real headless run to a dollar ceiling stop. The reservation is
+ * refused before dispatch, so no provider is contacted and the assertions cover
+ * the two 0010/0020 row shapes: the capabilities field on the first row and the
+ * four spend numbers on the terminal row.
+ */
+function runToSpendCeiling(jsonStream = true): { status: number | null; rows: JsonRow[]; stderr: string } {
+  const cli = resolve(import.meta.dirname, '..', 'dist', 'main.js');
+  const workspace = mkdtempSync(join(tmpdir(), 'pi-cli-spend-stop-'));
+  const pricingPath = join(workspace, 'prices.json');
+  writeFileSync(
+    pricingPath,
+    JSON.stringify({
+      models: { 'fake-model': { inputUSDPerToken: 0.000001, outputUSDPerToken: 0.000002 } },
+      effectiveAt: '2026-08-24T00:00:00.000Z',
+    }),
+    'utf8',
+  );
+  const result = spawnSync(
+    process.execPath,
+    [
+      cli,
+      ...(jsonStream ? ['--json'] : ['--print']),
+      '--usage',
+      '--profile',
+      'openai',
+      '--model',
+      'fake-model',
+      '--pricing',
+      pricingPath,
+      '--max-spend-usd',
+      '0.000001',
+      'hello',
+    ],
+    {
+      cwd: workspace,
+      encoding: 'utf8',
+      env: { ...process.env, HOME: workspace, OPENAI_API_KEY: 'test-key', OPENAI_BASE_URL: 'http://127.0.0.1:1/v1' },
+    },
+  );
+  const rows = jsonStream
+    ? result.stdout
+        .split('\n')
+        .filter((line) => line.trim().length > 0)
+        .map((line) => JSON.parse(line) as JsonRow)
+    : [];
+  return { status: result.status, rows, stderr: result.stderr };
+}
+
+interface JsonRow {
+  v: number;
+  sessionId?: string;
+  capabilities?: { journalSchemaVersion: number; tools: string[]; exitCodes: number[]; budgetScope: string };
+  event: {
+    type: string;
+    reason?: string;
+    spend?: { reservationUSD: number; actualUSD: number; reservedUSD: number; ceilingUSD: number };
+  };
+}
+
+test('the first headless JSON row advertises the automation contract', () => {
+  const { rows } = runToSpendCeiling();
+  assert.ok(rows.length > 0);
+  const capabilities = rows[0]!.capabilities;
+  assert.ok(capabilities, 'the first row carries capabilities');
+  assert.equal(capabilities.journalSchemaVersion, JOURNAL_SCHEMA_VERSION);
+  assert.deepEqual(capabilities.exitCodes, [0, 1, 2, 3, 4, 5, 130]);
+  assert.equal(capabilities.budgetScope, 'turn');
+  assert.ok(capabilities.tools.includes('write'));
+  assert.ok(capabilities.tools.includes('read'));
+  // additive and first-row only: no later row gains the field
+  assert.deepEqual(rows.slice(1).map((row) => row.capabilities), rows.slice(1).map(() => undefined));
+});
+
+test('a headless spend stop carries its four numbers on the stop row and the terminal row', () => {
+  const { status, rows, stderr } = runToSpendCeiling();
+  assert.equal(status, 2);
+  const stop = rows.find((row) => row.event.type === 'budget_exceeded');
+  assert.equal(stop?.event.reason, 'spend');
+  const spend = stop?.event.spend;
+  assert.ok(spend);
+  assert.equal(spend.ceilingUSD, 0.000001);
+  assert.equal(spend.actualUSD, 0);
+  assert.equal(spend.reservedUSD, 0);
+  assert.ok(spend.reservationUSD > spend.ceilingUSD);
+  const terminal = rows.at(-1)!;
+  assert.equal(terminal.event.type, 'turn_done');
+  assert.deepEqual(terminal.event.spend, spend);
+  const usageRow = stderr
+    .split('\n')
+    .filter((line) => line.startsWith('{'))
+    .map((line) => JSON.parse(line) as { type: string; spendCeiling?: { ceilingUSD: number; effectiveCeilingUSD: number } })
+    .find((row) => row.type === 'usage_summary');
+  assert.equal(usageRow?.spendCeiling?.ceilingUSD, 0.000001);
+  assert.equal(usageRow?.spendCeiling?.effectiveCeilingUSD, 0.000001);
+});
+
+test('a human headless spend stop explains itself on stderr in one line', () => {
+  const { status, stderr } = runToSpendCeiling(false);
+  assert.equal(status, 2);
+  assert.match(
+    stderr,
+    /spend stop: reserved \$[\d.]+ for the next request, spent \$0\.000000, ceiling \$0\.000001, effective ceiling \$0\.000001 \(ceiling less \$0\.000000 outstanding reservations\)/,
+  );
+  // 0009 wording: the stop is scoped to a turn, not to a whole run.
+  assert.match(stderr, /turn budget_exceeded: spend/);
 });
 
 test('JSON errors encode terminal controls while human errors sanitize them', () => {

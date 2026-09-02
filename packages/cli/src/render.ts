@@ -1,3 +1,5 @@
+import { effectiveSpendCeilingUSD, type SpendStop } from '@pi/core';
+
 const useColor = process.stdout.isTTY === true && process.env['NO_COLOR'] === undefined;
 
 /**
@@ -50,6 +52,21 @@ export function formatUsage(usage: {
   const hit = cacheHitRate(usage);
   const hitText = hit !== undefined ? ` | cache hit ${hit}%` : '';
   return `in ${usage.inputTokens} (cache read ${usage.cacheReadTokens}, write ${usage.cacheWriteTokens}) | out ${usage.outputTokens}${hitText}`;
+}
+
+/**
+ * One line that explains a dollar ceiling stop without reading the journal
+ * (ADR 0020 addendum). The numbers add up: the refused reservation plus the
+ * spend already recorded exceeds the effective ceiling, which is the configured
+ * ceiling less the reservations still outstanding.
+ */
+export function formatSpendStop(spend: SpendStop): string {
+  return (
+    `spend stop: reserved $${spend.reservationUSD.toFixed(6)} for the next request, ` +
+    `spent $${spend.actualUSD.toFixed(6)}, ceiling $${spend.ceilingUSD.toFixed(6)}, ` +
+    `effective ceiling $${effectiveSpendCeilingUSD(spend).toFixed(6)} ` +
+    `(ceiling less $${spend.reservedUSD.toFixed(6)} outstanding reservations)`
+  );
 }
 
 export function formatCost(cost: {

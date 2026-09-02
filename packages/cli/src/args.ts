@@ -270,10 +270,11 @@ options:
   --session <id|path>  open a specific session
   --model <name>       override the model
   --profile <name>     provider profile (anthropic | openai | from ~/.config/pi/config.json)
-  --max-turns <n>      cap model calls per input (default 40)
-  --max-tool-calls <n> cap tool executions per input (default 100)
+  every --max-* below is a turn budget: per turn (one turn per input in -p)
+  --max-turns <n>      cap model calls per turn (default 40)
+  --max-tool-calls <n> cap tool executions per turn (default 100)
   --max-tool-output-bytes <n> cap retained output from each tool call
-  --max-time <seconds> cap wall time per input (default 1800)
+  --max-time <seconds> cap wall time per turn (default 1800)
   --max-input-tokens <n>  stop after the provider-reported input-token budget
   --max-output-tokens <n> stop after the provider-reported output-token budget
   --max-total-tokens <n>  stop after the combined provider-reported token budget

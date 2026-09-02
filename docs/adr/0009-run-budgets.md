@@ -33,3 +33,24 @@ harness; the model is never asked to respect them, it is stopped by them.
 
 
 Scope note (2026-09-02): as implemented, every `RunBudget` ceiling is scoped to ONE user turn. In headless `-p` a turn is the run, so the contract holds; in the REPL each ceiling resets per turn and a session may spend any multiple of it. Session-scoped and child-tree aggregate ceilings are proposed in ADR 0026; until it lands, read "run" in this record as "turn".
+
+## Addendum (2026-09-02, wording)
+
+R2-7 of the red-team remediation plan aligns user-visible text with the scope
+note above: every ceiling in this record is enforced per user turn, so the text
+a user reads now says turn, not run.
+
+- Validation errors read `invalid turn budget <name>: ...` rather than
+  `invalid run budget <name>: ...`.
+- The headless terminal line reads `turn <status>: <reason> after N model
+  request(s) and M tool call(s)`, so `budget_exceeded` there can no longer be
+  misread as a run-scoped budget.
+- `--max-*` flag help states the scope once, "every --max-* below is a turn
+  budget: per turn (one turn per input in -p)", and the individual flags say
+  "per turn".
+
+Identifiers are deliberately untouched: `RunBudget`, `RunBudgetSnapshot`, and
+the `run` journal vocabulary keep their names, because renaming a serialized
+schema is a separate, breaking act. This addendum changes wording only; no
+ceiling, default, or enforcement point moves. Session-scoped ceilings remain
+ADR 0026's business.

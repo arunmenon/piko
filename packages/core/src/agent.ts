@@ -103,6 +103,29 @@ export interface RunBudget {
   maxSpendUSD?: number;
 }
 
+/**
+ * The four numbers that make a dollar ceiling stop legible without reading the
+ * journal (ADR 0020 addendum, 2026-09-02). They add up: a stop happens exactly
+ * when `actualUSD + reservedUSD + reservationUSD` exceeds `ceilingUSD`, so the
+ * effective ceiling a caller can still spend against is
+ * `ceilingUSD - reservedUSD`.
+ */
+export interface SpendStop {
+  /** Conservative reservation the refused next provider request would have needed. */
+  reservationUSD: number;
+  /** Priced spend already recorded for this turn. */
+  actualUSD: number;
+  /** Outstanding reservations whose request has not produced priced terminal usage. */
+  reservedUSD: number;
+  /** The configured `maxSpendUSD` ceiling for this turn. */
+  ceilingUSD: number;
+}
+
+/** What remains spendable under the configured ceiling once outstanding reservations are held back. */
+export function effectiveSpendCeilingUSD(spend: SpendStop): number {
+  return Math.max(0, Math.round((spend.ceilingUSD - spend.reservedUSD) * 1_000_000) / 1_000_000);
+}
+
 export type TurnStatus = 'completed' | 'incomplete' | 'budget_exceeded' | 'canceled' | 'suspended';
 export type TurnStopReason =
   | 'end_turn'
@@ -174,12 +197,23 @@ class CompactionPersistenceError extends Error {
 }
 
 class SpendBudgetExceededError extends Error {
-  constructor(readonly reservationUSD: number, readonly remainingUSD: number) {
+  constructor(readonly spend: SpendStop) {
+    const remainingUSD = spend.ceilingUSD - spend.actualUSD - spend.reservedUSD;
     super(
-      `spend budget cannot reserve $${reservationUSD.toFixed(6)} for the next provider request; $${Math.max(0, remainingUSD).toFixed(6)} remains`,
+      `spend budget cannot reserve $${spend.reservationUSD.toFixed(6)} for the next provider request; $${Math.max(0, remainingUSD).toFixed(6)} remains`,
     );
     this.name = 'SpendBudgetExceededError';
   }
+}
+
+/** Snapshot the four ceiling numbers at the moment a spend stop is decided. */
+function spendStopFor(cost: CostSummary, ceilingUSD: number, reservationUSD: number): SpendStop {
+  return {
+    reservationUSD,
+    actualUSD: cost.actualUSD,
+    reservedUSD: cost.reservedUSD,
+    ceilingUSD,
+  };
 }
 
 function addUnknownRequestCost(total: CostSummary, reservation?: SpendReservation): void {
@@ -275,6 +309,8 @@ export type AgentEvent =
   | {
       type: 'budget_exceeded';
       reason: 'model_requests' | 'tool_calls' | 'wall_time' | 'input_tokens' | 'output_tokens' | 'total_tokens' | 'spend';
+      /** Present whenever `reason` is `spend`: the four numbers that explain the stop. */
+      spend?: SpendStop;
     }
   | {
       type: 'turn_done';
@@ -284,6 +320,8 @@ export type AgentEvent =
       cost: CostSummary;
       status: TurnStatus;
       reason: TurnStopReason;
+      /** Present whenever `reason` is `spend`: the same four numbers the stop event carried. */
+      spend?: SpendStop;
     };
 
 export interface AgentOptions {
@@ -461,6 +499,11 @@ export class Agent {
 
   get session(): Session | undefined {
     return this._session;
+  }
+
+  /** The configured per-turn dollar ceiling, so callers can report it alongside actual and reserved spend. */
+  get spendCeilingUSD(): number | undefined {
+    return this.options.budget?.maxSpendUSD;
   }
 
   constructor(private readonly options: AgentOptions) {
@@ -999,23 +1042,23 @@ export class Agent {
       if (name === 'maxSpendUSD') {
         if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) {
           this.running = false;
-          throw new Error('invalid run budget maxSpendUSD: expected a finite number > 0');
+          throw new Error('invalid turn budget maxSpendUSD: expected a finite number > 0');
         }
         continue;
       }
       if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
         this.running = false;
-        throw new Error(`invalid run budget ${name}: expected a safe integer > 0`);
+        throw new Error(`invalid turn budget ${name}: expected a safe integer > 0`);
       }
     }
     if (budget.maxWallTimeMs > MAX_TIMER_MS) {
       this.running = false;
-      throw new Error(`invalid run budget maxWallTimeMs: maximum supported value is ${MAX_TIMER_MS}`);
+      throw new Error(`invalid turn budget maxWallTimeMs: maximum supported value is ${MAX_TIMER_MS}`);
     }
     if (budget.maxToolOutputBytes < MIN_TOOL_OUTPUT_BYTES) {
       this.running = false;
       throw new Error(
-        `invalid run budget maxToolOutputBytes: minimum supported value is ${MIN_TOOL_OUTPUT_BYTES}`,
+        `invalid turn budget maxToolOutputBytes: minimum supported value is ${MIN_TOOL_OUTPUT_BYTES}`,
       );
     }
     if (budget.maxSpendUSD !== undefined && !this.options.pricing) {
@@ -1048,6 +1091,8 @@ export class Agent {
     let toolCalls = openRun?.toolCalls ?? 0;
     let status: TurnStatus = 'incomplete';
     let reason: TurnStopReason = 'empty_response';
+    /** Set only by a dollar ceiling stop, and carried into the terminal row. */
+    let spendStop: SpendStop | undefined;
     let failed = false;
     let failedError: unknown;
     let runBodyCompleted = false;
@@ -1305,8 +1350,9 @@ export class Agent {
               if (error instanceof SpendBudgetExceededError) {
                 status = 'budget_exceeded';
                 reason = 'spend';
+                spendStop = error.spend;
                 await this.observeBudget(telemetryContext, 'spend');
-                yield { type: 'budget_exceeded', reason: 'spend' };
+                yield { type: 'budget_exceeded', reason: 'spend', spend: spendStop };
                 break;
               }
               if (!runController.signal.aborted && error instanceof CompactionPersistenceError) {
@@ -1420,8 +1466,9 @@ export class Agent {
           ) {
             status = 'budget_exceeded';
             reason = 'spend';
+            spendStop = spendStopFor(turnCost, budget.maxSpendUSD, spendReservation?.usd ?? 0);
             await this.observeBudget(telemetryContext, 'spend');
-            yield { type: 'budget_exceeded', reason: 'spend' };
+            yield { type: 'budget_exceeded', reason: 'spend', spend: spendStop };
             break;
           }
           let done: { message: AssistantMessage; stopReason: StopReason; usage: Usage } | undefined;
@@ -1654,8 +1701,10 @@ export class Agent {
             }
             status = 'budget_exceeded';
             reason = 'spend';
+            // The completed response already overshot: nothing further was reserved.
+            spendStop = spendStopFor(turnCost, budget.maxSpendUSD, 0);
             await this.observeBudget(telemetryContext, 'spend');
-            yield { type: 'budget_exceeded', reason: 'spend' };
+            yield { type: 'budget_exceeded', reason: 'spend', spend: spendStop };
             break;
           }
           const responseUsageExceeded = exceededUsageBudgetReason(turnUsage, budget);
@@ -2206,7 +2255,16 @@ export class Agent {
       this.lastTurnCost = turnCost;
     }
 
-    yield { type: 'turn_done', iterations, toolCalls, usage: turnUsage, cost: turnCost, status, reason };
+    yield {
+      type: 'turn_done',
+      iterations,
+      toolCalls,
+      usage: turnUsage,
+      cost: turnCost,
+      status,
+      reason,
+      ...(spendStop ? { spend: spendStop } : {}),
+    };
   }
 
   private offloadCounter = 0;
@@ -2647,8 +2705,7 @@ export class Agent {
       spendExposure(activeCost) + (spendReservation?.usd ?? 0) > budget.maxSpendUSD
     ) {
       throw new SpendBudgetExceededError(
-        spendReservation?.usd ?? 0,
-        budget.maxSpendUSD - spendExposure(activeCost),
+        spendStopFor(activeCost, budget.maxSpendUSD, spendReservation?.usd ?? 0),
       );
     }
     const requestId = createTelemetryId('request');
@@ -2764,7 +2821,7 @@ export class Agent {
       }),
     );
     if (actualSpendExceeded) {
-      throw new SpendBudgetExceededError(0, budget!.maxSpendUSD! - spendExposure(activeCost));
+      throw new SpendBudgetExceededError(spendStopFor(activeCost, budget!.maxSpendUSD!, 0));
     }
     if (!completionJournaled) {
       throw new CompactionPersistenceError(

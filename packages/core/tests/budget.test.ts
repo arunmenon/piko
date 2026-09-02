@@ -4,7 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { AssistantMessage, CompletionRequest, StreamEvent, Usage } from '@pi/ai';
-import { Agent, type AgentEvent, type CompletionClient, type RunBudget } from '../src/agent.js';
+import {
+  Agent,
+  effectiveSpendCeilingUSD,
+  type AgentEvent,
+  type CompletionClient,
+  type RunBudget,
+} from '../src/agent.js';
 import { Session } from '../src/session.js';
 import type { ModelPrice } from '../src/pricing.js';
 import type { Observer, RuntimeTelemetryEvent } from '../src/telemetry.js';
@@ -242,6 +248,67 @@ test('spend reservation stops a later provider request before it can be billed',
   assert.ok(events.some((event) => event.type === 'budget_exceeded' && event.reason === 'spend'));
 });
 
+test('a dollar ceiling stop reports four numbers that explain it without reading the journal', async () => {
+  const client: CompletionClient = {
+    async *stream(): AsyncGenerator<StreamEvent, void, void> {
+      yield {
+        type: 'done',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'toolCall', id: 'c1', name: 'noop', arguments: {} }],
+        },
+        stopReason: 'tool_use',
+        usage: smallUsage,
+      };
+    },
+  };
+  const tool: Tool = {
+    name: 'noop',
+    description: 'no op',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    async execute() {
+      return { content: [{ type: 'text', text: 'ok' }] };
+    },
+  };
+  const outputPrice = price({
+    inputUSDPerToken: 0,
+    cacheReadUSDPerToken: 0,
+    cacheWriteUSDPerToken: 0,
+    outputUSDPerToken: 0.001,
+  });
+  const ceilingUSD = 8.193;
+  const agent = new Agent({
+    client,
+    model: 'm',
+    systemPrompt: 's',
+    tools: [tool],
+    cwd: '/tmp',
+    pricing: outputPrice,
+    budget: { maxSpendUSD: ceilingUSD },
+  });
+  const events = await drain(agent);
+  const stopEvent = events.find(
+    (event): event is Extract<AgentEvent, { type: 'budget_exceeded' }> => event.type === 'budget_exceeded',
+  );
+  const spend = stopEvent?.spend;
+  assert.ok(spend, 'a spend stop must carry its numbers');
+  assert.equal(spend.ceilingUSD, ceilingUSD);
+  // The refused reservation is the whole story: what was asked for, what was
+  // already spent, what is still held back, and the ceiling all three run into.
+  assert.ok(spend.reservationUSD > 0);
+  assert.equal(spend.actualUSD, 0.002);
+  assert.equal(spend.reservedUSD, 0);
+  assert.ok(
+    spend.actualUSD + spend.reservedUSD + spend.reservationUSD > spend.ceilingUSD,
+    'the printed numbers must add up to a number above the ceiling',
+  );
+  assert.equal(effectiveSpendCeilingUSD(spend), ceilingUSD - spend.reservedUSD);
+  assert.ok(spend.actualUSD + spend.reservationUSD > effectiveSpendCeilingUSD(spend));
+  const terminal = events.at(-1) as Extract<AgentEvent, { type: 'turn_done' }>;
+  assert.equal(terminal.reason, 'spend');
+  assert.deepEqual(terminal.spend, spend);
+});
+
 test('a final response that overshoots a provider token ceiling is not reported as completed', async () => {
   const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: 'done' }] };
   const agent = new Agent({
@@ -413,7 +480,7 @@ test('run budgets reject fractional counts, timer overflow, and unusably small t
     { maxSpendUSD: Number.POSITIVE_INFINITY },
   ]) {
     const agent = new Agent({ client: clientFor(message, 'end_turn'), model: 'm', systemPrompt: 's', tools: [], cwd: '/tmp', budget });
-    await assert.rejects(async () => drain(agent), /invalid run budget/);
+    await assert.rejects(async () => drain(agent), /invalid turn budget/);
   }
 });
 
