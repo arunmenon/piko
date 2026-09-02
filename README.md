@@ -302,6 +302,9 @@ chooses a license and release policy.
 See the [evaluation methodology](docs/evaluation.md) for pass criteria, artifact contents, and the
 distinction between the legacy Terminal-Bench adapter and current Harbor-based benchmarks. See
 [SECURITY.md](SECURITY.md) for the trust boundaries and responsible-disclosure guidance.
+See the [scoped threat model](docs/threat-model.md) for the assets, the trust boundaries, the
+attacker capabilities considered, the control-to-test map behind each claim on this page, and the
+list of what is explicitly out of scope.
 
 ## Extending with bounded context
 
