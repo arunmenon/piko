@@ -43,8 +43,15 @@ import {
   type SpendReservation,
 } from './pricing.js';
 import {
+  compileApprovalRules,
+  resolveApprovalAction,
+  type ApprovalAction,
+  type ApprovalRuleMatch,
+  type CompiledApprovalRule,
+  type ToolApprovalGrant,
+} from './tools/approval-rules.js';
+import {
   defaultToolExecutionPolicy,
-  requiresApproval,
   type Tool,
   type ToolContext,
   type ToolExecutionPolicy,
@@ -161,6 +168,8 @@ interface ToolCallExecution {
 export interface PendingApproval {
   executionId: string;
   call: ToolCallBlock;
+  /** The argument-prefix rule that gated it, when a rule did (ADR 0011 addendum). */
+  rule?: ApprovalRuleMatch;
 }
 
 /** A human decision applied when a suspended session is resumed. */
@@ -246,6 +255,11 @@ export function chooseKeepBoundary(messages: Message[], keepTokens = KEEP_RECENT
   }
   if (latestBoundary === undefined) return messages.length;
   return earliestFittingBoundary ?? latestBoundary;
+}
+
+/** Grants are identified by the pair they were written with, never by position. */
+function sameGrant(left: ToolApprovalGrant, right: ToolApprovalGrant): boolean {
+  return left.tool === right.tool && left.prefix === right.prefix;
 }
 
 function toolResultBlock(call: ToolCallBlock, text: string, isError = false): ToolResultBlock {
@@ -627,6 +641,10 @@ export class Agent {
   private _session?: Session;
   private cwd: string;
   private readonly toolPolicy: ToolExecutionPolicy;
+  /** Argument-prefix rules, compiled once (ADR 0011 addendum). Empty is the v1 name-only gate. */
+  private readonly approvalRules: readonly CompiledApprovalRule[];
+  /** Session-scoped grants, replayed at open and appended to as the human grants more. */
+  private approvalGrantList: ToolApprovalGrant[] = [];
   private readonly toolsByName: Map<string, Tool>;
   private running = false;
   /** Set when a turn stops at an approval gate; retains results already produced. */
@@ -665,6 +683,9 @@ export class Agent {
     if (options.session) this._session = options.session;
     this.cwd = options.cwd;
     this.toolPolicy = { ...defaultToolExecutionPolicy(options.cwd), ...options.toolPolicy };
+    // Compiled here rather than per dispatch, and strictly: a rule the matcher
+    // could not honor must fail before the first tool call, not silently.
+    this.approvalRules = compileApprovalRules(this.toolPolicy.approvalRules ?? []);
     this.toolsByName = new Map(options.tools.map((tool) => [tool.name, tool]));
     // Resolve the write-ahead journal before repairing the provider transcript:
     // planned calls are known not to have run; started calls have unknown outcome.
@@ -697,6 +718,9 @@ export class Agent {
           );
         }
         recoveredExecutions = this._session.toolExecutions;
+        // Grants are session state, so a resumed run honors the ones the human
+        // already made without asking again (ADR 0011 addendum).
+        this.approvalGrantList = [...this._session.approvalGrants];
       } catch (error) {
         this.persistDisabled = true;
         process.stderr.write(`warning: session lifecycle recovery disabled logging — ${String(error)}\n`);
@@ -876,16 +900,62 @@ export class Agent {
     }
   }
 
+  /** Live session-scoped approval grants, oldest first (ADR 0011 addendum). */
+  get approvalGrants(): readonly ToolApprovalGrant[] {
+    return this.approvalGrantList.map((grant) => ({ ...grant }));
+  }
+
+  /**
+   * Record an "always allow this prefix for this session" grant. The journal row
+   * is the grant: it is replayed on resume, and an in-memory copy is kept so a
+   * session-less agent still honors it for the rest of the process.
+   */
+  addApprovalGrant(tool: string, prefix: string): ToolApprovalGrant {
+    const grant: ToolApprovalGrant = { tool, prefix, grantedAt: new Date().toISOString() };
+    this.journal((session) => session.recordApprovalGrant(grant));
+    this.approvalGrantList = [...this.approvalGrantList.filter((existing) => !sameGrant(existing, grant)), grant];
+    return grant;
+  }
+
+  /** Revoke one live grant by its position in `approvalGrants`. */
+  revokeApprovalGrant(position: number): ToolApprovalGrant | undefined {
+    const grant = this.approvalGrantList[position];
+    if (!grant) return undefined;
+    this.journal((session) => session.recordApprovalGrant({ ...grant, revoked: true }));
+    this.approvalGrantList = this.approvalGrantList.filter((existing) => !sameGrant(existing, grant));
+    return grant;
+  }
+
+  /**
+   * The dispatch-time approval answer for one call, on the exact arguments the
+   * tool will receive. This is the single seam ADR 0011's name-only gate was
+   * widened at; with no rules and no grants it is `requiresApproval` verbatim.
+   */
+  private approvalActionFor(toolName: string, args: Record<string, unknown>): ApprovalAction {
+    return resolveApprovalAction({
+      policy: this.toolPolicy,
+      rules: this.approvalRules,
+      grants: this.approvalGrantList,
+      toolName,
+      arguments: args,
+    });
+  }
+
   /** Undecided gated calls, in batch order, for a surface that will collect decisions. */
   get pendingApprovals(): PendingApproval[] {
     if (this.suspendedBatch) {
       return this.suspendedBatch.calls
         .filter((item) => item.approval !== undefined && item.approval.decision === undefined)
-        .map((item) => ({ executionId: item.executionId, call: structuredClone(item.call) }));
+        .map((item) => ({
+          executionId: item.executionId,
+          call: structuredClone(item.call),
+          ...(item.approval?.rule ? { rule: structuredClone(item.approval.rule) } : {}),
+        }));
     }
     return (this._session?.awaitingApprovalExecutions ?? []).map((state) => ({
       executionId: state.executionId,
       call: structuredClone(state.call),
+      ...(state.approval?.rule ? { rule: structuredClone(state.approval.rule) } : {}),
     }));
   }
 
@@ -2214,30 +2284,70 @@ export class Agent {
             }
             continue;
           }
+          // The rules see the exact arguments the tool is about to receive, an
+          // edit included, and they are consulted after validation so a call
+          // that will never dispatch is never matched (ADR 0011 addendum).
+          const approvalAction = this.approvalActionFor(call.name, effectiveArguments);
+          if (approvalAction.action === 'deny') {
+            // A deny rule refuses outright: there is nothing for a human to
+            // decide, and no grant can reach it.
+            const ruleName = approvalAction.rule
+              ? `approval rule ${approvalAction.rule.index} (${approvalAction.rule.tool}${approvalAction.rule.prefix ? `:${approvalAction.rule.prefix}` : ''})`
+              : 'an approval rule';
+            const explanation = `not run: refused by ${ruleName}`;
+            this.journal((session) => session.skipTool(executionId, explanation));
+            await this.observe(
+              createRuntimeEvent(
+                {
+                  ...telemetryContext,
+                  ...(batchRequestId ? { requestId: batchRequestId } : {}),
+                  toolCallId: call.id,
+                  toolExecutionId: executionId,
+                },
+                {
+                  name: 'policy.decision',
+                  level: 'warn',
+                  attributes: { toolName: call.name, decision: 'deny', reason: 'approval_rule_denied' },
+                },
+              ),
+            );
+            results.push(toolResultBlock(call, explanation, true));
+            continue;
+          }
           // The batch runs in order until the first gated call with no recorded
           // decision. That call and every later gated one are journaled as
           // awaiting approval; later ungated calls stay planned, so side-effect
           // order is preserved exactly across the suspension (ADR 0011).
-          if (item.approval?.decision === undefined && requiresApproval(this.toolPolicy, call.name)) {
+          if (item.approval?.decision === undefined && approvalAction.action === 'prompt') {
             const pendingApprovals: PendingApproval[] = [];
             let approvalPersisted = true;
             for (const rest of batchCalls.slice(batchIndex)) {
               if (rest.settled || !rest.journaled) continue;
               if (rest.approval?.decision !== undefined) continue;
-              if (!requiresApproval(this.toolPolicy, rest.call.name)) continue;
+              const restAction =
+                rest.executionId === executionId
+                  ? approvalAction
+                  : this.approvalActionFor(rest.call.name, rest.call.arguments);
+              // A later deny is left alone: the loop reaches it and refuses it
+              // there, so the human is never asked about a call policy forbids.
+              if (restAction.action !== 'prompt') continue;
               if (!rest.approval) {
                 const requestedAt = new Date().toISOString();
                 const written = this.journalFor(this._session, (session) => {
-                  session.requestToolApproval(rest.executionId);
+                  session.requestToolApproval(rest.executionId, restAction.rule);
                   return true;
                 });
                 if (this._session && written !== true) {
                   approvalPersisted = false;
                   break;
                 }
-                rest.approval = { requestedAt };
+                rest.approval = { requestedAt, ...(restAction.rule ? { rule: restAction.rule } : {}) };
               }
-              pendingApprovals.push({ executionId: rest.executionId, call: rest.call });
+              pendingApprovals.push({
+                executionId: rest.executionId,
+                call: rest.call,
+                ...(restAction.rule ? { rule: restAction.rule } : {}),
+              });
               await this.observe(
                 createRuntimeEvent(
                   {

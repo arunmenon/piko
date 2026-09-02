@@ -6,6 +6,7 @@ import {
   type RequestCost,
   type SpendReservation,
 } from './pricing.js';
+import type { ApprovalRuleDecision, ApprovalRuleMatch, ToolApprovalGrant } from './tools/approval-rules.js';
 
 /** Rows written by piko 0.1. Kept verbatim so existing transcripts remain readable. */
 export type LegacySessionEntry =
@@ -161,7 +162,16 @@ export type ToolLifecycleEntry =
       call: ToolCallBlock;
     })
   /** A gated call is deferred pending a recorded human decision (ADR 0011). */
-  | (LifecycleBase & { t: 'tool_approval_requested'; executionId: string })
+  | (LifecycleBase & {
+      t: 'tool_approval_requested';
+      executionId: string;
+      /**
+       * The argument-prefix rule that decided this gate, when a rule decided it
+       * (ADR 0011 addendum). Optional and additive, so the schema generation
+       * does not move and rows written before rules existed stay valid.
+       */
+      rule?: ApprovalRuleMatch;
+    })
   | (LifecycleBase & {
       t: 'tool_approval_decided';
       executionId: string;
@@ -236,6 +246,12 @@ export type LifecycleEntry =
       /** Bytes the repair removed; zero when only a delimiter was added. */
       discardedBytes: number;
     })
+  /**
+   * A session-scoped "always allow this prefix" grant, or its revocation
+   * (ADR 0011 addendum). Additive under 0019, so the schema generation does not
+   * move. Replayed on resume; a grant can only narrow prompting.
+   */
+  | (LifecycleBase & { t: 'tool_approval_grant' } & ToolApprovalGrant)
   | (LifecycleBase & { t: 'session_ready' })
   | (LifecycleBase & { t: 'session_lineage' } & SessionLineage);
 
@@ -253,6 +269,8 @@ export type ToolExecutionStatus =
 /** Approval trail for one gated execution. Present once approval was requested. */
 export interface ToolApprovalState {
   requestedAt: string;
+  /** The argument-prefix rule that gated the call, when a rule did. */
+  rule?: ApprovalRuleMatch;
   decision?: ApprovalDecision;
   decidedAt?: string;
   reason?: string;
@@ -284,6 +302,7 @@ const runStatuses = new Set<RunStatus>([
   'suspended',
 ]);
 const approvalDecisions = new Set<ApprovalDecision>(['approved', 'edited', 'rejected']);
+const approvalRuleDecisions = new Set<ApprovalRuleDecision>(['allow', 'prompt', 'deny']);
 const lineageRelations = new Set<SessionLineageRelation>(['branch', 'compaction', 'continuation']);
 const journalRepairKinds = new Set<JournalRepairKind>(['truncated_partial_line', 'appended_missing_newline']);
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
@@ -451,6 +470,16 @@ function validateWorkspaceDigest(value: unknown, path: string): void {
   requireString(digest['workspace'], `${path}.workspace`);
 }
 
+function validateApprovalRuleMatch(value: unknown, path: string): void {
+  const match = requireRecord(value, path);
+  requireNonNegativeInteger(match['index'], `${path}.index`);
+  requireString(match['tool'], `${path}.tool`);
+  if (!approvalRuleDecisions.has(match['decision'] as ApprovalRuleDecision)) {
+    throw new TypeError(`${path}.decision is unsupported`);
+  }
+  optionalString(match['prefix'], `${path}.prefix`);
+}
+
 function validateMessage(value: unknown, path: string): asserts value is Message {
   const message = requireRecord(value, path);
   const role = message['role'];
@@ -564,8 +593,17 @@ export function validateSessionEntry(value: unknown): asserts value is SessionEn
       }
       return;
     case 'tool_completed':
+      requireString(entry['executionId'], `${type}.executionId`);
+      return;
     case 'tool_approval_requested':
       requireString(entry['executionId'], `${type}.executionId`);
+      if (entry['rule'] !== undefined) validateApprovalRuleMatch(entry['rule'], `${type}.rule`);
+      return;
+    case 'tool_approval_grant':
+      requireString(entry['tool'], `${type}.tool`);
+      requireString(entry['prefix'], `${type}.prefix`);
+      requireTimestamp(entry['grantedAt'], `${type}.grantedAt`);
+      optionalBoolean(entry['revoked'], `${type}.revoked`);
       return;
     case 'tool_approval_decided':
       requireString(entry['executionId'], `${type}.executionId`);
@@ -702,7 +740,7 @@ export function reduceToolExecutions(entries: readonly SessionEntry[]): Map<stri
         invalidTransition(`${entry.executionId} cannot request approval from ${state.status}`);
       }
       state.status = 'awaiting_approval';
-      state.approval = { requestedAt: entry.at };
+      state.approval = { requestedAt: entry.at, ...(entry.rule ? { rule: structuredClone(entry.rule) } : {}) };
       continue;
     }
     if (entry.t === 'tool_approval_decided') {
@@ -754,6 +792,23 @@ export function reduceToolExecutions(entries: readonly SessionEntry[]): Map<stri
     }
   }
   return states;
+}
+
+/**
+ * Replay the session-scoped approval grants (ADR 0011 addendum). Rows are
+ * ordered, and a later row for the same `(tool, prefix)` pair replaces the
+ * earlier one, so a revoking row removes the grant it names. This is what makes
+ * a grant survive a resume without a second row type.
+ */
+export function reduceApprovalGrants(entries: readonly SessionEntry[]): ToolApprovalGrant[] {
+  const grants = new Map<string, ToolApprovalGrant>();
+  for (const entry of entries) {
+    if (entry.t !== 'tool_approval_grant') continue;
+    const key = `${entry.tool} ${entry.prefix}`;
+    if (entry.revoked) grants.delete(key);
+    else grants.set(key, { tool: entry.tool, prefix: entry.prefix, grantedAt: entry.grantedAt });
+  }
+  return [...grants.values()];
 }
 
 /** Reduce provider attempts so crash recovery can distinguish unknown billing. */
