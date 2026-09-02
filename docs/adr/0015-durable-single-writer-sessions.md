@@ -59,3 +59,37 @@ convention, not a core-enforced invariant.
 
 
 Retirement note (2026-09-02): the amendment above described two gaps. Both are closed: 0023 makes single-writer a lock capability enforced at the library boundary, and 0024 replaces silent stale-lock fallback with a loud failure and `pi doctor sessions`. Treat single-writer as core-enforced again.
+
+## Addendum (2026-09-02, repair recorded as a row)
+
+The corruption policy above tolerates a partial JSON tail and truncates it. It
+did not say where that fact is written down. In practice it was written nowhere
+durable: the reopen printed `warning: ignored a corrupt trailing line` to
+stderr, then the next append quietly truncated the file. Stderr is gone the
+moment the terminal scrolls, and the truncation left no trace, so an operator
+reconciling a crashed run afterwards could not tell that any bytes had been
+discarded, how many, or where. A journal that fails closed on corruption
+elsewhere should not be silent about the one corruption it tolerates.
+
+The repair is now recorded in the journal it repaired:
+
+- A `journal_repaired` lifecycle row carries the repair kind
+  (`truncated_partial_line` or `appended_missing_newline`), the byte `offset`
+  the repair was applied at, and the `discardedBytes` it removed. The newline
+  kind always discards zero bytes, which the validator enforces.
+- The row is written as the first row of the first append after a tolerated
+  partial tail, in the same batch and the same fsync as the rows that append
+  motivated. Nothing is claimed before the bytes that back the claim land, and
+  a journal that is reopened but never written to is left byte-identical.
+- `pi doctor sessions` reports the count per session, in the text listing and
+  in the `--json` rows (`repairs`, omitted when zero). The count is read with a
+  tolerant line scan, so one unreadable journal cannot break the inventory that
+  is meant to diagnose it.
+- The row is additive. `JOURNAL_SCHEMA_VERSION` stays at 2: an older reader
+  refuses only rows it cannot validate, and this row type is new rather than a
+  change to any existing row.
+
+Consequence: the tolerated crash artifact stops being an unrecorded edit to the
+user's own history. The cost is one extra row per repaired session, and the
+knowledge that a repair happened is now discoverable long after the stderr that
+first announced it is gone.

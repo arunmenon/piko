@@ -25,6 +25,7 @@ import {
   type RunBudgetSnapshot,
   type ToolApprovalState,
   type ToolExecutionState,
+  type WorkspaceDigest,
 } from './session.js';
 import {
   addCostSummary,
@@ -50,6 +51,7 @@ import {
   type ToolPolicyObservation,
 } from './tools/types.js';
 import { truncateMiddle } from './truncate.js';
+import { workspaceDigestFor } from './tools/bash.js';
 import { atomicWriteTextFile, resolveWorkspacePath, resolveWorkspaceRoot } from './tools/filesystem.js';
 import { validateToolArguments } from './tools/validation.js';
 import {
@@ -694,6 +696,19 @@ export class Agent {
       return settled;
     } finally {
       if (onAbort) signal.removeEventListener('abort', onAbort);
+    }
+  }
+
+  /**
+   * Fingerprint the workspace a bash call is about to be planned against
+   * (0007). Never throws: an undiagnosable workspace records no digest rather
+   * than blocking the call.
+   */
+  private async planningWorkspaceDigest(): Promise<WorkspaceDigest | undefined> {
+    try {
+      return await workspaceDigestFor(this.cwd, this.toolPolicy.bash);
+    } catch {
+      return undefined;
     }
   }
 
@@ -1781,9 +1796,14 @@ export class Agent {
           const planned: BatchCall[] = [];
           for (const call of calls) {
             const executionId = createTelemetryId('tool');
+            // 0007: bash is the tool whose side effects the journal cannot
+            // describe, so its planned row carries a workspace fingerprint. A
+            // resumer facing outcome_unknown recomputes it to see whether the
+            // workspace moved. Best-effort and never a reason to refuse a call.
+            const workspaceDigest = call.name === 'bash' ? await this.planningWorkspaceDigest() : undefined;
             const journaled = this._session
               ? this.journal((session) => {
-                  session.planTool(call, { executionId, requestId });
+                  session.planTool(call, { executionId, requestId, ...(workspaceDigest ? { workspaceDigest } : {}) });
                   return true;
                 }) === true
               : true;

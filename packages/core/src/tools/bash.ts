@@ -1,6 +1,8 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
+import type { WorkspaceDigest } from '../journal.js';
 import { truncateMiddle } from '../truncate.js';
 import { resolveWorkspacePath, resolveWorkspaceRoot } from './filesystem.js';
 import {
@@ -95,6 +97,64 @@ export function sanitizedBashEnvironment(policy?: BashExecutionPolicy): NodeJS.P
     else environment[name] = value;
   }
   return environment;
+}
+
+/** Total wall-clock budget for every git probe behind one workspace digest. */
+export const WORKSPACE_DIGEST_TIMEOUT_MS = 2_000;
+
+/**
+ * Run one git probe under the remaining slice of the digest budget. Resolves to
+ * undefined for every failure mode (git absent, not a checkout, slow, non-zero
+ * exit), because a digest is a diagnostic aid and must never fail a tool call.
+ */
+function runGitProbe(
+  gitArguments: readonly string[],
+  cwd: string,
+  timeoutMs: number,
+  environment: NodeJS.ProcessEnv,
+): Promise<string | undefined> {
+  if (timeoutMs <= 0) return Promise.resolve(undefined);
+  return new Promise((resolveProbe) => {
+    execFile(
+      'git',
+      [...gitArguments],
+      { cwd, timeout: timeoutMs, env: environment, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' },
+      (error, stdout) => resolveProbe(error ? undefined : stdout),
+    );
+  });
+}
+
+/**
+ * Planning-time fingerprint of a workspace, recorded on a bash call's `planned`
+ * row (ADR 0007). A resumer that finds the call `outcome_unknown` can recompute
+ * this and tell whether the workspace moved underneath it.
+ *
+ * The digest is SHA-256 over `git rev-parse HEAD` plus `git status --porcelain=v1 -z`.
+ * It is best-effort under a total 2 second budget: when git is absent, slow, or
+ * the directory is not a checkout, the result is undefined and the planned row
+ * simply carries no digest. An absent digest never means "unchanged".
+ */
+export async function workspaceDigestFor(
+  workspace: string,
+  policy?: BashExecutionPolicy,
+): Promise<WorkspaceDigest | undefined> {
+  const environment = sanitizedBashEnvironment(policy);
+  const deadline = Date.now() + WORKSPACE_DIGEST_TIMEOUT_MS;
+  const remaining = (): number => deadline - Date.now();
+  let insideWorkTree: string | undefined;
+  try {
+    insideWorkTree = await runGitProbe(['rev-parse', '--is-inside-work-tree'], workspace, remaining(), environment);
+  } catch {
+    return undefined;
+  }
+  if (insideWorkTree?.trim() !== 'true') return undefined;
+  // An unborn branch is still a checkout: HEAD contributes an empty string and
+  // the porcelain status carries the whole state.
+  const head = (await runGitProbe(['rev-parse', 'HEAD'], workspace, remaining(), environment)) ?? '';
+  const status = await runGitProbe(['status', '--porcelain=v1', '-z'], workspace, remaining(), environment);
+  if (status === undefined) return undefined;
+  const digest = createHash('sha256').update(head.trim()).update('\0').update(status).digest('hex');
+  return { kind: 'git', algorithm: 'sha256', digest, workspace };
 }
 
 interface BashResult {

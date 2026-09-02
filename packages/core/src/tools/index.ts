@@ -1,4 +1,5 @@
 import { bashTool } from './bash.js';
+export { workspaceDigestFor, WORKSPACE_DIGEST_TIMEOUT_MS } from './bash.js';
 import { editTool } from './edit.js';
 import { mapTool } from './map.js';
 import { readTool } from './read.js';

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -7,6 +8,7 @@ import type { AssistantMessage, CompletionRequest, StreamEvent, Usage } from '@p
 import { Agent, type AgentEvent, type CompletionClient } from '../src/agent.js';
 import { Session } from '../src/session.js';
 import type { Observer, RuntimeTelemetryEvent } from '../src/telemetry.js';
+import { workspaceDigestFor } from '../src/tools/bash.js';
 import type { Tool } from '../src/tools/types.js';
 
 const usage: Usage = { inputTokens: 5, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 };
@@ -275,4 +277,119 @@ test('returning at tool_start means dispatch occurred and is durably outcome-unk
   const reopened = Session.open(session.file);
   assert.equal(reopened.toolExecutions[0]?.status, 'outcome_unknown');
   assert.equal(reopened.runStatus?.status, 'canceled');
+});
+
+const gitAvailable = (() => {
+  try {
+    execFileSync('git', ['--version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+test('0007: the workspace digest fingerprints a checkout and is omitted elsewhere', { skip: !gitAvailable }, async () => {
+  const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'pi-workspace-digest-')));
+  // Not a checkout: the digest is absent rather than fabricated.
+  assert.equal(await workspaceDigestFor(workspace), undefined);
+
+  execFileSync('git', ['init', '-q'], { cwd: workspace, stdio: 'ignore' });
+  const initial = await workspaceDigestFor(workspace);
+  assert.ok(initial, 'a checkout produces a digest');
+  assert.equal(initial.kind, 'git');
+  assert.equal(initial.algorithm, 'sha256');
+  assert.equal(initial.workspace, workspace);
+  assert.match(initial.digest, /^[0-9a-f]{64}$/);
+  assert.deepEqual(await workspaceDigestFor(workspace), initial, 'an unchanged workspace digests identically');
+
+  writeFileSync(join(workspace, 'appeared-after-planning.txt'), 'the workspace moved\n', 'utf8');
+  const afterChange = await workspaceDigestFor(workspace);
+  assert.ok(afterChange);
+  assert.notEqual(afterChange.digest, initial.digest, 'a moved workspace digests differently');
+});
+
+test('0007: a bash call planned under an unknown outcome carries its workspace digest', { skip: !gitAvailable }, async () => {
+  const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'pi-bash-digest-')));
+  execFileSync('git', ['init', '-q'], { cwd: workspace, stdio: 'ignore' });
+  writeFileSync(join(workspace, 'tracked.txt'), 'before\n', 'utf8');
+  // The journal lives outside the checkout so writing it cannot itself move the
+  // workspace the digest describes.
+  const session = Session.create(workspace, 'model', mkdtempSync(join(tmpdir(), 'pi-bash-digest-journal-')));
+  // Named 'bash' so the planner treats it as the side-effecting shell, without
+  // running a host command inside the test.
+  const tool: Tool = {
+    name: 'bash',
+    description: 'stand-in for host bash',
+    parameters: { type: 'object' },
+    execute() {
+      return new Promise(() => {});
+    },
+  };
+  const client: CompletionClient = {
+    async *stream(): AsyncGenerator<StreamEvent, void, void> {
+      yield {
+        type: 'done',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'toolCall', id: 'bash-1', name: 'bash', arguments: { command: './deploy.sh' } }],
+        },
+        stopReason: 'tool_use',
+        usage,
+      };
+    },
+  };
+  const expectedDigest = await workspaceDigestFor(workspace);
+  assert.ok(expectedDigest);
+
+  const iterator = new Agent({
+    client,
+    model: 'model',
+    systemPrompt: 's',
+    tools: [tool],
+    cwd: workspace,
+    session,
+  }).run('deploy');
+  let event = await iterator.next();
+  while (!event.done && event.value.type !== 'tool_start') event = await iterator.next();
+  await iterator.return();
+
+  const reopened = Session.open(session.file);
+  const execution = reopened.toolExecutions[0];
+  assert.equal(execution?.status, 'outcome_unknown');
+  assert.deepEqual(execution?.workspaceDigest, expectedDigest, 'the planned row fingerprints the workspace as planned');
+
+  // A resumer compares the recorded digest against what it sees now: a workspace
+  // that moved while the outcome was unknown no longer matches what was planned.
+  writeFileSync(join(workspace, 'written-while-the-outcome-was-unknown.txt'), 'moved\n', 'utf8');
+  const currentDigest = await workspaceDigestFor(workspace);
+  assert.notEqual(currentDigest?.digest, execution?.workspaceDigest?.digest);
+});
+
+test('0007: a non-bash call records no workspace digest', async () => {
+  const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'pi-nonbash-digest-')));
+  const session = Session.create(workspace, 'model', workspace);
+  const tool: Tool = {
+    name: 'safe',
+    description: 'safe test tool',
+    parameters: { type: 'object' },
+    async execute() {
+      return { content: [{ type: 'text', text: 'ok' }] };
+    },
+  };
+  let requestNumber = 0;
+  const client: CompletionClient = {
+    async *stream(): AsyncGenerator<StreamEvent, void, void> {
+      requestNumber++;
+      const message: AssistantMessage =
+        requestNumber === 1
+          ? { role: 'assistant', content: [{ type: 'toolCall', id: 'safe-1', name: 'safe', arguments: {} }] }
+          : { role: 'assistant', content: [{ type: 'text', text: 'done' }] };
+      yield { type: 'done', message, stopReason: requestNumber === 1 ? 'tool_use' : 'end_turn', usage };
+    },
+  };
+  const agent = new Agent({ client, model: 'model', systemPrompt: 's', tools: [tool], cwd: workspace, session });
+  for await (const _event of agent.run('go')) {
+    // drain
+  }
+  assert.equal(Session.open(session.file).toolExecutions[0]?.workspaceDigest, undefined);
 });

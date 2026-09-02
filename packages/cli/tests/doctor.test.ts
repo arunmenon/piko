@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, writeFileSync, existsSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, realpathSync, writeFileSync, existsSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -89,4 +89,38 @@ test('0024 CLI acceptance: crash, exit 5 with typed JSON, doctor list, recovery,
   // succeeded when the failure is an auth error rather than a lock error).
   const resumed = run(['-p', '-c', '--json', '--offline-pricing', '--model', 'test-model', 'continue'], workspace);
   assert.notEqual(resumed.status, 5, 'selection must not report a locked head after recovery');
+});
+
+test('0015: doctor sessions reports repaired journals in text and JSON', () => {
+  const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'pi-doctor-repair-')));
+  const dir = sessionsDirFor(workspace);
+
+  const intact = Session.create(workspace, 'test-model', dir);
+  intact.append({ t: 'msg', message: { role: 'user', content: [{ type: 'text', text: 'clean' }] } });
+  intact.close();
+
+  // A torn write, then the reopen that repairs the append boundary and records it.
+  const repaired = Session.create(workspace, 'test-model', dir);
+  repaired.append({ t: 'msg', message: { role: 'user', content: [{ type: 'text', text: 'kept' }] } });
+  appendFileSync(repaired.file, '{"t":"msg","message":{"role":"assist', 'utf8');
+  repaired.close();
+  const reopened = Session.openLocked(repaired.file)!;
+  reopened.setRunStatus('running');
+  reopened.close();
+
+  const listing = run(['doctor', 'sessions', '--json'], workspace);
+  assert.equal(listing.status, 0, listing.stdout + listing.stderr);
+  const sessionRows = rows(listing.stdout).filter((row) => row.event['type'] === 'doctor_session');
+  const repairedRow = sessionRows.find((row) => row.event['file'] === repaired.file);
+  const intactRow = sessionRows.find((row) => row.event['file'] === intact.file);
+  assert.equal(repairedRow?.event['repairs'], 1);
+  assert.equal(intactRow?.event['repairs'], undefined, 'an intact journal reports no repair count');
+
+  const text = run(['doctor', 'sessions'], workspace);
+  assert.equal(text.status, 0, text.stdout + text.stderr);
+  const repairedLine = text.stdout.split('\n').find((line) => line.includes(repaired.file));
+  assert.match(String(repairedLine), /REPAIRED \(1 journal_repaired row\)/);
+  const intactLine = text.stdout.split('\n').find((line) => line.includes(intact.file));
+  assert.doesNotMatch(String(intactLine), /REPAIRED/);
+  assert.match(text.stdout, /recovered from a partial trailing write/);
 });

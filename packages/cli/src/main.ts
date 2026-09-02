@@ -186,7 +186,18 @@ function doctorSessions(argv: string[], cwd: string): number {
     const detail = report.locked
       ? ` LOCKED (${report.classification}${owner ? `: pid ${owner.pid}${owner.host ? ` on ${owner.host}` : ''}` : ''})`
       : '';
-    process.stdout.write(`${report.file}${detail}\n`);
+    // 0015: a repaired append boundary is a durable fact about the journal, so
+    // it is visible next to lock state rather than only in the crash's stderr.
+    const repaired = report.repairs ? ` REPAIRED (${report.repairs} journal_repaired row${report.repairs === 1 ? '' : 's'})` : '';
+    process.stdout.write(`${report.file}${detail}${repaired}\n`);
+  }
+  const repairedSessions = reports.filter((report) => report.repairs).length;
+  if (repairedSessions > 0) {
+    process.stdout.write(
+      dim(
+        `\n${repairedSessions} session${repairedSessions === 1 ? '' : 's'} recovered from a partial trailing write; inspect the journal_repaired rows for what was discarded\n`,
+      ),
+    );
   }
   process.stdout.write(dim('\nremovable locks: pi doctor sessions --remove <file> --yes\n'));
   return 0;

@@ -24,6 +24,14 @@ export type RunStatus =
 export type SessionLineageRelation = 'branch' | 'compaction' | 'continuation';
 
 /**
+ * How a tolerated partial tail was repaired before the journal accepted new
+ * rows (ADR 0015). `truncated_partial_line` discarded the bytes after the last
+ * complete row; `appended_missing_newline` kept a complete but undelimited
+ * final row and wrote the delimiter it lacked.
+ */
+export type JournalRepairKind = 'truncated_partial_line' | 'appended_missing_newline';
+
+/**
  * Journal schema generation, written once per session as a `journal_schema` row.
  * Sessions created before the marker existed are read as generation 1; a file
  * declaring a newer generation is refused rather than half-understood.
@@ -124,12 +132,30 @@ export interface ModelRequestState {
 
 export type ApprovalDecision = 'approved' | 'edited' | 'rejected';
 
+/**
+ * Planning-time fingerprint of the workspace a side-effecting call was planned
+ * against (ADR 0007). A resumer that finds an `outcome_unknown` call can compare
+ * this against the workspace it sees and tell whether anything moved underneath
+ * it. Best-effort by construction: the field is absent whenever the digest could
+ * not be taken, and an absent digest never means "unchanged".
+ */
+export interface WorkspaceDigest {
+  /** The only source today: a git checkout's HEAD plus its porcelain status. */
+  kind: 'git';
+  algorithm: 'sha256';
+  /** Lowercase hex digest. */
+  digest: string;
+  /** Directory the digest describes; bash keeps its own cwd across calls. */
+  workspace: string;
+}
+
 export type ToolLifecycleEntry =
   | (LifecycleBase & {
       t: 'tool_planned';
       executionId: string;
       requestId?: string;
       call: ToolCallBlock;
+      workspaceDigest?: WorkspaceDigest;
     })
   /** A gated call is deferred pending a recorded human decision (ADR 0011). */
   | (LifecycleBase & { t: 'tool_approval_requested'; executionId: string })
@@ -191,6 +217,16 @@ export type LifecycleEntry =
       toolNames: string[];
       pinned: boolean;
     })
+  | (LifecycleBase & {
+      t: 'journal_repaired';
+      /** What the repair did to the append boundary. */
+      repair: JournalRepairKind;
+      /** Byte offset the repair was applied at: the truncation point, or where
+       *  the delimiter was written. */
+      offset: number;
+      /** Bytes the repair removed; zero when only a delimiter was added. */
+      discardedBytes: number;
+    })
   | (LifecycleBase & { t: 'session_ready' })
   | (LifecycleBase & { t: 'session_lineage' } & SessionLineage);
 
@@ -225,6 +261,8 @@ export interface ToolExecutionState {
   error?: string;
   reason?: string;
   approval?: ToolApprovalState;
+  /** Present when the planner could fingerprint the workspace (ADR 0007). */
+  workspaceDigest?: WorkspaceDigest;
 }
 
 const runStatuses = new Set<RunStatus>([
@@ -238,6 +276,8 @@ const runStatuses = new Set<RunStatus>([
 ]);
 const approvalDecisions = new Set<ApprovalDecision>(['approved', 'edited', 'rejected']);
 const lineageRelations = new Set<SessionLineageRelation>(['branch', 'compaction', 'continuation']);
+const journalRepairKinds = new Set<JournalRepairKind>(['truncated_partial_line', 'appended_missing_newline']);
+const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -393,6 +433,15 @@ function validateToolCall(value: unknown, path: string): asserts value is ToolCa
   requireRecord(call['arguments'], `${path}.arguments`);
 }
 
+function validateWorkspaceDigest(value: unknown, path: string): void {
+  const digest = requireRecord(value, path);
+  if (digest['kind'] !== 'git') throw new TypeError(`${path}.kind is unsupported`);
+  if (digest['algorithm'] !== 'sha256') throw new TypeError(`${path}.algorithm must be "sha256"`);
+  const hex = requireString(digest['digest'], `${path}.digest`);
+  if (!SHA256_HEX_PATTERN.test(hex)) throw new TypeError(`${path}.digest must be 64 lowercase hex characters`);
+  requireString(digest['workspace'], `${path}.workspace`);
+}
+
 function validateMessage(value: unknown, path: string): asserts value is Message {
   const message = requireRecord(value, path);
   const role = message['role'];
@@ -498,6 +547,9 @@ export function validateSessionEntry(value: unknown): asserts value is SessionEn
       requireString(entry['executionId'], `${type}.executionId`);
       optionalString(entry['requestId'], `${type}.requestId`);
       validateToolCall(entry['call'], `${type}.call`);
+      if (entry['workspaceDigest'] !== undefined) {
+        validateWorkspaceDigest(entry['workspaceDigest'], `${type}.workspaceDigest`);
+      }
       return;
     case 'tool_started':
     case 'tool_completed':
@@ -565,6 +617,16 @@ export function validateSessionEntry(value: unknown): asserts value is SessionEn
       requireBoolean(entry['pinned'], `${type}.pinned`);
       return;
     }
+    case 'journal_repaired':
+      if (!journalRepairKinds.has(entry['repair'] as JournalRepairKind)) {
+        throw new TypeError(`${type}.repair is unsupported`);
+      }
+      requireNonNegativeInteger(entry['offset'], `${type}.offset`);
+      requireNonNegativeInteger(entry['discardedBytes'], `${type}.discardedBytes`);
+      if (entry['repair'] === 'appended_missing_newline' && (entry['discardedBytes'] as number) !== 0) {
+        throw new TypeError(`${type}.discardedBytes must be zero when only a delimiter was added`);
+      }
+      return;
     case 'session_ready':
       return;
     case 'session_lineage':
@@ -607,6 +669,7 @@ export function reduceToolExecutions(entries: readonly SessionEntry[]): Map<stri
         call: entry.call,
         status: 'planned',
         plannedAt: entry.at,
+        ...(entry.workspaceDigest ? { workspaceDigest: structuredClone(entry.workspaceDigest) } : {}),
       });
       continue;
     }
@@ -802,6 +865,15 @@ export function validateLifecycle(entries: readonly SessionEntry[]): void {
       readySeen = true;
     }
   }
+}
+
+/** Durable record of every append-boundary repair this journal has survived (ADR 0015). */
+export function journalRepairs(
+  entries: readonly SessionEntry[],
+): readonly Extract<LifecycleEntry, { t: 'journal_repaired' }>[] {
+  return entries.filter(
+    (entry): entry is Extract<LifecycleEntry, { t: 'journal_repaired' }> => entry.t === 'journal_repaired',
+  );
 }
 
 /** Declared journal generation; sessions written before the marker are generation 1. */
