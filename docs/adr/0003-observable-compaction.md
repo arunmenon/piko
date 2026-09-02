@@ -75,17 +75,49 @@ is or where it writes.
    The bounded-envelope path is unchanged: if the dropped prefix plus the
    instruction would still overflow, the transcript is serialized and its middle
    truncated against the same binary-searched envelope, now measured with the
-   real system prompt and tools in it. The evidence here is a request-shape test
-   asserting that the summary request's system and tools are byte-identical to
-   the live request's on both sides of the compaction, not a live cache
-   measurement; the cache-read comparison on the dev set is a separate bench run.
+   real system prompt and tools in it.
+
+   When the summary can actually share the cached prefix (corrected 2026-09-02,
+   R2 finding 7). The paragraph above originally said the summary request reads
+   the cached prefix, unconditionally. That wording was wrong. A provider cache
+   key is not only the system prompt and the tool list: Anthropic invalidates a
+   message cache whenever the thinking parameters change, and on some models the
+   system and tool caches with it. The summary shares the cached prefix only when
+   every one of the system prompt, the tool list, the message prefix and the
+   thinking fields equals the live request's. With extended thinking enabled the
+   old summary request matched the first three and not the last: it carried no
+   thinking block at all and a 768-token output cap against a live request's
+   8,192-token thinking budget and 9,216-token cap, so it re-paid the whole
+   prefix it had been built to reuse. The compaction option `matchLiveCacheKey`
+   (default true) now gives the summary request the live thinking budget and an
+   output cap of that budget plus the 768-token summary allowance, so every
+   cache-key field matches. The trade is explicit and runs both ways: matching
+   spends thinking tokens on a handoff note, and not matching re-pays the whole
+   prefix at uncached input rates. A caller who prefers the second sets
+   `matchLiveCacheKey: false` and gets the small no-thinking request back. Which
+   side a compaction took is recorded as `summaryCacheKeyMode` on its
+   `context.compact` span and on the summary request's `model.request` span,
+   with the values `thinking_matched`, `thinking_dropped` and `thinking_off`, so
+   the choice is auditable rather than assumed. The evidence for all of this is a
+   request-shape test asserting that the summary request's system, tools and
+   thinking fields are byte-identical to the live request's on both sides of the
+   compaction. An actual cache-read measurement on the dev set is still
+   outstanding: no claim here has been confirmed against billed cache_read
+   tokens, and until that bench run exists the argument is about request shape
+   only.
 2. Compaction now emits a rehydration block appended to the new session's first
    message, beside the summary rather than inside it. It carries the AGENTS.md
    body when the run is trusted and that body was in the system prompt, and the
    paths of the last N files (default 5, configurable) that the dropped history
-   wrote or edited, as a plain list of stubs. Paths only: the model re-reads what
-   it needs, so a summary that forgot a file is recoverable without copying the
-   dropped content back into context.
+   wrote or edited. Paths only: the model re-reads what it needs, so a summary
+   that forgot a file is recoverable without copying the dropped content back
+   into context. Those paths are attacker-controllable text, so since 2026-09-02
+   (R2 finding 8) they are not a plain bullet list: they are JSON-encoded strings
+   in a fenced `json` block introduced by a line saying the block holds file
+   paths recorded from tool calls and is data, not instructions. A filename
+   carrying a newline and an instruction is then an escaped `\n` inside a JSON
+   string rather than a line of its own, so it can neither start a bullet nor
+   close the fence. The 256-character bound per path is unchanged.
 3. Compaction inside one turn is now bounded explicitly instead of relying on
    the turn terminating. A per-turn counter with a stated cap (default 3,
    configurable) ends the turn `incomplete` with reason `context_window` when the

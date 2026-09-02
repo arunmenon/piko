@@ -66,7 +66,8 @@ number could not be explained. Four measurements close that.
 
 1. Cache eligibility at startup. One stderr line per process states this
    run's fixed prefix size against the provider's minimum cacheable size,
-   and says plainly whether the prefix can cache at all. It measures the
+   and says plainly whether the prefix is expected to cache at all, or
+   that the published minimum for this model is unknown to piko. It measures the
    real prefix, project instructions and extensions included, not the
    default one the budget gate measures. It goes to stderr so the typed
    stdout stream of 0010 is untouched.
@@ -89,16 +90,33 @@ number could not be explained. Four measurements close that.
    sharing a prefix are more than five minutes and less than an hour
    apart; piko does not choose that for the user.
 
-Provider minimums are provider policy and change: Anthropic publishes a
-per-model minimum that has ranged from 512 to 4,096 tokens, and OpenAI
-publishes 1,024. piko carries 1,024 for the general Anthropic case,
-2,048 for the Haiku class, and 1,024 for OpenAI as named constants in
-packages/ai/src/cache.ts, with both documentation URLs in that file's
-header comment. They are configuration of someone else's policy, not a
-piko invariant, and a reader who needs the current number should follow
-the links rather than trust the constant.
+Provider minimums are provider policy and change, and Anthropic
+publishes them per model, not per family. The first version of this
+addendum carried 1,024 for the general Anthropic case and 2,048 for the
+Haiku class. R2 finding 9 showed both were wrong for current models, and
+that the Haiku heuristic erred in the unsafe direction: Haiku 4.5 is
+4,096, not 2,048. packages/ai/src/cache.ts now carries a dated table
+keyed on model id prefix, read on 2026-09-02 from the URL in that file's
+header comment: claude-opus-5 512, claude-opus-4-7 2,048,
+claude-opus-4-6 4,096, claude-opus-4-5 4,096, claude-haiku-4-5 4,096,
+claude-haiku-3-5 2,048, and 1,024 for OpenAI, which publishes one number
+for its whole line. Matching is longest-prefix, so a dated model id
+resolves to its row. They are configuration of someone else's policy,
+not a piko invariant, and a reader who needs the current number should
+follow the links rather than trust the table.
 
-What none of this changes: at ~815 tokens the default prefix is below
-every one of those minimums, so the fixed prefix still does not cache.
-The mechanism that saves money remains the per-turn working set, and the
-new lines make that visible at startup instead of leaving it to 0001.
+An Anthropic model with no row has an unknown minimum, and the
+eligibility line says exactly that: it reports the measured prefix, says
+the minimum for that model is unknown to piko, draws no conclusion, and
+points at the source URL. Guessing a family default would be the same
+defect in a new form. For a model with a known minimum the line no
+longer says the prefix "will not cache" either: it says the prefix is
+below the published minimum and is not expected to cache. piko measures
+the prefix and reads a published number; neither of those is an
+observation of what the provider did.
+
+What none of this changes: at ~815 tokens the default prefix is under
+every minimum in the table, so the fixed prefix is still not expected to
+cache. The mechanism that saves money remains the per-turn working set,
+and the new lines make that visible at startup instead of leaving it to
+0001.
