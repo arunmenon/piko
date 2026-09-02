@@ -1,6 +1,6 @@
 # 0027 - Cooperative graceful shutdown
 
-Status: proposed (2026-09-02; drafted from maturity plan T2 5c under owner amendment 1, ratification pending)
+Status: accepted (2026-09-02 by owner delegation, "take the recommendations", with the in-process-first amendment below; proposed 2026-09-02 from maturity plan T2 5c under owner amendment 1)
 Depends on: 0007, 0009
 
 ## Context
@@ -57,7 +57,7 @@ drain semantics for agent harnesses exists.
   component restarts with state kept outside the component, consistent with an
   external supervisor owning the kill deadline.
 
-## Proposed amendment (2026-09-02, awaiting owner decision R0-4)
+## Amendment (2026-09-02, R0-4 in-process cooperative path first; accepted 2026-09-02 by owner delegation)
 
 Drafted from the 2026-09-02 red-team review and section 4 of
 docs/red-team-remediation-plan-2026-09.md. This is a draft for the owner to

@@ -1,6 +1,6 @@
 # 0026 - Session-scoped and aggregate budget authority
 
-Status: proposed (2026-09-02; drafted from maturity plan T2 5b under owner amendment 5, ratification pending)
+Status: accepted (2026-09-02 by owner delegation, "take the recommendations"; proposed 2026-09-02 from maturity plan T2 5b under owner amendment 5)
 Amends: 0009, 0020
 
 ## Context

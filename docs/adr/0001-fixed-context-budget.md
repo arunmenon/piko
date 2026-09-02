@@ -59,7 +59,7 @@ corroborate or challenge the decision above; they do not change it.
   degrade retrieval from long contexts, the canonical result behind keeping the
   resident prefix small.
 
-## Proposed amendment (2026-09-02, token rent; re-homed from 0017 — awaiting owner ratification)
+## Amendment (2026-09-02, token rent; re-homed from 0017; accepted 2026-09-02 by owner delegation)
 
 1. Every line of the system prompt and every tool schema byte must keep
    paying measurable rent against the fitness function (dollars per

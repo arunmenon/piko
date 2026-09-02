@@ -1,6 +1,6 @@
 # 0021 - Artifact data lifecycle
 
-Status: proposed (2026-08-31; drafted from plan item G13 and the lost-run incident below, owner ratification pending)
+Status: accepted (2026-09-02 by owner delegation, "take the recommendations", with 30-day telemetry, indefinite journals, and the deletion role as drafted; proposed 2026-08-31 from plan item G13 and the lost-run incident below)
 Depends on: 0007, 0013, 0015
 
 ## Context

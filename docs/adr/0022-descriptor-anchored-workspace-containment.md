@@ -78,3 +78,21 @@ race, has four papers behind it.
   Agents", Rashidi, arXiv 2607.05743, 2026 (single-author systematisation of 39
   papers). Names single-check authorization treated as permanently valid as a
   recurring root defect.
+
+## Addendum (2026-09-02, mechanism decision; owner delegation R0-3)
+
+The containment mechanism is the executor path, not a native addon. Under
+the 0018 amendments the five tools' effects, including read, write, edit,
+and map, execute inside a sandboxed tool worker whose filesystem view is
+the workspace and nothing else. A path component swapped to point outside
+the workspace during an operation therefore resolves to nothing the worker
+can reach, and the operation fails closed by the operating-system boundary
+rather than by a re-check. The eight acceptance tests in
+packages/core/tests/containment.test.ts count as satisfied only when they
+pass through the executor on Linux and macOS in CI. On a host with no
+sandbox provider the in-process file tools remain path-based and are not
+race-proof; the README says so and the contained default stays as it is
+today. The native addon exposing openat, renameat, mkdirat, and unlinkat
+remains the recorded fallback if the executor path cannot pass the tests
+on both operating systems. Rationale: it keeps the zero-native-dependency
+property and puts the race behind the same boundary that 0018 needs anyway.

@@ -104,6 +104,17 @@ Everything downstream is gated on decisions only the owner can make.
 | 0022 implementation path | Docker alone does not implement 0022 (see 5a) | Recorded as a dated addendum to 0022, not an informal line |
 | npm scope | @pi/core is unpublished; scope ownership unconfirmed | Ownership or availability of the @pi scope confirmed, or a different scope chosen, before T3 |
 
+Recorded 2026-09-02 by owner delegation ("take the recommendations"):
+token-rent amendment to 0001 accepted; 0021 accepted with 30-day telemetry,
+indefinite journals, and the deletion role named; 0018 accepted with the
+lightweight provider first and the file tools inside the executor; 0022
+mechanism recorded as the executor path with the native addon as fallback;
+0025, 0026, and 0027 accepted with their amendments; 0017 sequenced after
+the variance study; MCP and ACP stay non-goals through T3. Not taken: the
+license and the npm scope, because no recommendation existed; Apache-2.0
+is proposed for the owner and both gate T3 publication only. T1 closes at
+2.7 under the same delegation.
+
 ## 4. Tranche 1: fix the record and the evidence (approved; about 4 days)
 
 Cheap, mostly non-engineering, and it is where the score is being lost
@@ -298,6 +309,7 @@ taken from the re-review, never from the forecast table.
 ## 9. Revision record
 
 - r1 (2026-09-02): initial plan.
+- r3 (2026-09-02): T0 decisions recorded by owner delegation; T2 opened.
 - r2 (2026-09-02): owner's conditional approval folded in. Mandatory:
   SIGTERM semantics per 0007; 0022 not closed by a bind mount, spike
   required; 0018 verbs corrected to acquire/exec/release; control plane

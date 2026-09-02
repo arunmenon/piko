@@ -1,6 +1,6 @@
 # 0018 — Container sandbox executor behind a provider seam
 
-Status: proposed (2026-08-24)
+Status: accepted (2026-09-02 by owner delegation, "take the recommendations"; proposed 2026-08-24; amended below)
 Depends on: 0004, 0006, 0009, 0016
 
 ## Context
@@ -75,7 +75,7 @@ corroborate or challenge the decision above; they do not change it.
   compute. A plain container is not a security boundary unless hardened, so this
   record's non-negotiables need tests rather than prose.
 
-## Proposed amendment (2026-09-02, awaiting owner decision R0-1)
+## Amendment (2026-09-02, R0-1 provider order; accepted 2026-09-02 by owner delegation)
 
 Drafted from the 2026-09-02 red-team review and section 4 of
 docs/red-team-remediation-plan-2026-09.md. This is a draft for the owner to
@@ -92,7 +92,7 @@ Decision text above stands exactly as proposed until then.
   the zero-dependency property for that provider. The owner is choosing between
   that and a default nobody runs.
 
-## Proposed amendment (2026-09-02, awaiting owner decision R0-2)
+## Amendment (2026-09-02, R0-2 file tools inside the executor; accepted 2026-09-02 by owner delegation)
 
 Drafted from the same review and plan section. It changes nothing until the
 owner records the decision.

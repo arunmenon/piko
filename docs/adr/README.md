@@ -24,16 +24,16 @@ new decisions get an ADR in the same change that implements them.
 | 0015 | Durable single-writer session store | accepted |
 | 0016 | Credential handling | accepted |
 | 0017 | Evidence-gated self-improvement (`pi improve`) | **proposed** |
-| 0018 | Container sandbox executor behind a provider seam | **proposed** |
+| 0018 | Container sandbox executor behind a provider seam | accepted |
 | 0019 | Release and compatibility contract | **proposed** |
 | 0020 | Dollar-denominated cost accounting and spend ceilings (amends 0009) | accepted |
-| 0021 | Artifact data lifecycle | **proposed** |
+| 0021 | Artifact data lifecycle | accepted |
 | 0022 | Descriptor-anchored workspace containment (amends 0006) | accepted |
 | 0023 | Lock-capability session API (amends 0015) | accepted |
 | 0024 | Explicit stale-lock recovery (amends 0015) | accepted |
-| 0025 | Provider capability contract (depends on 0008) | **proposed** |
-| 0026 | Session-scoped and aggregate budget authority (amends 0009, 0020) | **proposed** |
-| 0027 | Cooperative graceful shutdown | **proposed** |
+| 0025 | Provider capability contract (depends on 0008) | accepted |
+| 0026 | Session-scoped and aggregate budget authority (amends 0009, 0020) | accepted |
+| 0027 | Cooperative graceful shutdown | accepted |
 
 Headers may carry `Amends` / `Amended-by` / `Depends on` lines; the records
 they link are never edited beyond those pointers and dated addenda.

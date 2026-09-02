@@ -1,6 +1,6 @@
 # 0025 - Provider capability contract
 
-Status: proposed (2026-09-02; renumbered from the plan's phantom "ADR 0022" reference, owner ratification pending)
+Status: accepted (2026-09-02 by owner delegation, "take the recommendations", with the registry-sourced amendment below; proposed 2026-09-02, renumbered from the plan's phantom "ADR 0022" reference)
 Depends on: 0008
 
 ## Context
@@ -54,7 +54,7 @@ and models.dev are the de facto ones.
   et al., arXiv 2511.07424, 2025. Timeouts dominate real inference incidents, so
   timeout behaviour belongs in the declared capability set.
 
-## Proposed amendment (2026-09-02, awaiting owner decision R0-9)
+## Amendment (2026-09-02, R0-9 registry-sourced capabilities; accepted 2026-09-02 by owner delegation)
 
 Drafted from the 2026-09-02 red-team review and section 4 of
 docs/red-team-remediation-plan-2026-09.md. This is a draft for the owner to
