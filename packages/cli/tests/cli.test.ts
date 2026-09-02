@@ -292,14 +292,18 @@ test('an explicitly requested locked session fails instead of silently starting 
 });
 
 /** A REPL that never contacts a provider: only slash commands are typed. */
-function runScriptedRepl(input: string): { stdout: string; stderr: string; status: number | null } {
+function runScriptedRepl(
+  input: string,
+  profile: { provider: 'openai' | 'anthropic'; model: string } = { provider: 'openai', model: 'gpt-test' },
+): { stdout: string; stderr: string; status: number | null } {
   const cli = resolve(import.meta.dirname, '..', 'dist', 'main.js');
   const workspace = mkdtempSync(join(tmpdir(), 'pi-cli-cache-'));
-  const env = { ...process.env, HOME: workspace, OPENAI_API_KEY: 'test-key' };
-  delete env['ANTHROPIC_API_KEY'];
+  const env = { ...process.env, HOME: workspace, OPENAI_API_KEY: 'test-key', ANTHROPIC_API_KEY: 'test-key' };
+  if (profile.provider === 'openai') delete env['ANTHROPIC_API_KEY'];
+  else delete env['OPENAI_API_KEY'];
   const result = spawnSync(
     process.execPath,
-    [cli, '--profile', 'openai', '--model', 'gpt-test', '--offline-pricing'],
+    [cli, '--profile', profile.provider, '--model', profile.model, '--offline-pricing'],
     { cwd: workspace, encoding: 'utf8', env, input },
   );
   return { stdout: result.stdout, stderr: result.stderr, status: result.status };
@@ -313,6 +317,23 @@ test('startup states cache eligibility on stderr, outside the stdout stream (001
   // Printed once per process, and never on the typed stdout surface.
   assert.equal(result.stderr.match(/cache eligibility:/g)?.length, 1);
   assert.doesNotMatch(result.stdout, /cache eligibility:/);
+});
+
+test('a known Anthropic model states its published minimum as an expectation, not a certainty (0014)', () => {
+  const result = runScriptedRepl('/exit\n', { provider: 'anthropic', model: 'claude-opus-4-5' });
+  assert.equal(result.status, 0);
+  assert.match(result.stderr, /cache eligibility: anthropic\/claude-opus-4-5/);
+  assert.match(result.stderr, /4096-token minimum cacheable size/);
+  assert.match(result.stderr, /below the published minimum and is not expected to cache/);
+  assert.doesNotMatch(result.stderr, /will not cache/);
+});
+
+test('an Anthropic model with no published row draws no conclusion at startup (0014)', () => {
+  const result = runScriptedRepl('/exit\n', { provider: 'anthropic', model: 'claude-sonnet-5' });
+  assert.equal(result.status, 0);
+  assert.match(result.stderr, /cache eligibility: anthropic\/claude-sonnet-5/);
+  assert.match(result.stderr, /minimum cacheable size for this model is unknown to piko/);
+  assert.match(result.stderr, /no conclusion is drawn/);
 });
 
 test('a mid-session model switch warns that the cache key changes (0014)', () => {
