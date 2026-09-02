@@ -34,3 +34,51 @@ economic mechanism — this ADR owns that mechanism.
 - Costs: append-only discipline constrains future features (anything that
   edits history must batch or fork), and first turns/short sessions/fleet
   fan-outs pay uncached rates — the regime where the small prefix wins anyway.
+
+
+## Addendum (2026-09-02, cache measurement)
+
+R2-9 of docs/red-team-remediation-plan-2026-09.md. The decision above is
+unchanged. The red-team review's finding was narrower than "no hit rate
+anywhere": `pi --audit`, `/tokens`, and `--usage` already carry a hit
+rate. What was missing was everything upstream of the hit rate, so a low
+number could not be explained. Four measurements close that.
+
+1. Cache eligibility at startup. One stderr line per process states this
+   run's fixed prefix size against the provider's minimum cacheable size,
+   and says plainly whether the prefix can cache at all. It measures the
+   real prefix, project instructions and extensions included, not the
+   default one the budget gate measures. It goes to stderr so the typed
+   stdout stream of 0010 is untouched.
+2. Model switches. `/model` in the REPL now warns that the prompt cache
+   key includes the model and profile, so the next request re-pays the
+   full prefix and this session's cached history. It warns only when the
+   key actually changes; re-selecting the running model is silent.
+3. Bench hit rate. bench/compare_runs.py gains a hit% column per side,
+   cache_read divided by the whole input side (uncached plus cache read
+   plus cache write), from fields it already parsed. It is blank, not
+   zero, for a source that reports no split, which is every Terminus
+   baseline run; a reported zero prints as 0%.
+4. TTL selection. `profiles.<name>.cacheTtl` accepts the two values
+   Anthropic documents, 5m and 1h, validated at config parse and again at
+   profile resolution. Anthropic maps it onto every cache_control
+   breakpoint; OpenAI exposes no cache-lifetime control and ignores it.
+   Omitted leaves the request body byte-identical to the pre-option
+   shape, so adding the option cannot move an existing cache key. The
+   1-hour TTL doubles the write price, so it pays only when requests
+   sharing a prefix are more than five minutes and less than an hour
+   apart; piko does not choose that for the user.
+
+Provider minimums are provider policy and change: Anthropic publishes a
+per-model minimum that has ranged from 512 to 4,096 tokens, and OpenAI
+publishes 1,024. piko carries 1,024 for the general Anthropic case,
+2,048 for the Haiku class, and 1,024 for OpenAI as named constants in
+packages/ai/src/cache.ts, with both documentation URLs in that file's
+header comment. They are configuration of someone else's policy, not a
+piko invariant, and a reader who needs the current number should follow
+the links rather than trust the constant.
+
+What none of this changes: at ~815 tokens the default prefix is below
+every one of those minimums, so the fixed prefix still does not cache.
+The mechanism that saves money remains the per-turn working set, and the
+new lines make that visible at startup instead of leaving it to 0001.

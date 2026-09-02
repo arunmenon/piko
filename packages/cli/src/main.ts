@@ -8,6 +8,7 @@ import {
   contextWindowFor,
   configPath,
   credentialDescriptor,
+  describeCacheEligibility,
   emptyUsage,
   loadConfig,
   resolveProfile,
@@ -26,6 +27,7 @@ import {
   defaultTools,
   discoverSkills,
   emptyCostSummary,
+  fixedPrefixSize,
   latestSessionFile,
   listSessionsWithLockState,
   LockedSessionHeadError,
@@ -264,6 +266,19 @@ async function setup(args: CliArgs): Promise<Setup> {
     ],
     { source: 'configured tools' },
   );
+  const systemPrompt = buildSystemPrompt({ cwd, agentsMd, skills, bashAvailable: args.allowHostBash });
+  // ADR 0014: state the cache-eligibility measurement once per process, on
+  // stderr so it never enters the typed stdout stream. The prefix measured here
+  // is this run's real one, project instructions and extensions included.
+  process.stderr.write(
+    dim(
+      `${describeCacheEligibility({
+        provider: profile.provider,
+        model: profile.model,
+        prefixTokens: fixedPrefixSize(systemPrompt, tools).totalTokens,
+      })}\n`,
+    ),
+  );
   const session = openSession(args, cwd, profile.model);
   const approval = args.requireApproval ?? profile.approval;
   const envWindow = Number(process.env['PI_CONTEXT_WINDOW']);
@@ -280,7 +295,7 @@ async function setup(args: CliArgs): Promise<Setup> {
     autoCompact: args.autoCompact,
     flailGuard: args.flailGuard,
     offload: args.offload,
-    systemPrompt: buildSystemPrompt({ cwd, agentsMd, skills, bashAvailable: args.allowHostBash }),
+    systemPrompt,
     allowHostBash: args.allowHostBash,
     // Provenance is restricted to the flag and the user config file. Project
     // content loaded by --trust-project and extensions never reach this field.
@@ -852,6 +867,8 @@ async function repl(args: CliArgs): Promise<number> {
           const parts = result.switchModel.split(/\s+/).filter(Boolean);
           const profileName = parts.length > 1 ? parts[0] : runtimeSetup.profile.name;
           const model = parts.length > 1 ? parts.slice(1).join(' ') : parts[0]!;
+          const previousProfileName = runtimeSetup.profile.name;
+          const previousModel = agent.model;
           try {
             const profile = resolveProfile(runtimeSetup.config, profileName, model);
             const envWindow = Number(process.env['PI_CONTEXT_WINDOW']);
@@ -865,6 +882,15 @@ async function repl(args: CliArgs): Promise<number> {
             process.stdout.write(
               `model: ${oneLine(profile.name, 128)}:${oneLine(profile.model, 256)} (${contextWindow.toLocaleString()} context)\n`,
             );
+            // ADR 0014: the prompt cache is keyed by model and endpoint, so a
+            // mid-session switch abandons the warm prefix rather than extending it.
+            if (profile.model !== previousModel || profile.name !== previousProfileName) {
+              process.stdout.write(
+                dim(
+                  'cache: switching model or profile changes the prompt cache key; the next request re-pays the full prefix and this session\'s cached history\n',
+                ),
+              );
+            }
           } catch (error) {
             process.stdout.write(red(`model switch failed: ${String(error)}\n`));
           }

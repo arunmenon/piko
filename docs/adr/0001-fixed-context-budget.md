@@ -44,3 +44,50 @@ raise the budget in the same commit with justification.
    (create-bucket 0-for-history to 3/3); the tool-batching line failed a
    three-grid audit ($0.202 to $0.188 to $0.227 per failure) and was
    reverted 2026-08-25, returning the baseline to 815.
+
+
+## Addendum (2026-09-02, two-number gate and eligibility)
+
+R2-8 of docs/red-team-remediation-plan-2026-09.md. The accepted decision
+above is unchanged: one number, the default prefix, is still the only
+thing the ratchet and the 1,000-token ceiling apply to. What changes is
+what the gate reports next to it, because a gate that measures the
+default prefix alone invites the reading that the default prefix is the
+whole first request.
+
+`npm run check-budget` now prints three things.
+
+1. The ratcheted default prefix, exactly as before: system prompt plus
+   built-in tool schemas, against the hard ceiling and the committed
+   baseline in scripts/budget-baseline.json. Unchanged at ~815 tokens;
+   the gate still exits non-zero when it grows.
+2. A bounded worst-case first request, reported only. It is the default
+   prefix plus every first-request input that has a byte cap expressed as
+   a constant, each at its cap: MAX_AGENTS_MD_BYTES (32,768 bytes,
+   ~8,192 tokens), MAX_SKILL_INDEX_ENTRIES times MAX_SKILL_SUMMARY_BYTES
+   (51,200 bytes, ~12,800 tokens), and
+   DEFAULT_MAX_TOOL_SET_SCHEMA_BYTES (8,192 bytes, ~2,048 tokens). Today
+   that totals ~23,855 tokens. Two things keep it honest as an upper
+   bound rather than a forecast: the tool-schema ceiling covers the whole
+   tool set, so the built-in schemas already inside number one are
+   counted twice, and the byte-to-token conversion assumes one character
+   per byte. Neither the ratchet nor the ceiling applies to this number.
+3. A cache-eligibility line per provider, computed from the same measured
+   prefix (see the 0014 addendum of the same date for the constants and
+   their sources). At ~815 tokens the default prefix clears no supported
+   provider minimum, which is the caching inversion this ADR already
+   concedes, now printed rather than remembered.
+
+Open item, from what number two exposes: the skill index is only
+partly bounded. Entry counts and summary bytes have constants; the
+per-entry skill name and path bytes have none, and are bounded only by
+the filesystem name limit. The gate prints them as UNBOUNDED rather than
+inventing a cap. Fifty entries with long names and deep paths is a small
+number of tokens in practice and an unbounded one on paper, so closing
+it means adding a real constant, not a bigger estimate. Until then the
+worst case in number two is a worst case over the bounded inputs only.
+
+The arithmetic lives in packages/core/src/context-budget.ts with unit
+tests in packages/core/tests/prompt.test.ts, so it can be checked
+without running the gate. Because that module reads the shared token
+estimator from @pi/ai, `npm run check-budget` now builds first.

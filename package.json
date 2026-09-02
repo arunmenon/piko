@@ -24,6 +24,7 @@
     "typecheck:eval": "tsc -p eval/tsconfig.json",
     "test:unit": "node --import tsx --test packages/ai/tests/*.test.ts packages/core/tests/*.test.ts packages/cli/tests/*.test.ts eval/*.test.ts",
     "test:bench": "python3 -m unittest discover -s bench -p 'test_*.py'",
+    "precheck-budget": "npm run build",
     "check-budget": "node --import tsx scripts/check-budget.ts",
     "preeval": "npm run build",
     "eval": "node --import tsx eval/run.ts",

@@ -168,6 +168,44 @@ test('an explicitly requested locked session fails instead of silently starting 
   }
 });
 
+/** A REPL that never contacts a provider: only slash commands are typed. */
+function runScriptedRepl(input: string): { stdout: string; stderr: string; status: number | null } {
+  const cli = resolve(import.meta.dirname, '..', 'dist', 'main.js');
+  const workspace = mkdtempSync(join(tmpdir(), 'pi-cli-cache-'));
+  const env = { ...process.env, HOME: workspace, OPENAI_API_KEY: 'test-key' };
+  delete env['ANTHROPIC_API_KEY'];
+  const result = spawnSync(
+    process.execPath,
+    [cli, '--profile', 'openai', '--model', 'gpt-test', '--offline-pricing'],
+    { cwd: workspace, encoding: 'utf8', env, input },
+  );
+  return { stdout: result.stdout, stderr: result.stderr, status: result.status };
+}
+
+test('startup states cache eligibility on stderr, outside the stdout stream (0014)', () => {
+  const result = runScriptedRepl('/exit\n');
+  assert.equal(result.status, 0);
+  assert.match(result.stderr, /cache eligibility: openai\/gpt-test/);
+  assert.match(result.stderr, /minimum cacheable size/);
+  // Printed once per process, and never on the typed stdout surface.
+  assert.equal(result.stderr.match(/cache eligibility:/g)?.length, 1);
+  assert.doesNotMatch(result.stdout, /cache eligibility:/);
+});
+
+test('a mid-session model switch warns that the cache key changes (0014)', () => {
+  const switched = runScriptedRepl('/model gpt-other\n/exit\n');
+  assert.equal(switched.status, 0);
+  assert.match(switched.stdout, /model: openai:gpt-other/);
+  assert.match(switched.stdout, /prompt cache key/);
+  assert.match(switched.stdout, /re-pays the full prefix/);
+
+  // Re-selecting the running model keeps the cache key, so it must not warn.
+  const unchanged = runScriptedRepl('/model gpt-test\n/exit\n');
+  assert.equal(unchanged.status, 0);
+  assert.match(unchanged.stdout, /model: openai:gpt-test/);
+  assert.doesNotMatch(unchanged.stdout, /prompt cache key/);
+});
+
 test('interpolate replaces every $ARGUMENTS occurrence', () => {
   const template = { name: 'review', body: 'Review $ARGUMENTS carefully. Focus: $ARGUMENTS', source: 'x' };
   assert.equal(interpolate(template, 'src/'), 'Review src/ carefully. Focus: src/');

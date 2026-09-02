@@ -47,6 +47,28 @@ test('approval gating is read from user config, per profile or as a default', ()
   }
 });
 
+test('cacheTtl is a validated profile option that only Anthropic receives', () => {
+  const config = validateConfig({
+    profiles: {
+      long: { provider: 'anthropic', model: 'm', apiKeyEnv: 'CFG_TTL_KEY', cacheTtl: '1h' },
+      plain: { provider: 'anthropic', model: 'm', apiKeyEnv: 'CFG_TTL_KEY' },
+      other: { provider: 'openai', model: 'm', apiKeyEnv: 'CFG_TTL_KEY', cacheTtl: '1h' },
+    },
+  });
+  assert.equal(config.profiles?.['long']?.cacheTtl, '1h');
+  process.env['CFG_TTL_KEY'] = 'test-key';
+  try {
+    assert.equal(resolveProfile(config, 'long').cacheTtl, '1h');
+    assert.equal(resolveProfile(config, 'plain').cacheTtl, undefined, 'omitted means the provider default');
+    // The option is carried on any profile; providerFor is what drops it for OpenAI.
+    assert.equal(resolveProfile(config, 'other').cacheTtl, '1h');
+  } finally {
+    delete process.env['CFG_TTL_KEY'];
+  }
+  assert.throws(() => validateConfig({ profiles: { p: { cacheTtl: '30m' } } }), /profiles\.p\.cacheTtl must be one of 5m, 1h/);
+  assert.throws(() => validateConfig({ profiles: { p: { cacheTtl: 3600 } } }), /profiles\.p\.cacheTtl/);
+});
+
 test('validateConfig rejects an approval policy that is neither "*" nor a list of tool names', () => {
   assert.throws(() => validateConfig({ approval: 'bash' }), /must be "\*" or an array/);
   assert.throws(() => validateConfig({ approval: ['bash', ''] }), /must be "\*" or an array/);

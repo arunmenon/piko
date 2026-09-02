@@ -66,7 +66,13 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 export function providerFor(profile: Profile): Provider {
   if (profile.provider === 'anthropic') {
-    return new AnthropicProvider(profile.apiKey, profile.baseUrl ?? 'https://api.anthropic.com');
+    // cacheTtl is Anthropic-only; the OpenAI adapter below ignores it because
+    // the provider exposes no cache-lifetime control (ADR 0014).
+    return new AnthropicProvider(
+      profile.apiKey,
+      profile.baseUrl ?? 'https://api.anthropic.com',
+      profile.cacheTtl === undefined ? {} : { cacheTtl: profile.cacheTtl },
+    );
   }
   return new OpenAIProvider(profile.apiKey, profile.baseUrl ?? 'https://api.openai.com/v1');
 }
