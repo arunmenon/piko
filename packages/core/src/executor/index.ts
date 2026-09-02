@@ -26,7 +26,13 @@ import { workerHostFor } from './worker-host.js';
 
 export * from './types.js';
 export * from './protocol.js';
-export { resolveExecutableOnPath, WORKER_SHELL_NAME } from './resolve-executable.js';
+export {
+  readShellPathArgument,
+  resolveExecutableOnPath,
+  shellPathArguments,
+  WORKER_SHELL_NAME,
+  WORKER_SHELL_PATH_FLAG,
+} from './resolve-executable.js';
 export {
   bubblewrapProvider,
   createBubblewrapProvider,

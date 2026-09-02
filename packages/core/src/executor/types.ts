@@ -142,10 +142,12 @@ export interface SandboxSelfTestChecks {
   readonly parentMarkerAbsent: boolean;
   readonly markerDetail: string;
   /**
-   * The worker must be able to start a child process: the shell the bash tool
-   * will reach, run as `bash -c true` through the same spawn path that tool
-   * uses. A sandbox that hosts four tools and refuses the fifth is worse than
-   * no sandbox, because it looks like it works.
+   * The worker must be able to start a child process: the shell at the absolute
+   * path this spec resolved, run as `<shell> -c true` through the same spawn
+   * path the bash tool uses, which is the same absolute path. A sandbox that
+   * hosts four tools and refuses the fifth is worse than no sandbox, because it
+   * looks like it works. The bare-name spelling is reported in the detail as a
+   * diagnostic and does not decide this flag.
    */
   readonly childProcessStarted: boolean;
   readonly childProcessDetail: string;

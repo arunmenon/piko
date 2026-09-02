@@ -313,6 +313,7 @@ interface BashResult {
 }
 
 function runBash(
+  shellExecutablePath: string,
   command: string,
   cwd: string,
   timeoutMs: number,
@@ -326,7 +327,7 @@ function runBash(
   const script = `${command}\n__pi_exit=$?; printf '\\n${CWD_SENTINEL}%s' "$PWD" >&2; exit $__pi_exit`;
   return new Promise((resolvePromise) => {
     // detached => own process group, so timeout/abort can kill the whole tree
-    const child = spawn('bash', ['-c', script], {
+    const child = spawn(shellExecutablePath, ['-c', script], {
       cwd,
       env: environment,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -392,86 +393,115 @@ function runBash(
   });
 }
 
-export const bashTool: Tool = {
-  name: 'bash',
-  description:
-    'Run unsandboxed host bash from the project (search, git, tests, any CLI). It can access host files and network. Working directory persists across calls. Non-interactive commands only.',
-  parameters: {
-    type: 'object',
-    properties: {
-      command: { type: 'string' },
-      timeout_seconds: { type: 'number', description: `default ${DEFAULT_TIMEOUT_S}, max ${MAX_TIMEOUT_S}` },
+/** The shell a bash tool spawns when its caller names no other one. */
+const DEFAULT_SHELL_EXECUTABLE = 'bash';
+
+export interface BashToolOptions {
+  /**
+   * Absolute path of the shell this tool spawns, defaulting to the bare name
+   * `bash` resolved on the child's PATH. The sandbox worker names the path its
+   * acquire spec resolved: inside a Seatbelt profile a bare name goes through
+   * execvp, which walks PATH and gives up on the first directory that answers
+   * EPERM rather than skipping past it, so a denied directory earlier on the
+   * PATH fails a spawn that the same shell's absolute path completes.
+   */
+  readonly shellExecutablePath?: string;
+}
+
+/** Build a bash tool bound to one shell. */
+export function createBashTool(options: BashToolOptions = {}): Tool {
+  const shellExecutablePath = options.shellExecutablePath ?? DEFAULT_SHELL_EXECUTABLE;
+  return {
+    name: 'bash',
+    description:
+      'Run unsandboxed host bash from the project (search, git, tests, any CLI). It can access host files and network. Working directory persists across calls. Non-interactive commands only.',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: { type: 'string' },
+        timeout_seconds: { type: 'number', description: `default ${DEFAULT_TIMEOUT_S}, max ${MAX_TIMEOUT_S}` },
+      },
+      required: ['command'],
     },
-    required: ['command'],
-  },
 
-  async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolOutput> {
-    const command = requireString(args, 'command');
-    if (context.policy?.bash?.allowHostExecution !== true) {
-      return textOutput(
-        'host bash execution is disabled by tool policy; run inside an isolated executor or explicitly allow host bash',
-        true,
-      );
-    }
-    const timeoutS = Math.min(
-      typeof args['timeout_seconds'] === 'number' && args['timeout_seconds'] > 0
-        ? args['timeout_seconds']
-        : DEFAULT_TIMEOUT_S,
-      MAX_TIMEOUT_S,
-    );
-    // Validate the configured root and current directory before starting a host
-    // process. This does not replace an OS sandbox, but prevents persisted cwd
-    // state from escaping the workspace boundary.
-    resolveWorkspaceRoot(context);
-    const executionCwd = resolveWorkspacePath(context, context.cwd, { allowAbsolute: true });
-    if (!statSync(executionCwd).isDirectory()) throw new Error(`bash cwd is not a directory: ${executionCwd}`);
-    const bashPolicy = context.policy?.bash;
-    const environment = sanitizedBashEnvironment(bashPolicy);
-    if (context.observePolicy) {
-      const stripped = strippedNames(environment);
-      if (stripped.length > 0) {
-        await context.observePolicy({
-          kind: 'environment_sanitized',
-          strippedCount: stripped.length,
-          strippedNames: stripped,
-          allowlist: [...inheritedNames(bashPolicy)].sort(),
-          allowlistSource:
-            (bashPolicy?.inheritEnvironment?.length ?? 0) > 0 ||
-            Object.keys(bashPolicy?.environment ?? {}).length > 0
-              ? 'policy'
-              : 'default',
-        });
+    async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolOutput> {
+      const command = requireString(args, 'command');
+      if (context.policy?.bash?.allowHostExecution !== true) {
+        return textOutput(
+          'host bash execution is disabled by tool policy; run inside an isolated executor or explicitly allow host bash',
+          true,
+        );
       }
-    }
-    const result = await runBash(command, executionCwd, timeoutS * 1000, environment, context.signal);
-
-    let stderr = result.stderr;
-    let cwdPolicyError: string | undefined;
-    const tailIndex = result.stderrTail.lastIndexOf(CWD_SENTINEL);
-    if (tailIndex !== -1) {
-      const newCwd = result.stderrTail.slice(tailIndex + CWD_SENTINEL.length).trim();
-      const inStderr = stderr.lastIndexOf(CWD_SENTINEL);
-      if (inStderr !== -1) stderr = stderr.slice(0, inStderr).replace(/\n$/, '');
-      if (newCwd && newCwd !== context.cwd) {
-        try {
-          const resolvedCwd = resolveWorkspacePath(context, newCwd, { allowAbsolute: true });
-          if (!statSync(resolvedCwd).isDirectory()) throw new Error(`not a directory: ${resolvedCwd}`);
-          context.setCwd(resolvedCwd);
-        } catch (error) {
-          cwdPolicyError = String(error);
+      const timeoutS = Math.min(
+        typeof args['timeout_seconds'] === 'number' && args['timeout_seconds'] > 0
+          ? args['timeout_seconds']
+          : DEFAULT_TIMEOUT_S,
+        MAX_TIMEOUT_S,
+      );
+      // Validate the configured root and current directory before starting a host
+      // process. This does not replace an OS sandbox, but prevents persisted cwd
+      // state from escaping the workspace boundary.
+      resolveWorkspaceRoot(context);
+      const executionCwd = resolveWorkspacePath(context, context.cwd, { allowAbsolute: true });
+      if (!statSync(executionCwd).isDirectory()) throw new Error(`bash cwd is not a directory: ${executionCwd}`);
+      const bashPolicy = context.policy?.bash;
+      const environment = sanitizedBashEnvironment(bashPolicy);
+      if (context.observePolicy) {
+        const stripped = strippedNames(environment);
+        if (stripped.length > 0) {
+          await context.observePolicy({
+            kind: 'environment_sanitized',
+            strippedCount: stripped.length,
+            strippedNames: stripped,
+            allowlist: [...inheritedNames(bashPolicy)].sort(),
+            allowlistSource:
+              (bashPolicy?.inheritEnvironment?.length ?? 0) > 0 ||
+              Object.keys(bashPolicy?.environment ?? {}).length > 0
+                ? 'policy'
+                : 'default',
+          });
         }
       }
-    }
+      const result = await runBash(
+        shellExecutablePath,
+        command,
+        executionCwd,
+        timeoutS * 1000,
+        environment,
+        context.signal,
+      );
 
-    let text = result.stdout;
-    if (stderr.trim().length > 0) text += `${text.length > 0 ? '\n' : ''}[stderr]\n${stderr}`;
-    text = truncateMiddle(text);
-    // exitCode null (spawn failure or signal kill) is a failure, not a success
-    const failed = result.timedOut || result.aborted || result.exitCode !== 0 || cwdPolicyError !== undefined;
-    if (result.aborted) text += '\n[interrupted by user]';
-    else if (result.timedOut) text += `\n[timed out after ${timeoutS}s]`;
-    else if (result.exitCode !== 0) text += `\n[exit code ${result.exitCode ?? 'killed'}]`;
-    if (cwdPolicyError) text += `\n[working directory rejected: ${cwdPolicyError}]`;
-    return textOutput(text.trim().length > 0 ? text : '(no output)', failed);
-  },
-};
+      let stderr = result.stderr;
+      let cwdPolicyError: string | undefined;
+      const tailIndex = result.stderrTail.lastIndexOf(CWD_SENTINEL);
+      if (tailIndex !== -1) {
+        const newCwd = result.stderrTail.slice(tailIndex + CWD_SENTINEL.length).trim();
+        const inStderr = stderr.lastIndexOf(CWD_SENTINEL);
+        if (inStderr !== -1) stderr = stderr.slice(0, inStderr).replace(/\n$/, '');
+        if (newCwd && newCwd !== context.cwd) {
+          try {
+            const resolvedCwd = resolveWorkspacePath(context, newCwd, { allowAbsolute: true });
+            if (!statSync(resolvedCwd).isDirectory()) throw new Error(`not a directory: ${resolvedCwd}`);
+            context.setCwd(resolvedCwd);
+          } catch (error) {
+            cwdPolicyError = String(error);
+          }
+        }
+      }
+
+      let text = result.stdout;
+      if (stderr.trim().length > 0) text += `${text.length > 0 ? '\n' : ''}[stderr]\n${stderr}`;
+      text = truncateMiddle(text);
+      // exitCode null (spawn failure or signal kill) is a failure, not a success
+      const failed = result.timedOut || result.aborted || result.exitCode !== 0 || cwdPolicyError !== undefined;
+      if (result.aborted) text += '\n[interrupted by user]';
+      else if (result.timedOut) text += `\n[timed out after ${timeoutS}s]`;
+      else if (result.exitCode !== 0) text += `\n[exit code ${result.exitCode ?? 'killed'}]`;
+      if (cwdPolicyError) text += `\n[working directory rejected: ${cwdPolicyError}]`;
+      return textOutput(text.trim().length > 0 ? text : '(no output)', failed);
+    },
+  };
+}
+
+/** The host-side bash tool: the shell comes from the child's own PATH search. */
+export const bashTool: Tool = createBashTool();
