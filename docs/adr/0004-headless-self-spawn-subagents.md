@@ -28,6 +28,29 @@ shell's job; personas are prompt templates.
   cache inheritance between parent and child (children re-pay the prefix). These
   are v0.3+ concerns (structured child-run identities) if real use demands them.
 
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it.
+
+- corroborates: "Why Do Multi-Agent LLM Systems Fail?" (MAST), Cemri et al.,
+  arXiv 2503.13657, 2025. Across more than 1,600 traces, failures cluster in
+  system design and inter-agent misalignment, with step repetition alone at
+  15.7%.
+- corroborates: "Capable language models can outgrow the benefits of
+  collaboration", Kim et al., Nature Machine Intelligence, 2026. Across 260
+  configurations, once a single agent exceeds about 45% baseline, adding agents
+  rarely helps; SWE-bench Verified saw losses of 1% to 13% from multi-agent
+  variants.
+- corroborates: "Single-Agent LLMs Outperform Multi-Agent Systems", Tran &
+  Kiela, arXiv 2604.02460, 2026. Under matched token budgets, the reported
+  advantages of multi-agent systems vanish.
+- corroborates: "CodeDelegator", Fei et al., arXiv 2601.14914, 2026. Fresh
+  ephemeral coder instances isolated from a persistent delegator lift MCPMark
+  success from 26.4% to 38.4%, direct evidence for the context-firewall pattern
+  this record chose.
+
 ## Addendum (2026-08-19)
 
 0006 later made host bash deny-by-default, which interacts with this decision:

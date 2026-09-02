@@ -51,3 +51,62 @@ Non-negotiables, enforced by construction:
 - The workspace-only mount rule constrains future features: anything that
   wants the model to read harness state must export it into the workspace
   explicitly, never widen the mount.
+
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it.
+
+- corroborates: "Sandlock", Wang & Zheng, arXiv 2605.26298, 2026. Unprivileged
+  Landlock and seccomp confinement for agent code, with static filesystem and
+  port policy, supervisor-mediated egress with resolved-endpoint allowlists and
+  DNS pinning, at about 5 ms startup against Docker; a research precedent for a
+  lightweight first provider.
+- corroborates: "Firecracker", Agache et al., NSDI 2020. The microVM reference
+  for the additive provider this seam anticipates.
+- corroborates: "The True Cost of Containing", Young et al., HotCloud 2019.
+  gVisor costs more than 2 times in syscall overhead, which prices the heavier
+  isolation options against the lighter ones.
+- challenges: "Quantifying Frontier LLM Capabilities for Container Sandbox
+  Escape", Marchand et al., UK AISI, arXiv 2603.02277, 2026. Frontier models
+  comfortably escape misconfigured containers across 18 scenarios, about 40% at
+  medium difficulty and 0% at the hardest, with success scaling log-linearly in
+  compute. A plain container is not a security boundary unless hardened, so this
+  record's non-negotiables need tests rather than prose.
+
+## Proposed amendment (2026-09-02, awaiting owner decision R0-1)
+
+Drafted from the 2026-09-02 red-team review and section 4 of
+docs/red-team-remediation-plan-2026-09.md. This is a draft for the owner to
+accept or reject. It changes nothing until the owner records the decision; the
+Decision text above stands exactly as proposed until then.
+
+- Provider order. The first provider is the lightweight one: bwrap plus seccomp
+  on Linux and Seatbelt on macOS, or `@anthropic-ai/sandbox-runtime` taken as a
+  dependency. Docker becomes the second provider, for CI. Per-exec Docker
+  latency on a macOS development host is a virtual-machine round trip for every
+  `ls`, which is the wrong default for interactive work and the reason a
+  Docker-first seam has not shipped.
+- The cost is stated plainly: a native or third-party sandbox dependency ends
+  the zero-dependency property for that provider. The owner is choosing between
+  that and a default nobody runs.
+
+## Proposed amendment (2026-09-02, awaiting owner decision R0-2)
+
+Drafted from the same review and plan section. It changes nothing until the
+owner records the decision.
+
+- Where the tools run. All five tools' effects execute inside the executor, the
+  file tools included, while the control plane (session store, journal,
+  approvals, budgets) stays outside it. An executor that only runs commands
+  leaves 0022 needing a native helper regardless, so the whole-process shape is
+  what makes the seam worth its cost.
+- Fail-closed is hard-coded, not a flag. When no usable provider is found the
+  run refuses to start rather than falling back to host execution.
+- The egress proxy is designed as the credential injection point from the
+  start, even though v1 networking is none, so credentials are injected at the
+  boundary rather than merely absent from the sandbox environment (0016).
+- Host bash gets a fresh PID namespace on Linux wherever bwrap is present, which
+  closes the read of the parent process environment that 0016 records as
+  residual risk.

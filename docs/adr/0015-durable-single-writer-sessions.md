@@ -36,6 +36,26 @@ scrolled through tool output.
   silent skipping — chosen deliberately after the earlier skip-and-continue
   behavior masked data loss.
 
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it.
+
+- corroborates: "All File Systems Are Not Created Equal", Pillai et al., OSDI
+  2014. 60 crash vulnerabilities in 11 applications from unwarranted atomicity
+  and ordering assumptions, including a missing directory fsync, which is why
+  this record fsyncs the directory as well as the file.
+- corroborates: "Crash Consistency", Pillai, Chidambaram & Arpaci-Dusseau, ACM
+  Queue 2015, doi 10.1145/2800695.2801719. Torn and reordered writes are the
+  norm, so tolerating a torn tail is the correct posture.
+- corroborates: "Can Applications Recover from fsync Failures?", Rebello et al.,
+  ATC 2020. PostgreSQL and Redis silently lose data on fsync failure; the case
+  for poisoning the session on an uncertain write rather than continuing.
+- corroborates: "Model-Based Failure Analysis of Journaling File Systems",
+  Prabhakaran et al., DSN 2005. Partial-write mishandling motivates
+  application-level validation of middle rows.
+
 ## Amendment (2026-08-24, from external review)
 
 The Decision text above overstated two properties, confirmed by an

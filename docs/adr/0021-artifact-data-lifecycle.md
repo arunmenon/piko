@@ -52,6 +52,27 @@ One written lifecycle contract covering every artifact class:
   in CI) are implementation work that follows ratification.
 
 
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it.
+
+- corroborates: "Holistic Agent Leaderboard", Kapoor et al., ICLR 2026,
+  arXiv 2510.11977. Inspecting 2.5B tokens of released logs revealed shortcuts
+  invisible in aggregate scores, including agents searching for benchmark
+  answers; the case for committed per-trial artifacts.
+- corroborates: "The Leaderboard Illusion", Singh et al., NeurIPS 2025,
+  arXiv 2504.20879. Private testing and selective disclosure inflate scores by
+  up to 112% relative, the case for the development and held-out firewall.
+- corroborates: "Terminal-Bench", Merrill et al., arXiv 2601.11868, 2026. At
+  least five trials per pair with confidence intervals, plus trajectories for
+  passing trials, is the published bar these artifacts feed.
+- challenges: "Efficient Benchmarking of AI Agents", Ndzomga et al.,
+  arXiv 2603.23749, 2026. Ad-hoc task subsets show high variance and rankings
+  survive only under principled selection, a warning about the ten-task
+  development set this lifecycle preserves as evidence.
+
 ## Retention classes and defaults (drafted 2026-09-02 for ratification)
 
 | Class | Default retention | Deletion | Notes |
@@ -67,7 +88,11 @@ One written lifecycle contract covering every artifact class:
 do not override deletion obligations. An erasure request, a legal hold's
 release, or a discovered secret in a committed artifact is a documented
 deletion act (history rewrite or redaction commit with a dated note), and the
-policy must name who may perform it.
+role is named: the owner, or an operator the owner delegates, performs the
+deletion, and each deletion is journaled where a journal exists and otherwise
+recorded with a dated note in the same change. (Named per R0-8 of
+docs/red-team-remediation-plan-2026-09.md; a recommendation pending owner
+ratification with the rest of this record.)
 
 Ratification may accept these defaults, or accept the record as principles
 only with defaults deferred; the owner chooses, and the status line says which.

@@ -52,3 +52,39 @@ resumes the newest session.
   the illusion of lost data.
 - One more command surface (doctor) to maintain; it becomes the natural
   home for future journal reconciliation tooling 0015 already anticipates.
+
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it. The review
+found no 2020s paper on advisory-file-lock split-brain in local tools; git's
+`index.lock` is practice, not literature.
+
+- corroborates: "The Chubby lock service for loosely-coupled distributed
+  systems", Burrows, OSDI 2006. A lock from a dead holder is withheld for a
+  period rather than reassigned, the closest published design to this record's
+  diagnose-then-remove workflow.
+- challenges: "Leases: An Efficient Fault-Tolerant Mechanism for Distributed
+  File Cache Consistency", Gray & Cheriton, SOSP 1989,
+  doi 10.1145/74850.74870. Time-bounded grants are the standard automatic
+  recovery from a dead holder, the alternative this record rejects; the
+  rejection was defensible and, until now, unwritten.
+
+## Addendum (2026-09-02, network filesystems and PID reuse)
+
+Two limits of the recovery contract, and one deferral.
+
+- Network filesystems. The lock is undefined on network filesystems: exclusive
+  creation and advisory locking are not reliable on NFS or SMB, and piko does
+  not detect a network filesystem yet, so nothing is refused there. Operators
+  must keep session directories on local disks. OpenHands documents the same
+  caveat for its flock; this record now documents it too.
+- PID reuse. A dead PID on the same host is not proof of staleness, because
+  PIDs are reused, so liveness alone is racy. The discriminator is the recorded
+  process start time alongside the PID, plus the owner token re-read under the
+  recovery lock immediately before the unlink. That re-read is what makes
+  removal safe; the liveness probe only ranks candidates.
+- Supervisor mode. A recovery contract that decides staleness without a human,
+  which a fleet needs, is deferred to 0027. It is the same "who may act"
+  question 0021 records for deletion, and it should be answered once.

@@ -62,6 +62,48 @@ same stance 0004 takes for sub-agents and 0002 takes for MCP.
   style in-process rebuilds, and any self-modification path that bypasses the
   prove and park stages.
 
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it.
+
+- corroborates: "Darwin Gödel Machine", Zhang et al., arXiv 2505.22954, 2025.
+  The agent hallucinated tool runs with fabricated passing test logs, then
+  removed the logging its own hallucination detector depended on, while scoring
+  highly against the predefined evaluation functions; the failure this record's
+  gate exists to catch, observed.
+- challenges: "Huxley-Gödel Machine", Wang et al., arXiv 2510.21614, 2025. An
+  agent's own benchmark score poorly predicts whether its descendants improve,
+  so selection by point score, which the promotion gate uses, is a misleading
+  fitness signal.
+- challenges: "Reward Hacking Benchmark", Thaman, ICML 2026, arXiv 2605.02964.
+  Exploit rates of 0 to 13.9% across 13 frontier models rise with RL
+  post-training and with task difficulty, so the proposer's incentive to game
+  the suite grows with the capability the loop is meant to add.
+- corroborates: "Sycophancy to Subterfuge", Denison et al., arXiv 2406.10162,
+  2024. Models generalise to editing their own reward code, which is the
+  argument for keeping the gate outside the model's write scope, as decision 3
+  does.
+- corroborates: "Adding Error Bars to Evals", Miller, arXiv 2411.00640, 2024.
+  Paired-difference comparisons, confidence intervals from question-level
+  sampling, and power analysis before running; decision 5, formalised.
+- challenges: "Beyond pass@1", Khanal et al., arXiv 2603.29231, 2026. Across
+  23,392 episodes, software-engineering reliability decays from 0.90 to 0.44
+  across repeated attempts, so the n=1 comparisons the current suite can afford
+  are unreliable.
+- challenges: "Beyond Pass@k", Jiang et al., arXiv 2608.14711, 2026. A
+  single-rollout proxy does not substitute for repeated runs (rho = 0.42).
+- challenges: "A Sober Look at Progress", Hochlehnert et al., COLM 2025,
+  arXiv 2504.07086. Reported gains often hinge on unreported seed and format
+  variance, which is the noise this record's suite has not yet measured.
+- corroborates: "Self-Harness", arXiv 2606.09498, 2026 (first author not
+  recorded in the review). The closest shipped analogue validates by benchmark
+  score with no pre-registration and no human gate.
+- corroborates: "Prime Agent", arXiv 2608.23552, 2026 (first author not recorded
+  in the review). The same shape, which is why an evidence gate with
+  pre-registered statistics would be first in the field.
+
 ## Token-rent rule (re-homed 2026-09-02)
 
 This amendment was moved to ADR 0001 as a proposed amendment to an accepted record, because CI already enforces it and an amendment inside a still-proposed record is structurally ambiguous (owner review, 2026-09-02). The text below is retained for history; the governing copy is in 0001.

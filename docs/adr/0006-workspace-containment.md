@@ -39,6 +39,26 @@ Containment is enforced in the harness, not requested of the model or the user:
 - Supersedes the launch-era "full YOLO by default" stance in ADR-adjacent docs;
   approval workflows (persistent approve/edit/reject) remain future v0.3 work.
 
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it.
+
+- corroborates: "Your AI, My Shell", Liu et al., arXiv 2509.22040, 2025. 314
+  payloads planted in rule files achieve up to 84% malicious command execution
+  in Cursor and Copilot, including system-file modification and key
+  exfiltration; the threat model this record's untrusted-project default
+  answers.
+- corroborates: "SoK: Prompt Injection Attacks on Agentic Coding Assistants",
+  Maloyan & Namiot, arXiv 2601.17548, 2026. Adaptive attacks exceed 85% success
+  against filter defenses, which argues for architectural containment over
+  filtering.
+- challenges: "One Goal, Many Commands", Chen & Lin, arXiv 2606.15549, 2026.
+  Between 69% and 99% of 1,709 real agent command denylists fail to block their
+  intended operation. Deny-by-default survives the finding; what it shows is
+  that on the day host bash is enabled, a name-level policy is not a boundary.
+
 ## Addendum (2026-09-02, protected paths inside the workspace)
 
 The original decision drew the boundary at the workspace edge, so anything inside

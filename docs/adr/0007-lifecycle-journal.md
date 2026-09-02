@@ -31,6 +31,28 @@ appended, and every model-visible input must be reconstructable from the log.
   `outcome_unknown` as a first-class state. True idempotency still requires
   tool-specific keys; the journal records honestly, it does not deduplicate.
 
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it.
+
+- corroborates: "ARIES", Mohan et al., ACM TODS 1992, doi 10.1145/128765.128770.
+  Log intent before effect and replay history at recovery to decide outcomes;
+  the write-ahead shape this record adopts.
+- corroborates: "Crash-Only Software", Candea & Fox, HotOS 2003. State must be
+  recoverable from durable records because crash is the only stop path.
+- corroborates: "Idempotence Is Not a Medical Condition", Helland, ACM Queue
+  2012, doi 10.1145/2181796.2187821. Without idempotent operations a lost
+  response makes the outcome unknowable, which is this record's "unknown, never
+  did not run".
+- corroborates: "Hints for Computer System Design", Lampson, SOSP 1983,
+  doi 10.1145/800217.806614. Make actions atomic or restartable.
+- corroborates: "Atomix", Mohammadi et al., arXiv 2602.14849, 2026. Settlement
+  and reversibility classes for agent tool calls reach 57% clean success under
+  fault injection against 0 to 7% for baselines; the idempotency layer this
+  record names as missing, now published.
+
 ## Addendum (2026-09-02, idempotency preconditions)
 
 The last consequence above is the honest one and it is also the gap: the

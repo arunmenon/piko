@@ -71,6 +71,36 @@ unattended; judgment calls stop the line and wait.
   terminal; multi-approver policy; OS-level enforcement (a rejected call is not
   a sandbox — 0006's boundaries still apply).
 
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it.
+
+- corroborates: "CaMeL: Defeating Prompt Injections by Design", Debenedetti
+  et al., arXiv 2503.18813, 2025. Separating trusted control flow from untrusted
+  data gives provable security on 77% of AgentDojo; this record's rule that
+  policy comes only from user config, never project content, stated as a
+  theorem.
+- corroborates: "Progent", Shi et al., arXiv 2504.11703, 2025. Symbolic policies
+  over tool names and arguments, where the action space can only shrink without
+  an explicit approval.
+- corroborates: "AgentSpec", Wang, Poskitt & Sun, ICSE 2026, arXiv 2503.18666.
+  User-authored rules block more than 90% of unsafe code-agent actions at
+  millisecond overhead.
+- challenges: "Measuring the Permission Gate", Ji et al., arXiv 2604.04978,
+  2026. About 37% of state-changing actions bypass a shell-oriented classifier
+  through file edits the gate never sees; equivalent-effect paths escape a
+  tool-name policy, which is exactly this record's shape.
+- challenges: "Reframing LLM Agent Security as an Agent-Human Interaction
+  Problem", Wang, Li & Tian, arXiv 2605.24309, 2026. Approval appears in 15 of
+  21 production systems and repeated dialogs drive always-allow fatigue, the
+  failure this record's context names and its per-call design invites.
+- challenges: "Mind the Gap" (TOCTOU-Bench), Lilienthal & Hong,
+  arXiv 2508.17155, 2025. State changes between approval and execution;
+  mitigations cut the window by about 95% but vulnerability only from 12% to 8%,
+  which measures the bash race this record acknowledges as unsolved.
+
 ## Addendum (2026-08-24) — compaction boundary
 
 Approval v1 does not migrate a suspended tool-use batch into a new lineage

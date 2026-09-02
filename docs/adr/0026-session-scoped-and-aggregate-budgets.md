@@ -53,3 +53,22 @@ explain a ceiling stop without reading the journal.
   reservation is already a serialized step.
 - Requires 0018's parent-controlled children to route admission through
   the parent, which is the intended design.
+
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it. No paper
+studies tree-scoped reservation; a DeepSeek community plugin is the only
+implementation the review found.
+
+- corroborates: "BAGEN: Are LLM Agents Budget-Aware?", Lin et al.,
+  arXiv 2606.00198, 2026. Agents do not self-limit, so spend authority has to
+  sit above them, which is what a root budget authority provides.
+- corroborates: "Single-Agent LLMs Outperform Multi-Agent Systems", Tran &
+  Kiela, arXiv 2604.02460, 2026. Multi-agent advantages vanish under matched
+  token budgets, a comparison that is only checkable once the budget is enforced
+  across the tree.
+- corroborates: "Why Do Multi-Agent LLM Systems Fail?" (MAST), Cemri et al.,
+  arXiv 2503.13657, 2025. Failure is attributed largely to system design rather
+  than to individual agents, an argument for the parent owning admission.

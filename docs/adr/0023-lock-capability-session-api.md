@@ -58,3 +58,41 @@ opener against the fresh journal fails until it is closed.
   worth it before any external consumer exists.
 - The lock file gains a second role (token anchor), which 0024's recovery
   workflow must respect when cleaning stale locks.
+
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it.
+
+- corroborates: "Capability Myths Demolished", Miller, Yee & Shapiro, technical
+  report, 2003. Unforgeable capabilities enforce least authority and are not
+  reducible to access control lists; the module-private token here is an object
+  capability in the strict sense, and the record can say so.
+- corroborates: "The Chubby lock service for loosely-coupled distributed
+  systems", Burrows, OSDI 2006. Lock-delay and sequencers deliberately withhold
+  a dead holder's lock rather than reassign it, the published precedent for this
+  record's refusal to take over automatically.
+- challenges: "Leases: An Efficient Fault-Tolerant Mechanism for Distributed
+  File Cache Consistency", Gray & Cheriton, SOSP 1989,
+  doi 10.1145/74850.74870. Time-bounded grants recover from holder failure
+  without manual intervention, which is the standard answer this record declines
+  by giving the lock no expiry.
+
+## Addendum (2026-09-02, capability framing and expiry)
+
+- Object capability, strictly. The module-private token is an object capability
+  in the sense of Miller, Yee and Shapiro: unforgeable, held rather than named,
+  and conferring exactly the authority to append to one journal. The record used
+  "capability" as a description; it is also the term of art, and the strict
+  reading is the one intended.
+- No expiry is a choice, not an omission. Gray and Cheriton's leases are the
+  standard automatic recovery from a dead holder. This record instead takes
+  Chubby's withholding stance: a dead holder's lock is diagnosed and removed by
+  an explicit act (0024), never reassigned on a timer. The cost is that recovery
+  needs an operator, or later a supervisor; the benefit is that no second writer
+  is ever admitted on the strength of a clock.
+- Single writer and the supervisor. 0027's host events (drain markers and
+  forced-kill outcomes) need a journal write path that does not break this rule.
+  That path is defined in 0027, so the supervisor writes through the token
+  holder or a named side channel rather than opening the journal itself.

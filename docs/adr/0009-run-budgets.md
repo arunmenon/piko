@@ -34,6 +34,26 @@ harness; the model is never asked to respect them, it is stopped by them.
 
 Scope note (2026-09-02): as implemented, every `RunBudget` ceiling is scoped to ONE user turn. In headless `-p` a turn is the run, so the contract holds; in the REPL each ceiling resets per turn and a session may spend any multiple of it. Session-scoped and child-tree aggregate ceilings are proposed in ADR 0026; until it lands, read "run" in this record as "turn".
 
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it.
+
+- corroborates: "BAGEN: Are LLM Agents Budget-Aware?", Lin et al.,
+  arXiv 2606.00198, 2026. Capability and budget-awareness correlate weakly
+  (r = 0.35), frontier agents keep spending on failing tasks, and trained early
+  stopping saves 28 to 64% of tokens on failing trajectories; the empirical case
+  that ceilings must be external to the model, which is this record's thesis.
+- corroborates: "More with Less", Gao & Peng, arXiv 2510.16786, 2025. A fixed
+  turn limit at the 75th percentile of baseline cuts SWE-bench cost 24 to 68%
+  with negligible solve-rate loss.
+- corroborates: "Budget-Aware Tool-Use", Liu et al., arXiv 2511.17006, 2025.
+  Without budget awareness, larger tool-call budgets do not improve performance.
+- corroborates: "Holistic Agent Leaderboard", Kapoor et al., ICLR 2026,
+  arXiv 2510.11977. Across 21,730 rollouts, higher reasoning effort reduced
+  accuracy in most runs; more spend is not more solves.
+
 ## Addendum (2026-09-02, wording)
 
 R2-7 of the red-team remediation plan aligns user-visible text with the scope
