@@ -14,14 +14,22 @@ import { JOURNAL_SCHEMA_VERSION } from '@pi/core';
  */
 export const HEADLESS_EXIT_CODES = [0, 1, 2, 3, 4, 5, 130, 143] as const;
 
-/** Budget ceilings are enforced per user turn (ADR 0009 scope note; ADR 0026 proposes session scope). */
+/** The `--max-*` ceilings are enforced per user turn (ADR 0009 scope note). */
 export const BUDGET_SCOPE = 'turn';
+
+/**
+ * The `--max-session-*`, `--max-active-time` and `--max-elapsed-time` ceilings
+ * are enforced across the whole session tree: every turn of this run and every
+ * child that joined its root-budget authority (ADR 0026).
+ */
+export const SESSION_BUDGET_SCOPE = 'tree';
 
 export interface HeadlessCapabilities {
   journalSchemaVersion: number;
   tools: string[];
   exitCodes: number[];
   budgetScope: string;
+  sessionBudgetScope: string;
 }
 
 export function headlessCapabilities(tools: readonly { name: string }[]): HeadlessCapabilities {
@@ -30,6 +38,7 @@ export function headlessCapabilities(tools: readonly { name: string }[]): Headle
     tools: tools.map((tool) => tool.name),
     exitCodes: [...HEADLESS_EXIT_CODES],
     budgetScope: BUDGET_SCOPE,
+    sessionBudgetScope: SESSION_BUDGET_SCOPE,
   };
 }
 
@@ -45,6 +54,7 @@ export interface PartialHeadlessCapabilities {
   journalSchemaVersion: number;
   exitCodes: number[];
   budgetScope: string;
+  sessionBudgetScope: string;
   partial: true;
 }
 
@@ -53,6 +63,7 @@ export function partialHeadlessCapabilities(): PartialHeadlessCapabilities {
     journalSchemaVersion: JOURNAL_SCHEMA_VERSION,
     exitCodes: [...HEADLESS_EXIT_CODES],
     budgetScope: BUDGET_SCOPE,
+    sessionBudgetScope: SESSION_BUDGET_SCOPE,
     partial: true,
   };
 }

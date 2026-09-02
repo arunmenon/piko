@@ -19,6 +19,7 @@ import {
 } from '@pi/ai';
 import {
   Agent,
+  BUDGET_AUTHORITY_ENVIRONMENT_NAME,
   JsonlEventSink,
   MAX_USER_INPUT_BYTES,
   SafeObserver,
@@ -40,6 +41,7 @@ import {
   readProcessDepth,
   recoverStaleLock,
   releaseSessionLock,
+  resolveBudgetAuthority,
   resolveModelPrice,
   sessionsDirFor,
   tryLockSession,
@@ -50,6 +52,8 @@ import {
   type Observer,
   type PendingApproval,
   type PricingTable,
+  type RootBudgetAuthority,
+  type RootBudgetCeilings,
   type SessionView,
   type RunBudget,
   type Tool,
@@ -73,6 +77,7 @@ import {
   dim,
   formatCost,
   formatSpendStop,
+  formatTreeStop,
   formatTurnIncomplete,
   formatUsage,
   oneLine,
@@ -89,6 +94,12 @@ interface Setup {
   tools: Tool[];
   maxIterations?: number;
   budget: Partial<RunBudget>;
+  /** root-budget authority for the session tree, when one is configured or inherited (ADR 0026) */
+  budgetAuthority?: RootBudgetAuthority;
+  /** true when this process created the ledger rather than joining an inherited one */
+  ownsBudgetAuthority: boolean;
+  /** whether the model is told what tree budget is left (ADR 0026) */
+  budgetReminders: false | { remainingFractions?: number[]; everyRequests?: number };
   systemPrompt: string;
   allowHostBash: boolean;
   /** opt-out from the protected-path deny list; CLI flag only (ADR 0006) */
@@ -242,6 +253,11 @@ function buildAgent(setup: Omit<Setup, 'agent'>, cwd: string, model: string): Ag
     },
     ...(setup.observer ? { observer: setup.observer } : {}),
     ...(setup.parentRunId ? { parentRunId: setup.parentRunId } : {}),
+    // ADR 0026: the tree ledger and this run's identity in it. The session id
+    // is the run id, so a parent that spawns `pi -p --parent-run <its session>`
+    // gets a real ancestor chain in the ledger rows.
+    ...(setup.budgetAuthority ? { budgetAuthority: setup.budgetAuthority, runId: setup.session.id } : {}),
+    budgetReminders: setup.budgetReminders,
     contextWindow: setup.contextWindow,
     autoCompact: setup.autoCompact,
     ...(setup.flailGuard === false ? { flailGuard: false as const } : {}),
@@ -325,6 +341,68 @@ async function setup(args: CliArgs): Promise<Setup> {
   // the first model call, pinned or not.
   for (const extension of loadedExtensions.extensions) session.recordExtensionLoaded(extension);
   const approval = args.requireApproval ?? profile.approval;
+  // ADR 0026. A child launched from a bash tool call inherits
+  // PI_BUDGET_AUTHORITY and joins the tree; a run with its own session-tree
+  // ceilings creates one and exports the path so its own children join it.
+  const sessionCeilings: RootBudgetCeilings = {
+    ...(args.maxSessionSpendUSD !== undefined ? { maxSpendUSD: args.maxSessionSpendUSD } : {}),
+    ...(args.maxSessionTokens !== undefined ? { maxTokens: args.maxSessionTokens } : {}),
+    ...(args.maxActiveTimeMs !== undefined ? { maxActiveTimeMs: args.maxActiveTimeMs } : {}),
+    ...(args.maxElapsedTimeMs !== undefined ? { maxElapsedTimeMs: args.maxElapsedTimeMs } : {}),
+  };
+  const inheritedAuthority = process.env[BUDGET_AUTHORITY_ENVIRONMENT_NAME];
+  const budgetAuthority = resolveBudgetAuthority({
+    runId: session.id,
+    ...(args.parentRunId ? { parentRunId: args.parentRunId } : {}),
+    ceilings: sessionCeilings,
+  });
+  const ownsBudgetAuthority = budgetAuthority !== undefined && !inheritedAuthority;
+  if (inheritedAuthority && Object.keys(sessionCeilings).length > 0) {
+    // A branch inherits the remaining root budget by reference, not by copy
+    // (ADR 0026), so a child cannot widen or narrow the tree it joined. Say so
+    // rather than appearing to honor the flags.
+    process.stderr.write(
+      `warning: this run joined the session tree at ${inheritedAuthority}; its ceilings govern, and the --max-session-* flags given here are ignored\n`,
+    );
+  }
+  if (budgetAuthority) {
+    // Same fail-closed pairing as --max-spend-usd: a dollar ceiling over a
+    // model with no exact price refuses to start rather than warning.
+    if (budgetAuthority.ceilings.maxSpendUSD !== undefined && !resolveModelPrice(pricingTable, profile.model)) {
+      throw new Error(
+        `a session-tree spend ceiling requires an exact price for model ${profile.model}; add it to --pricing <path>`,
+      );
+    }
+    // Exported for every bash child, so `pi -p` inside a tool call joins this
+    // tree instead of starting an unbounded one of its own.
+    process.env[BUDGET_AUTHORITY_ENVIRONMENT_NAME] = budgetAuthority.path;
+    if (ownsBudgetAuthority) {
+      process.stderr.write(dim(`session-tree budget ledger: ${budgetAuthority.path}\n`));
+      // The root owns the file, so the root removes it on the way out. A tree
+      // that still holds reservations with no terminal acknowledgement keeps
+      // its ledger: that exposure is the record, and deleting it would erase
+      // the only place a human can see it. A crash that skips this hook leaves
+      // an inert orphan; nothing joins it, because the path only ever reaches a
+      // child through this process's environment.
+      process.once('exit', () => {
+        try {
+          const outstanding = budgetAuthority.outstanding();
+          if (outstanding.length > 0) {
+            process.stderr.write(
+              `root-budget ledger retained: ${outstanding.length} reservation(s) with no terminal outcome remain at ${budgetAuthority.path}\n`,
+            );
+            return;
+          }
+          budgetAuthority.remove();
+        } catch {
+          /* an unremovable ledger is inert; never fail an exit over it */
+        }
+      });
+    }
+  }
+  // Reminders are on by default where a human is watching the transcript and
+  // off by default in -p, where the caller decides what its children are told.
+  const budgetRemindersEnabled = args.budgetReminders ?? !args.print;
   const envWindow = Number(process.env['PI_CONTEXT_WINDOW']);
   const partial: Omit<Setup, 'agent'> = {
     config,
@@ -343,6 +421,14 @@ async function setup(args: CliArgs): Promise<Setup> {
     allowHostBash: args.allowHostBash,
     allowProtectedPaths: args.allowProtectedPaths,
     approvalRules,
+    ...(budgetAuthority ? { budgetAuthority } : {}),
+    ownsBudgetAuthority,
+    budgetReminders: budgetRemindersEnabled
+      ? {
+          ...(args.budgetReminderFractions ? { remainingFractions: args.budgetReminderFractions } : {}),
+          ...(args.budgetReminderEvery !== undefined ? { everyRequests: args.budgetReminderEvery } : {}),
+        }
+      : false,
     // Provenance is restricted to the flag and the user config file. Project
     // content loaded by --trust-project and extensions never reach this field.
     ...(approval !== undefined ? { approval } : {}),
@@ -382,6 +468,12 @@ function printUsageSummary(
 ): void {
   const totalCostComplete = agent.costHistoryComplete && costComplete(agent.costTotal);
   const lastTurnCostComplete = costComplete(agent.lastTurnCost);
+  let treeSnapshot;
+  try {
+    treeSnapshot = agent.budgetAuthority?.snapshot();
+  } catch (error) {
+    process.stderr.write(dim(`root-budget snapshot unavailable: ${String(error)}\n`));
+  }
   process.stderr.write(
     `${JSON.stringify({
       v: 1,
@@ -416,6 +508,10 @@ function printUsageSummary(
             },
           }
         : {}),
+      // ADR 0026: the whole session tree, so a caller sees the root ceiling,
+      // what was admitted, what reconciled, what is still outstanding with no
+      // terminal acknowledgement, and what remains.
+      ...(treeSnapshot ? { tree: treeSnapshot } : {}),
       requests: agent.requestCount,
       usageHistoryComplete: agent.usageHistoryComplete,
       unknownPriorRequests: agent.session?.modelRequests.filter((request) => request.status === 'outcome_unknown').length ?? 0,
@@ -725,6 +821,7 @@ async function headless(args: CliArgs): Promise<number> {
       } else if (event.type === 'budget_exceeded') {
         process.stderr.write(`budget exceeded: ${event.reason}\n`);
         if (event.spend) process.stderr.write(`${formatSpendStop(event.spend)}\n`);
+        if (event.tree) process.stderr.write(`${formatTreeStop(event.tree)}\n`);
       } else if (event.type === 'approval_decided') {
         process.stderr.write(dim(`approval ${event.decision}: ${oneLine(event.call.name, 64)}\n`));
       }
@@ -833,6 +930,7 @@ function handleEvent(event: AgentEvent, state: ReplState): void {
       ensureNewline();
       process.stdout.write(red(`[budget exceeded: ${event.reason}]\n`));
       if (event.spend) process.stdout.write(red(`[${formatSpendStop(event.spend)}]\n`));
+      if (event.tree) process.stdout.write(red(`[${formatTreeStop(event.tree)}]\n`));
       break;
     case 'turn_done':
       ensureNewline();

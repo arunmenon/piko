@@ -1,4 +1,4 @@
-import { effectiveSpendCeilingUSD, type SpendStop } from '@pi/core';
+import { effectiveSpendCeilingUSD, type SpendStop, type TreeBudgetStop } from '@pi/core';
 
 const useColor = process.stdout.isTTY === true && process.env['NO_COLOR'] === undefined;
 
@@ -128,6 +128,40 @@ export function formatSpendStop(spend: SpendStop): string {
     `effective ceiling $${fixedDollars(effectiveCeilingUSD, decimals)} ` +
     `(ceiling less $${fixedDollars(spend.reservedUSD, decimals)} outstanding reservations)`
   );
+}
+
+/**
+ * The session-tree half of a ceiling stop (ADR 0026). Printed next to the
+ * per-turn `formatSpendStop` line, or on its own when only the tree is capped,
+ * so a stop states the effective ceiling for the tree as well as the turn.
+ */
+export function formatTreeStop(tree: TreeBudgetStop): string {
+  const parts: string[] = [];
+  if (tree.spend) {
+    const effectiveCeilingUSD = effectiveSpendCeilingUSD(tree.spend);
+    const decimals = significantDecimals([
+      tree.spend.reservationUSD,
+      tree.spend.actualUSD,
+      tree.spend.reservedUSD,
+      tree.spend.ceilingUSD,
+      effectiveCeilingUSD,
+    ]);
+    parts.push(
+      `reserved $${fixedDollars(tree.spend.reservationUSD, decimals)} for the next request, ` +
+        `spent $${fixedDollars(tree.spend.actualUSD, decimals)}, ceiling $${fixedDollars(tree.spend.ceilingUSD, decimals)}, ` +
+        `effective ceiling $${fixedDollars(effectiveCeilingUSD, decimals)} ` +
+        `(ceiling less $${fixedDollars(tree.spend.reservedUSD, decimals)} outstanding reservations)`,
+    );
+  }
+  if (tree.remainingUSD !== undefined) parts.push(`$${tree.remainingUSD.toFixed(6)} remaining`);
+  if (tree.remainingTokens !== undefined) parts.push(`${tree.remainingTokens} tokens remaining`);
+  if (tree.remainingActiveTimeMs !== undefined) {
+    parts.push(`${Math.round(tree.remainingActiveTimeMs / 1_000)}s active time remaining`);
+  }
+  if (tree.remainingElapsedTimeMs !== undefined) {
+    parts.push(`${Math.round(tree.remainingElapsedTimeMs / 1_000)}s elapsed time remaining`);
+  }
+  return `session tree ${tree.reason} stop (root ${oneLine(tree.rootRunId, 128)}): ${parts.join(', ')}`;
 }
 
 /**

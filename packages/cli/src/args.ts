@@ -29,6 +29,20 @@ export interface CliArgs {
   maxOutputTokens?: number;
   maxTotalTokens?: number;
   maxSpendUSD?: number;
+  /** session-tree dollar ceiling, enforced across turns and children (ADR 0026) */
+  maxSessionSpendUSD?: number;
+  /** session-tree provider-reported token ceiling (ADR 0026) */
+  maxSessionTokens?: number;
+  /** model plus tool wall time attributable to the tree, children summed (ADR 0026) */
+  maxActiveTimeMs?: number;
+  /** wall clock since the root run started (ADR 0026) */
+  maxElapsedTimeMs?: number;
+  /** budget reminders to the model: off by default in -p, on by default in the REPL */
+  budgetReminders?: boolean;
+  /** remaining-budget fractions that fire a reminder (default 0.5 and 0.2) */
+  budgetReminderFractions?: number[];
+  /** also remind every N provider requests */
+  budgetReminderEvery?: number;
   pricingPath?: string;
   offlinePricing: boolean;
   trustProject: boolean;
@@ -224,6 +238,46 @@ export function parseArgs(argv: string[]): CliArgs {
       case '--max-spend-usd':
         args.maxSpendUSD = positiveDecimal('--max-spend-usd', next());
         break;
+      case '--max-session-spend-usd':
+        args.maxSessionSpendUSD = positiveDecimal('--max-session-spend-usd', next());
+        break;
+      case '--max-session-tokens':
+        args.maxSessionTokens = positiveInteger('--max-session-tokens', next());
+        break;
+      case '--max-active-time': {
+        const seconds = positiveInteger('--max-active-time', next());
+        if (seconds > 2_147_483) throw new Error('--max-active-time is too large for the runtime timer');
+        args.maxActiveTimeMs = seconds * 1_000;
+        break;
+      }
+      case '--max-elapsed-time': {
+        const seconds = positiveInteger('--max-elapsed-time', next());
+        if (seconds > 2_147_483) throw new Error('--max-elapsed-time is too large for the runtime timer');
+        args.maxElapsedTimeMs = seconds * 1_000;
+        break;
+      }
+      case '--budget-reminders':
+        args.budgetReminders = true;
+        break;
+      case '--no-budget-reminders':
+        args.budgetReminders = false;
+        break;
+      case '--budget-reminder-at': {
+        const fractions: number[] = [];
+        for (const part of next().split(',')) {
+          const percent = Number(part.trim());
+          if (!Number.isFinite(percent) || percent <= 0 || percent >= 100) {
+            throw new Error('--budget-reminder-at requires remaining percentages in (0, 100)');
+          }
+          fractions.push(percent / 100);
+        }
+        if (fractions.length === 0) throw new Error('--budget-reminder-at requires at least one percentage');
+        args.budgetReminderFractions = fractions;
+        break;
+      }
+      case '--budget-reminder-every':
+        args.budgetReminderEvery = positiveInteger('--budget-reminder-every', next());
+        break;
       case '--pricing':
         args.pricingPath = next();
         break;
@@ -394,6 +448,17 @@ options:
   --max-output-tokens <n> stop after the provider-reported output-token budget
   --max-total-tokens <n>  stop after the combined provider-reported token budget
   --max-spend-usd <usd>   hard dollar ceiling; requires an exact price for the model
+  every --max-session-*, --max-active-time and --max-elapsed-time below is a session-tree
+  budget (ADR 0026): enforced across REPL turns and across every child that joins the tree
+  --max-session-spend-usd <usd>  dollar ceiling for this run and every child it spawns
+  --max-session-tokens <n>       provider-reported token ceiling for the whole tree
+  --max-active-time <seconds>    model plus tool wall time for the tree; parallel children sum
+  --max-elapsed-time <seconds>   wall clock since the root run started
+  --budget-reminders   tell the model what tree budget is left when it crosses a threshold
+                       (default: on in the REPL, off in -p unless this flag is given)
+  --no-budget-reminders  never tell the model
+  --budget-reminder-at <pct[,pct]>  remaining percentages that fire a reminder (default 50,20)
+  --budget-reminder-every <n>       also remind every n provider requests
   --pricing <path>     use an explicit LiteLLM-compatible pricing table (disables fetch)
   --offline-pricing    use only the 24h/stale local pricing cache; never fetch
   --thinking <tokens>  enable extended thinking with this token budget (Anthropic models)
@@ -431,16 +496,9 @@ options:
                        parentRunId and is echoed on every --json row
   --max-depth <n>      refuse to start when the inherited PI_DEPTH is deeper than <n>
                        (default 2). Each bash child is given PI_DEPTH + 1, so a piko
-                       spawned from a tool call sees its own nesting depth. Depth is the
-                       only tree bound today; concurrency and tree-wide spend caps arrive
-                       with ADR 0026.
-  --shutdown-grace <seconds>  seconds in-flight work gets after SIGTERM before the run is
-                       aborted (default 10; config key shutdownGraceSeconds). SIGTERM stops
-                       admission, journals a drain marker, then exits 143 either way.
-  --supervise          headless only: run the work as a child in its own process group and
-                       let this process own the hard-kill deadline, so a synchronously
-                       blocking extension cannot outlive it. Unnecessary under systemd,
-                       Kubernetes, or any fleet supervisor that already sends SIGKILL.
+                       spawned from a tool call sees its own nesting depth. Tree-wide spend,
+                       token and time ceilings are the --max-session-* flags above (ADR 0026);
+                       concurrency is still unbounded.
   --ext <path>[@sha256:<hex>]  load a compiled JavaScript extension module (repeatable);
                        with a pin the file's SHA-256 must match or pi refuses to start
   --usage              print a JSON usage summary to stderr when done

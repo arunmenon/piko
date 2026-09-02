@@ -72,3 +72,138 @@ implementation the review found.
 - corroborates: "Why Do Multi-Agent LLM Systems Fail?" (MAST), Cemri et al.,
   arXiv 2503.13657, 2025. Failure is attributed largely to system design rather
   than to individual agents, an argument for the parent owning admission.
+
+## Addendum (2026-09-02, root-budget authority shipped)
+
+The decision above is implemented in `packages/core/src/budget-authority.ts`
+and wired into the loop at the existing reservation sites. This addendum
+records what was built, what it guarantees, and what it does not.
+
+### File layout
+
+One ledger per session tree, `~/.pi/budgets/<rootRunId>.json`, written
+`0600` in a `0700` directory. The root run id is the root's session id, so the
+ledger name is already the identity every other surface uses. The document is a
+single JSON object, schema version 1:
+
+- `ceilings`: the tree's `maxSpendUSD`, `maxTokens`, `maxActiveTimeMs` and
+  `maxElapsedTimeMs`; any subset may be set, and an unset ceiling is not
+  enforced.
+- `startedAtEpochMs`: the origin the elapsed ceiling is measured from.
+- `runs`: every run that joined, with its `parentRunId` and its resolved
+  ancestor chain, root first.
+- `rows`: outstanding reservations only, each carrying `requestId`, `runId`,
+  the ancestor chain, the reserved dollars and the reserved token bound.
+- `history`: the most recent 256 terminal rows, for audit; no arithmetic reads
+  them.
+- `charges`: per run, the cumulative admitted, reconciled and outstanding
+  dollars, tokens and request counts, plus active time. The root's entry is the
+  tree total, because the root is in every row's charge set.
+
+The ledger lives outside the workspace, so a model with write access to the
+repository cannot rewrite its own budget.
+
+### The lock
+
+`<ledger>.lock`, created with `writeFileSync(..., { flag: 'wx' })`, the same
+create-and-retry pattern the session lock uses (`acquireSessionLock`), holding
+a `{v, pid, host, token, created}` record. Backoff doubles from 1ms to 16ms
+against a 5 second deadline; the wait is a synchronous `Atomics.wait`, because
+the whole ledger path is synchronous and a promise-based wait would reintroduce
+the in-process interleaving the lock exists to prevent. Failing to acquire is
+never tolerated: the caller fails closed, and in the agent an unusable ledger
+ends the turn `incomplete: persistence` rather than dispatching an unadmitted
+request.
+
+One deviation from 0024's session-lock policy: this lock is broken
+automatically when its owner is verifiably dead. The check runs at most twice
+per acquisition (halfway through the wait and at the deadline) and requires all
+of: same host, `process.kill(pid, 0)` reporting the pid gone, a lock file older
+than 2 seconds, and the same token still present on a re-read immediately
+before the unlink. A stranded session lock only blocks its own resume, which is
+why 0024 leaves it alone; a stranded budget lock wedges every process in the
+tree, which is why this one is reclaimed. Pid reuse remains the theoretical
+hazard it is in `recoverStaleLock`.
+
+### Ancestor charging
+
+A run joins by writing its `parentRunId` into the ledger; the chain is resolved
+once at join time from the parent's own chain, so a row records the full chain
+root-first. Every reservation is charged to the reserving run, to each ancestor
+in that chain, and to the root, through a set so a self-referential chain cannot
+double count. `chargeFor(runId)` therefore answers "what has this subtree cost
+the tree" for any run, and `snapshot()` is `chargeFor(root)` plus the elapsed
+clock. A child that does not pass `--parent-run` is charged directly to the
+root, which is conservative for the ceiling and merely less precise for
+attribution.
+
+The ledger path reaches children through `PI_BUDGET_AUTHORITY`, added to the
+bash environment allowlist and set explicitly on every call exactly as
+`PI_DEPTH` is, so a child can never inherit a stale path to a foreign tree. A
+`pi -p` launched from a bash tool call joins the tree automatically; no flag is
+needed on the child.
+
+### What is atomic and what is not
+
+Atomic: one `reserve`, `reconcile`, `releaseUnknown`, `recordActiveTime` or
+join. Each takes the lock, re-reads the ledger from disk, mutates it, writes a
+temporary file and renames it over the ledger, then unlocks. `snapshot()` reads
+without the lock, which is safe because publication is by rename. No instance
+caches ledger state, so two handles in one process cannot disagree with the
+file. The concurrency test asserts the consequence directly: twenty child
+processes racing on one ceiling admit a set whose sum never exceeds it, whose
+size matches the ledger's admitted count exactly, and in which no request id
+appears twice.
+
+Not atomic: the pair (reserve, dispatch), and the pair (response, reconcile). A
+process killed between them leaves a reservation with no request behind it, and
+that is the deliberate 0007/0020 rule rather than a gap: the reservation stays
+as exposure on every ancestor until an explicit `reconcile` or
+`releaseUnknown`. `releaseUnknown` is never called automatically anywhere in
+the harness. The unknown-outcome test kills a child after it reserves and
+asserts the parent's snapshot still holds the exposure, and that a later
+reservation is refused because of it.
+
+Also not atomic, deliberately: nothing bounds how many children may run at
+once. Concurrency remains out of scope, as 0004's addendum said.
+
+### Measured throughput
+
+Twenty concurrent child processes, ten reservations each (200 reservations, of
+which the ceiling admits half), macOS on APFS: the contention window from the
+first child entering its loop to the last leaving it is 220 to 830ms, that is
+roughly 240 to 900 reservations per second, or 1.1 to 4.1ms per reservation
+under the lock. The fast end is the file run on its own; the slow end is the
+same file with the rest of the test suite running in parallel on the same
+machine. End to end, including twenty Node process startups, the same run takes
+270ms to 1.5s. The test prints both figures on every run. This is the number
+the plan asked for before contained spawn is allowed to depend on the lock: at
+20 children the lock is not the bottleneck, process startup is.
+
+### Limitations
+
+- An orphaned ledger. The root removes its ledger on a clean exit through a
+  `process.once('exit')` hook, and deliberately keeps it when outstanding
+  reservations remain, printing the path: that exposure is the record and
+  deleting it would erase the only place a human can see it. A root killed with
+  SIGKILL skips the hook and leaves the file behind. Such a file is inert:
+  nothing joins a tree except through `PI_BUDGET_AUTHORITY`, which dies with
+  the process that exported it. Cleanup is `rm ~/.pi/budgets/<id>.json` (and
+  its `.lock`, if the crash also stranded one); there is no `doctor budgets`
+  command yet, and adding one is the obvious follow-on.
+- Reservation conservatism is unchanged. The tree reserves the same
+  byte-derived input bound plus the enforced output cap that 0020 reserves per
+  turn, so a tree ceiling also stops work at roughly half its nominal value on
+  long contexts. The tokenizer-based bound this record allows is still not
+  taken, because no committed corpus proves one conservative.
+- Ledger growth is bounded by outstanding reservations plus 256 history rows
+  plus one entry per run that ever joined (capped at 10,000 runs, after which
+  joining is refused). A very long-lived tree with many children grows the
+  `runs` map, not the row list.
+- The reminder is advice, not enforcement. It is a `[harness]` turn message,
+  never part of the fixed prefix, so it costs nothing until it fires; the model
+  is still stopped by the ceiling rather than asked to respect it (0009).
+- Time ceilings are checked at admission, not on a timer. A tree that exceeds
+  `maxActiveTimeMs` in the middle of a long tool call is stopped at the next
+  provider request, not mid-call; the per-turn `maxWallTimeMs` deadline of 0009
+  is still the only thing that aborts work in flight.

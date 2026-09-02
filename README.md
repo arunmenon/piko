@@ -76,7 +76,11 @@ industry harnesses.
   turns append. Explicit microcompaction rewrites only eligible old tool-result blocks, while full
   compaction starts a lineage-linked session and preserves the prior transcript.
 - **Fail-closed budgets**: model requests, tool calls, provider-reported tokens, USD spend, and every retained
-  tool result are bounded. Wall deadlines bound harness waits and bundled provider/bash paths,
+  tool result are bounded per turn, and dollars, tokens, active time and elapsed time are bounded across the
+  whole session tree: `--max-session-spend-usd`, `--max-session-tokens`, `--max-active-time` and
+  `--max-elapsed-time` persist across REPL turns and are enforced against a file-backed root-budget ledger that
+  every `pi -p` child joins, so a child's exposure is charged to the root and to every ancestor before it can
+  dispatch (ADR 0026). Wall deadlines bound harness waits and bundled provider/bash paths,
   including the git workspace fingerprint taken when a bash call is dispatched, which is capped by
   the turn's remaining wall time, canceled with the turn, and killed as a process group;
   arbitrary in-process extension code cannot be forcibly preempted or have its side effects rolled
@@ -110,7 +114,9 @@ node packages/cli/dist/main.js -p "review these files" --max-turns 20
 
 # hard dollar ceiling; exact model key required, with a durable pre-dispatch reservation
 node packages/cli/dist/main.js -p --pricing ./model-prices.json --max-spend-usd 0.50 "review these files"
-# Budget ceilings are enforced per user turn (in -p, the turn is the run); in the REPL they reset each turn. Session-scoped ceilings: ADR 0026, proposed.
+# Every --max-* ceiling is per user turn (in -p, the turn is the run); in the REPL they reset each turn.
+# The --max-session-* ceilings are per session tree: they persist across REPL turns and bound every child too.
+node packages/cli/dist/main.js --pricing ./model-prices.json --max-session-spend-usd 5.00 --max-elapsed-time 3600
 
 # versioned JSONL automation stream; incomplete/capped runs exit nonzero
 node packages/cli/dist/main.js --json "review these files"
@@ -165,7 +171,7 @@ Headless exit codes are semantic and fail closed — success must be proven by a
 | ---- | ------- |
 | 0 | completed turn |
 | 1 | error (bad flags, setup failure, provider error) |
-| 2 | budget exceeded (`--max-turns`, tool calls, wall time, tokens, USD spend) |
+| 2 | budget exceeded (per turn: `--max-turns`, tool calls, wall time, tokens, USD spend; per session tree: `--max-session-*`, `--max-active-time`, `--max-elapsed-time`) |
 | 3 | incomplete or unknown terminal state |
 | 4 | suspended awaiting tool approval; resume with `--approve`/`--reject`/`--edit` |
 | 5 | newest resumable session is locked by another process; see `pi doctor sessions` |
@@ -189,7 +195,10 @@ timeout and does not need `--supervise`.
 A parent process spawning children must treat exit 4 as "forward the decision", not as failure.
 A child started with `--parent-run <id>` echoes that id on every JSON row and in telemetry;
 `--max-depth <n>` (default 2) with the exported `PI_DEPTH` variable refuses a piko started
-past the cap with exit 1 before any model call.
+past the cap with exit 1 before any model call. When the root sets a session-tree ceiling it
+exports `PI_BUDGET_AUTHORITY`, and every child joins that ledger: no child can dispatch a request
+the root's remaining budget does not admit, and a request with no terminal acknowledgement keeps
+its full reservation on every ancestor until it is explicitly reconciled.
 
 ## Sandboxing
 
