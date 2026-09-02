@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, openSync, readSync, statSync, type Stats } from 'node:fs';
 import { extname } from 'node:path';
 import { trimTrailingSurrogate } from '../truncate.js';
-import { resolveWorkspacePath } from './filesystem.js';
+import { resolveWorkspacePath, runContainmentBarrier } from './filesystem.js';
 import { requireString, textOutput, type Tool, type ToolContext, type ToolOutput } from './types.js';
 
 const IMAGE_MIME: Record<string, string> = {
@@ -71,6 +71,7 @@ export const readTool: Tool = {
   async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolOutput> {
     const requestedPath = requireString(args, 'path');
     const path = resolveWorkspacePath(context, requestedPath);
+    runContainmentBarrier('before-open', path);
     const stat = statSync(path);
     if (stat.isDirectory()) return textOutput(`${path} is a directory`, true);
     if (!stat.isFile()) return textOutput(`read requires a regular file: ${path}`, true);

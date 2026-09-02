@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, statSync } from 'node:fs';
 import { extname, join, relative } from 'node:path';
-import { resolveWorkspacePath } from './filesystem.js';
+import { resolveWorkspacePath, runContainmentBarrier } from './filesystem.js';
 import { requireString, textOutput, type Tool, type ToolContext, type ToolOutput } from './types.js';
 
 const SKIP_DIRS = new Set([
@@ -149,6 +149,9 @@ function walk(root: string, depth: number, signal?: AbortSignal): WalkResult {
     visitedDirectories++;
     let directory;
     try {
+      // Queued directories are held as path strings, so this open re-traverses
+      // a parent that was walked earlier. ADR 0022's map attack fires here.
+      runContainmentBarrier('before-map-directory-open', current.dir);
       directory = opendirSync(current.dir);
     } catch {
       continue;

@@ -22,12 +22,14 @@ import {
   defaultToolExecutionPolicy,
   editTool,
   readTool,
+  workspaceFoldsPathCase,
   writeTool,
   type ToolContext,
   type ToolExecutionPolicy,
 } from '../src/tools/index.js';
 import { truncateMiddle } from '../src/truncate.js';
 import { EDIT_MAX_FILE_BYTES } from '../src/tools/edit.js';
+import { WRITE_MAX_PRECONDITION_BYTES } from '../src/tools/write.js';
 
 function makeContext(
   cwd: string,
@@ -507,6 +509,51 @@ test('--allow-protected-paths style policy opt-out permits the write', async () 
   assert.equal(readFileSync(join(root, 'AGENTS.md'), 'utf8'), 'opted in');
 });
 
+test('a case-sensitive filesystem keeps .Git writable while .git stays refused', async (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'pi-protected-case-sensitive-')));
+  if (workspaceFoldsPathCase(root)) {
+    t.skip('this filesystem folds path case, so .Git and .git are the same directory here');
+    return;
+  }
+  const localContext = makeContext(root);
+
+  // .Git/ is a directory git never reads on this filesystem, so refusing it
+  // would be a false refusal (R2 finding 12).
+  const written = await writeTool.execute({ path: '.Git/notes.txt', content: 'ordinary notes' }, localContext);
+  assert.equal(written.isError, undefined);
+  assert.equal(readFileSync(join(root, '.Git', 'notes.txt'), 'utf8'), 'ordinary notes');
+  const writtenGuidance = await writeTool.execute({ path: 'agents.md', content: 'ordinary notes' }, localContext);
+  assert.equal(writtenGuidance.isError, undefined);
+
+  await assert.rejects(
+    () => writeTool.execute({ path: '.git/x', content: 'persisted' }, localContext),
+    /protected path refused.*\.git\/ is protected/s,
+  );
+  await assert.rejects(
+    () => writeTool.execute({ path: 'AGENTS.md', content: 'persisted' }, localContext),
+    /protected path refused.*AGENTS\.md is protected at the workspace root/s,
+  );
+  assert.equal(existsSync(join(root, '.git')), false);
+});
+
+test('a case-insensitive filesystem refuses every spelling of a protected path', async (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'pi-protected-case-folding-')));
+  if (!workspaceFoldsPathCase(root)) {
+    t.skip('this filesystem is case-sensitive, so .Git is a different directory here');
+    return;
+  }
+  const localContext = makeContext(root);
+
+  for (const target of ['.Git/notes.txt', '.git/x', 'Agents.md', 'AGENTS.md']) {
+    await assert.rejects(
+      () => writeTool.execute({ path: target, content: 'persisted' }, localContext),
+      /protected path refused/,
+      `write must refuse ${target} on a case-insensitive filesystem`,
+    );
+  }
+  assert.equal(existsSync(join(root, '.Git')), false);
+});
+
 test('reads of protected paths stay allowed', async () => {
   const root = makeProtectedWorkspace('pi-protected-read-');
   const localContext = makeContext(root);
@@ -551,6 +598,29 @@ test('write honors an expected_sha256 precondition', async () => {
   assert.equal(missing.isError, true);
   assert.match((missing.content[0] as { text: string }).text, /does not exist/);
   assert.equal(existsSync(join(root, 'gone.txt')), false);
+});
+
+test('the expected_sha256 precondition refuses a file over its hashing ceiling', async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'pi-write-precondition-bound-')));
+  const localContext = makeContext(root);
+  const path = join(root, 'oversized.bin');
+  writeFileSync(path, 'head', 'utf8');
+  // Sparse: the point is the declared size the precondition must refuse to read.
+  truncateSync(path, WRITE_MAX_PRECONDITION_BYTES + 1);
+
+  const refused = await writeTool.execute(
+    {
+      path: 'oversized.bin',
+      content: 'replacement',
+      expected_sha256: createHash('sha256').update('head').digest('hex'),
+    },
+    localContext,
+  );
+  assert.equal(refused.isError, true);
+  const refusalText = (refused.content[0] as { text: string }).text;
+  assert.match(refusalText, /expected_sha256 cannot be checked for oversized\.bin/);
+  assert.ok(refusalText.includes(String(WRITE_MAX_PRECONDITION_BYTES)), 'the refusal names the limit');
+  assert.equal(statSync(path).size, WRITE_MAX_PRECONDITION_BYTES + 1, 'the refusal must not have written the file');
 });
 
 test('truncateMiddle keeps head and tail with a marker', () => {
