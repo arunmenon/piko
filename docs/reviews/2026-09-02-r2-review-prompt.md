@@ -384,3 +384,79 @@ against the new tree and report its outcome. In particular:
 
 Then rescore on the same rubric and say what the minimum remaining patch
 set is, if any.
+
+---
+
+## T2 review (2026-09-03): the boundary
+
+Paste this block together with the header and Part 1 rules above. Review the
+head of main. The diff under review is everything after commit 47d73bb (the
+T2 merges: 5c cooperative shutdown, 5d argument-aware approvals, 5b
+session-tree budget authority, 5a sandbox executor with the bubblewrap and
+Seatbelt providers, 5a-ii the ADR 0022 attacks through the executor, 5e the
+threat model). Expected baseline on macOS: `npm test` reports about 399
+passing, 0 failing, 17 todo (16 in-process ADR 0022 entries plus the
+in-workspace cleanup residue through the executor), 1 skipped; the budget
+gate reports ~815 of 1000 at baseline 815. On Linux CI the bubblewrap
+provider runs; on a host without bwrap those tests skip with a reason.
+
+Setup note: the Seatbelt provider needs `sandbox-exec`; the bubblewrap
+provider needs `bwrap` and unrestricted user namespaces
+(`kernel.apparmor_restrict_unprivileged_userns=0` on Ubuntu 24.04).
+
+For each of the five items, correctness and robustness first, then whether
+the ADR addendum states what the code does and its limits:
+
+1. Sandbox executor (ADR 0018 and its three 2026-09-02 addenda;
+   packages/core/src/executor/*). Attack the boundary: from inside a
+   sandboxed bash, try to read the session store, the config, the parent's
+   environment, the network, and any path outside the workspace; try to
+   escape through `/tmp`, through the private temp directory, through
+   `/proc` on Linux, through the node binary's own directory, and through
+   the worker protocol itself (a crafted response, an oversized line, a
+   second `ready`). Check the acquire-time self-test cannot be satisfied
+   by a broken provider. Check the control plane never enters the worker:
+   grep for credentials, session paths, and budget ledger paths reaching
+   the spec. On macOS, assess what the profile still permits (`/usr`,
+   `/System`, `/Library`, `/private/etc`, `/dev` readable) and whether any
+   of it matters. Assess `--sandbox auto` versus the ADR's "fail closed,
+   not a flag" wording and say whether the addendum's justification holds.
+2. ADR 0022 through the executor (packages/core/tests/
+   containment-executor.test.ts, the barrier bridge in
+   executor/containment-barrier.ts). Confirm the eight attacks exercise the
+   shipped code path and that the negative control proves the pass is
+   real. Confirm the barrier bridge cannot be enabled from the model's
+   environment or from project content. Assess the stated residue (the
+   stranded in-workspace temporary) and whether it is a containment
+   failure or a hygiene failure.
+3. Session-tree budget authority (ADR 0026 addendum;
+   packages/core/src/budget-authority.ts). Attack the lock: two roots on
+   one ledger, a child forging `PI_BUDGET_AUTHORITY` to a foreign ledger, a
+   stale lock reclaimed while its owner is alive on another host, a
+   ledger edited by the model (it lives outside the workspace; confirm), a
+   crash between reserve and dispatch, and reconcile of a request id that
+   never reserved. Check the ancestor chain cannot double-charge or
+   under-charge. Check the reminders never enter the fixed prefix. Confirm
+   the measured throughput claim and whether the `Atomics.wait` blocking
+   can stall the event loop in the REPL.
+4. Cooperative shutdown (ADR 0027 addendum; packages/cli/src/main.ts,
+   shutdown tests). Confirm exit 143 semantics on both paths and the
+   refinement that a completed turn keeps its own code. Attack the
+   supervisor: signal races between forward and kill, a child that
+   re-parents, a grace of zero, SIGTERM during compaction, SIGTERM while
+   suspended awaiting approval. Confirm the supervisor never writes the
+   journal and that the drain row cannot be forged mid-file.
+5. Argument-aware approvals (ADR 0011 addendum;
+   packages/core/src/tools/approval-rules.ts). Attack the tokenizer with
+   quoting, escapes, unicode, here-docs, `$IFS`, brace expansion,
+   `command`, `exec`, `xargs`, `env`, `nohup`, `time`, aliases, functions,
+   relative binaries, and a denied word split across segments. Check the
+   inline-test runner cannot be bypassed by an empty test list. Check a
+   grant row replayed from a journal edited by the model (the journal is
+   outside the workspace; confirm the model cannot reach it without host
+   bash).
+
+Then: regressions since 47d73bb; whether the threat model at
+docs/threat-model.md names a control the code does not have; the rescore on
+the same rubric with one sentence per dimension; and the minimum patch set
+to call T2 closed.
