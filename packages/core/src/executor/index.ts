@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { isPathInsideWorkspace } from '../tools/filesystem.js';
 import { sanitizedBashEnvironment } from '../tools/bash.js';
 import { sessionsDirFor } from '../session.js';
+import { resolveExecutableOnPath, WORKER_SHELL_NAME } from './resolve-executable.js';
 import type { ToolExecutionPolicy } from '../tools/types.js';
 import { bubblewrapProvider } from './bubblewrap.js';
 import { seatbeltProvider } from './seatbelt.js';
@@ -25,6 +26,7 @@ import { workerHostFor } from './worker-host.js';
 
 export * from './types.js';
 export * from './protocol.js';
+export { resolveExecutableOnPath, WORKER_SHELL_NAME } from './resolve-executable.js';
 export {
   bubblewrapProvider,
   createBubblewrapProvider,
@@ -92,28 +94,6 @@ export function resolveNodeInstallPrefix(nodeExecutablePath: string): string {
   return basename(binDirectory) === 'bin' ? dirname(binDirectory) : binDirectory;
 }
 
-/** The shell name the bash tool hands to the operating system's PATH search. */
-export const WORKER_SHELL_NAME = 'bash';
-
-/**
- * Resolve a bare binary name the way the worker's own `spawn` will: first match
- * on the PATH the worker is given, followed through symlinks. Returns undefined
- * when nothing on that PATH answers to the name.
- */
-export function resolveExecutableOnPath(binaryName: string, pathVariable: string): string | undefined {
-  for (const directory of pathVariable.split(':')) {
-    if (directory.length === 0) continue;
-    const candidate = join(directory, binaryName);
-    try {
-      const resolved = realpathSync(candidate);
-      if (statSync(resolved).isFile()) return resolved;
-    } catch {
-      // Not on this PATH entry; keep looking.
-    }
-  }
-  return undefined;
-}
-
 /**
  * Every binary the sandbox must be allowed to execute, canonicalised on this
  * host. The node that runs the worker, the shell the worker's bash tool spawns
@@ -132,6 +112,19 @@ export function resolveExecutableRealPaths(pathVariable: string): string[] {
     // No /bin/bash on this platform; the PATH lookup above is the whole answer.
   }
   return [...paths].sort();
+}
+
+/** The shell the worker's bash tool will reach, or undefined when there is none. */
+export function resolveShellExecutablePath(pathVariable: string): string | undefined {
+  return resolveExecutableOnPath(WORKER_SHELL_NAME, pathVariable) ?? tryRealPath('/bin/bash');
+}
+
+function tryRealPath(path: string): string | undefined {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -173,6 +166,7 @@ export function buildSandboxSpec(workspaceRoot: string): SandboxSpec {
     // Resolved against the PATH the worker will actually search, not this
     // process's own, so the permitted shell is the one the worker will find.
     executableRealPaths: resolveExecutableRealPaths(environment['PATH'] ?? ''),
+    shellExecutablePath: resolveShellExecutablePath(environment['PATH'] ?? ''),
   };
 }
 
@@ -250,7 +244,7 @@ function closeSelfTestFixture(fixture: SelfTestFixture): void {
  */
 export async function runSandboxSelfTest(
   handle: SandboxHandle,
-  fixture: { canaryPath: string; probePort: number },
+  fixture: { canaryPath: string; probePort: number; shellPath?: string | undefined },
 ): Promise<SandboxSelfTestChecks> {
   const host = workerHostFor(handle);
   if (!host) throw new Error('this sandbox handle has no worker to test');
@@ -259,6 +253,7 @@ export async function runSandboxSelfTest(
     canaryPath: fixture.canaryPath,
     probePort: fixture.probePort,
     markerName: SELF_TEST_MARKER_NAME,
+    shellPath: fixture.shellPath,
     timeoutMs: SELF_TEST_TIMEOUT_MS,
   });
 }
@@ -273,6 +268,14 @@ export interface AcquireVerifiedExecutorOptions {
 }
 
 /**
+ * The binaries a sandbox had to permit, for a message a human can act on. A
+ * denial on someone else's machine is unreadable without these two paths.
+ */
+export function describeResolvedBinaries(spec: SandboxSpec): string {
+  return `node ${spec.nodeExecutablePath}, shell ${spec.shellExecutablePath ?? 'none found on PATH'}`;
+}
+
+/**
  * Acquire one provider and prove it before using it. A provider that acquires
  * but fails any check is released and reported, never used: falling back to the
  * host silently is the one outcome ADR 0018 forbids.
@@ -284,7 +287,8 @@ export async function acquireVerifiedExecutor(
   provider: SandboxProvider,
   workspaceRoot: string,
   options: AcquireVerifiedExecutorOptions = {},
-): Promise<{ executor: SandboxExecutor; handle: SandboxHandle } | { refusal: string }> {
+): Promise<{ executor: SandboxExecutor; handle: SandboxHandle; resolvedBinaries: string } | { refusal: string }> {
+  let resolvedBinaries = 'binaries unresolved';
   let fixture: SelfTestFixture;
   try {
     fixture = await openSelfTestFixture(workspaceRoot);
@@ -296,18 +300,19 @@ export async function acquireVerifiedExecutor(
     const baseSpec = buildSandboxSpec(workspaceRoot);
     const spec: SandboxSpec =
       options.containmentBarrierChannel === true ? { ...baseSpec, containmentBarrierChannel: true } : baseSpec;
+    resolvedBinaries = describeResolvedBinaries(spec);
     handle = await provider.acquire(spec);
-    const checks = await runSandboxSelfTest(handle, fixture);
+    const checks = await runSandboxSelfTest(handle, { ...fixture, shellPath: spec.shellExecutablePath });
     if (!selfTestPassed(checks)) {
       const failure = describeSelfTestFailure(checks) ?? 'a self-test check failed';
       await provider.release(handle);
-      return { refusal: `${provider.name}: ${failure}` };
+      return { refusal: `${provider.name}: ${failure} [${resolvedBinaries}]` };
     }
-    return { executor: bindSandboxExecutor(provider, handle), handle };
+    return { executor: bindSandboxExecutor(provider, handle), handle, resolvedBinaries };
   } catch (error) {
     if (handle) await provider.release(handle).catch(() => undefined);
     const message = error instanceof Error ? error.message : String(error);
-    return { refusal: `${provider.name}: ${message.replace(/\s+/gu, ' ').slice(0, 300)}` };
+    return { refusal: `${provider.name}: ${message.replace(/\s+/gu, ' ').slice(0, 300)} [${resolvedBinaries}]` };
   } finally {
     closeSelfTestFixture(fixture);
   }
@@ -371,7 +376,9 @@ export async function selectSandboxExecutor(options: SelectSandboxExecutorOption
     if ('executor' in outcome) {
       return {
         executor: outcome.executor,
-        summary: `sandbox: ${provider.name} provider active; the five tools run inside it and only the workspace is writable`,
+        summary:
+          `sandbox: ${provider.name} provider active; the five tools run inside it and only the workspace ` +
+          `is writable (${outcome.resolvedBinaries})`,
         refusals,
       };
     }

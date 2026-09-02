@@ -267,3 +267,49 @@ unusable provider as a skip with that reason on the record rather than a
 failure, which also stops one refusal from cancelling every later subtest. This
 reasoning comes from bubblewrap's source and the CI output; it was not verified
 on a Linux host.
+
+### The self-test grew a fourth check, 2026-09-03
+
+The macOS fix above was not enough. The hosted runner (macOS 26.5.2, build
+25F84, arm64) still answered `spawn EPERM` for every bash call with the
+resolved binaries named as literals, while acquire and all three self-test
+checks passed: node started, the canary stayed unreadable, the network stayed
+closed, the parent's marker stayed absent. A sandbox that hosts four working
+tools and one that always fails is worse than no sandbox, because it looks like
+it works and only the fifth tool tells the truth.
+
+So the self-test now has a fourth check: the worker must be able to start a
+child process, running the resolved shell as `bash -c true` through the same
+detached spawn the bash tool uses. It probes twice, once by the absolute path
+the parent resolved and once by the bare name the tool actually passes, and
+reports both outcomes with the shell each spelling resolved to inside the
+sandbox. A provider that fails it is released and reported, so
+`selectSandboxExecutor` falls back to the contained in-process path and the
+acceptance suite skips with the reason on the record. A runner whose profile is
+wrong now shows the sandbox as unavailable and says which binary was refused,
+rather than going green on a boundary that cannot run a shell.
+
+The profile itself was widened in the exec dimension only, on the evidence of
+CI probes run on that runner: an unfiltered `(allow process-exec)` with
+`file-read*` and `sysctl-read` started bash without trouble there, and
+`mach-lookup` turned out not to be needed. `process-exec` became
+`process-exec*`, which also covers the interpreter path a script with a shebang
+takes, and the filters became whole subpaths of the trees that are already
+granted `file-read*` and are system-owned and read-only: `/bin`, `/sbin`,
+`/usr`, `/System`, `/Library`, `/opt/homebrew`, `/opt/local`,
+`/private/var/select`, plus the resolved node prefix and piko's own package
+root. The resolved binaries stay as literals beside them. Nothing about writes
+changed: the workspace and the private temporary directory are still the only
+writable places, and reads are unchanged, so this widens nothing that the
+threat model depends on.
+
+Both the startup line and every refusal now name the two paths that matter,
+`node <path>, shell <path>`, because a denial on a machine the author cannot
+log into is unreadable without them.
+
+Verified on this macOS 26.3 host, where all fifteen executor tests pass with
+the new profile and the new check, and by construction for the refusal path
+(two tests drive deliberately broken profiles: one that grants blanket read so
+the canary check fails, one that permits only node so the child-process check
+fails). Whether the widened profile fixes the hosted runner is confirmed by CI
+and not by this host.

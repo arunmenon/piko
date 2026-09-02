@@ -220,15 +220,18 @@ approvals, and the agent loop all remain in the parent process.
 | Provider | Platform | How |
 | --- | --- | --- |
 | bubblewrap | Linux, when `bwrap` is on PATH | `--unshare-all` (so there is no network namespace at all), `--die-with-parent`, `--new-session`, read-only binds of the system paths node needs, a read-write bind of the workspace, `--proc`, `--dev`, `--tmpfs /tmp`. A host that restricts capabilities inside unprivileged user namespaces (Ubuntu 24.04 with `kernel.apparmor_restrict_unprivileged_userns=1`) cannot bring up loopback in the new namespace, so the provider refuses rather than sharing the host network |
-| Seatbelt | macOS, via `/usr/bin/sandbox-exec` | a generated deny-by-default profile: reads limited to the system trees node needs plus the workspace, writes limited to the workspace and a private temp directory, network denied, exec limited to the standard tool directories plus the node and shell binaries resolved through `realpath` on this host, since Seatbelt judges a symlinked binary by its target |
+| Seatbelt | macOS, via `/usr/bin/sandbox-exec` | a generated deny-by-default profile: reads limited to the system trees node needs plus the workspace, writes limited to the workspace and a private temp directory, network denied, exec limited to those same read-only system trees plus the node and shell binaries resolved through `realpath` on this host |
 
-`--sandbox auto` (the default) uses a provider when one passes its acquire-time self-test:
-inside the sandbox, reading a canary file the parent just created outside the workspace must
-fail, connecting to a loopback listener the parent really opened must fail, and a marker
-variable the parent really holds must be absent. A provider that fails any of the three is
-released and reported, never used. `--sandbox require` exits 1 when none passes.
-`--sandbox off` skips the executor entirely. One line on stderr at startup names the provider in
-use or says why there is none.
+`--sandbox auto` (the default) uses a provider when one passes its acquire-time self-test, run
+inside the sandbox: reading a canary file the parent just created outside the workspace must
+fail, connecting to a loopback listener the parent really opened must fail, a marker variable the
+parent really holds must be absent, and the worker must be able to start a child process (the
+resolved shell, as `bash -c true`, through the same spawn the bash tool uses). A provider that
+fails any of the four is released and reported, never used, so a profile that starts node but
+refuses a shell shows up as an unavailable sandbox rather than as four working tools and one that
+always fails. `--sandbox require` exits 1 when none passes. `--sandbox off` skips the executor
+entirely. One line on stderr at startup names the provider in use, and the node and shell paths
+its policy had to permit, or says why there is none.
 
 What it contains: writes outside the workspace, reads of your home directory, the piko session
 store, the piko configuration, and anything else outside the workspace, all network access from
