@@ -178,6 +178,19 @@ export type LifecycleEntry =
       budget?: RunBudgetSnapshot;
     })
   | (LifecycleBase & { t: 'journal_schema'; schema: number })
+  /**
+   * One extension module admitted at startup (ADR 0012): what was imported, the
+   * SHA-256 of the bytes that were imported, the tools it contributed, and
+   * whether the user pinned that digest on the command line. Additive under
+   * 0019, so the schema generation does not move.
+   */
+  | (LifecycleBase & {
+      t: 'extension_loaded';
+      path: string;
+      sha256: string;
+      toolNames: string[];
+      pinned: boolean;
+    })
   | (LifecycleBase & { t: 'session_ready' })
   | (LifecycleBase & { t: 'session_lineage' } & SessionLineage);
 
@@ -542,6 +555,16 @@ export function validateSessionEntry(value: unknown): asserts value is SessionEn
     case 'journal_schema':
       requirePositiveInteger(entry['schema'], `${type}.schema`);
       return;
+    case 'extension_loaded': {
+      requireString(entry['path'], `${type}.path`);
+      const digest = requireString(entry['sha256'], `${type}.sha256`);
+      if (!/^[0-9a-f]{64}$/.test(digest)) throw new TypeError(`${type}.sha256 must be a lowercase hex SHA-256`);
+      const toolNames = entry['toolNames'];
+      if (!Array.isArray(toolNames)) throw new TypeError(`${type}.toolNames must be an array`);
+      toolNames.forEach((name, index) => requireString(name, `${type}.toolNames[${index}]`));
+      requireBoolean(entry['pinned'], `${type}.pinned`);
+      return;
+    }
     case 'session_ready':
       return;
     case 'session_lineage':

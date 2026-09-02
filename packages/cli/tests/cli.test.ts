@@ -68,6 +68,18 @@ test('parseArgs rejects unsafe timer and tool-output budgets', () => {
   assert.throws(() => parseArgs(['--max-tool-output-bytes', '255', 'go']), />= 256/);
 });
 
+test('parseArgs carries child-run correlation and the nesting cap', () => {
+  const args = parseArgs(['-p', '--parent-run', 'run_abc', '--max-depth', '0', 'go']);
+  assert.equal(args.parentRunId, 'run_abc');
+  assert.equal(args.maxDepth, 0);
+  assert.equal(parseArgs(['go']).maxDepth, 2, 'the default cap admits two levels of nesting');
+  assert.equal(parseArgs(['go']).parentRunId, undefined);
+  assert.throws(() => parseArgs(['--parent-run', '', 'go']), /non-empty run id/);
+  assert.throws(() => parseArgs(['--parent-run']), /requires a value/);
+  assert.throws(() => parseArgs(['--max-depth', '-1', 'go']), />= 0/);
+  assert.throws(() => parseArgs(['--max-depth', '1.5', 'go']), />= 0/);
+});
+
 test('project instructions are opt-in', () => {
   assert.equal(parseArgs(['hello']).trustProject, false);
   assert.equal(parseArgs(['hello']).allowHostBash, false);

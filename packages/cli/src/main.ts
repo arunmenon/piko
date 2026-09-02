@@ -31,6 +31,7 @@ import {
   LockedSessionHeadError,
   loadPricingTable,
   loadAgentsMd,
+  readProcessDepth,
   recoverStaleLock,
   releaseSessionLock,
   resolveModelPrice,
@@ -81,6 +82,8 @@ interface Setup {
   allowHostBash: boolean;
   /** gated tool names; only CLI flags and user config can reach this */
   approval?: readonly string[] | '*';
+  /** parent run correlation from --parent-run (ADR 0004) */
+  parentRunId?: string;
   observer?: Observer;
   thinkingBudget?: number;
   contextWindow: number;
@@ -203,6 +206,7 @@ function buildAgent(setup: Omit<Setup, 'agent'>, cwd: string, model: string): Ag
       ...(setup.approval !== undefined ? { approval: setup.approval } : {}),
     },
     ...(setup.observer ? { observer: setup.observer } : {}),
+    ...(setup.parentRunId ? { parentRunId: setup.parentRunId } : {}),
     contextWindow: setup.contextWindow,
     autoCompact: setup.autoCompact,
     ...(setup.flailGuard === false ? { flailGuard: false as const } : {}),
@@ -252,19 +256,17 @@ async function setup(args: CliArgs): Promise<Setup> {
   if (args.allowHostBash) {
     process.stderr.write(dim('warning: host bash enabled without OS isolation; commands run as your user and can inspect this process and its credentials; use only where you would run the model as yourself\n'));
   }
-  const tools = validateToolSet(
-    [
-      ...builtins,
-      ...(await loadConfiguredExtensions({
-        configPaths: config.extensions ?? [],
-        configFile: configPath(),
-        cliPaths: args.extensions,
-        cwd,
-      })),
-    ],
-    { source: 'configured tools' },
-  );
+  const loadedExtensions = await loadConfiguredExtensions({
+    configPaths: config.extensions ?? [],
+    configFile: configPath(),
+    cliPaths: args.extensions,
+    cwd,
+  });
+  const tools = validateToolSet([...builtins, ...loadedExtensions.tools], { source: 'configured tools' });
   const session = openSession(args, cwd, profile.model);
+  // 0012: what code the session ran with, recorded on the locked handle before
+  // the first model call, pinned or not.
+  for (const extension of loadedExtensions.extensions) session.recordExtensionLoaded(extension);
   const approval = args.requireApproval ?? profile.approval;
   const envWindow = Number(process.env['PI_CONTEXT_WINDOW']);
   const partial: Omit<Setup, 'agent'> = {
@@ -285,6 +287,7 @@ async function setup(args: CliArgs): Promise<Setup> {
     // Provenance is restricted to the flag and the user config file. Project
     // content loaded by --trust-project and extensions never reach this field.
     ...(approval !== undefined ? { approval } : {}),
+    ...(args.parentRunId ? { parentRunId: args.parentRunId } : {}),
     ...(args.telemetry
       ? {
           observer: new SafeObserver({
@@ -312,6 +315,7 @@ function printUsageSummary(
   agent: Agent,
   session: Session,
   terminal?: Extract<AgentEvent, { type: 'turn_done' }>,
+  parentRunId?: string,
 ): void {
   const totalCostComplete = agent.costHistoryComplete && costComplete(agent.costTotal);
   const lastTurnCostComplete = costComplete(agent.lastTurnCost);
@@ -319,6 +323,7 @@ function printUsageSummary(
     `${JSON.stringify({
       v: 1,
       type: 'usage_summary',
+      ...(parentRunId ? { parentRunId } : {}),
       usage: agent.usageTotal,
       lastTurn: agent.lastTurnUsage,
       cost: {
@@ -415,7 +420,14 @@ async function headless(args: CliArgs): Promise<number> {
   try {
     for await (const event of turn) {
       if (args.json) {
-        process.stdout.write(`${JSON.stringify({ v: 1, sessionId: (agent.session ?? session).id, event })}\n`);
+        process.stdout.write(
+          `${JSON.stringify({
+            v: 1,
+            sessionId: (agent.session ?? session).id,
+            ...(args.parentRunId ? { parentRunId: args.parentRunId } : {}),
+            event,
+          })}\n`,
+        );
       }
       if (event.type === 'response_done') {
         const text = event.message.content
@@ -474,7 +486,7 @@ async function headless(args: CliArgs): Promise<number> {
   // Keep this typed record last on stderr. Legacy benchmark panes may combine
   // stdout/stderr, so emitting it after model text prevents echoed JSON from
   // being mistaken for the authoritative terminal usage row.
-  if (args.usage) printUsageSummary(agent, agent.session ?? session, terminal);
+  if (args.usage) printUsageSummary(agent, agent.session ?? session, terminal, args.parentRunId);
   return exitCode;
 }
 
@@ -823,7 +835,7 @@ async function repl(args: CliArgs): Promise<number> {
     const finish = () => {
       if (finished) return;
       finished = true;
-      if (args.usage) printUsageSummary(agent, session);
+      if (args.usage) printUsageSummary(agent, session, undefined, args.parentRunId);
       resolveRepl(exitCode);
     };
     // stdin EOF (piped input) closes readline immediately — queued lines must still run
@@ -1180,8 +1192,28 @@ function auditSession(target: string, cwd: string): number {
   return 0;
 }
 
+/**
+ * ADR 0004: refuse a run that is already nested deeper than the cap, before any
+ * provider setup or model call. Depth arrives in PI_DEPTH, which every bash tool
+ * call sets to its own depth plus one; a malformed value is refused rather than
+ * guessed. This bounds accidental recursion only: a model that can run host bash
+ * can also unset the variable, and concurrency and tree-wide spend caps arrive
+ * with ADR 0026.
+ */
+function depthRefusal(maxDepth: number): string | undefined {
+  const depth = readProcessDepth();
+  if (depth === undefined) {
+    return `refusing to start: PI_DEPTH must be a non-negative integer, got ${JSON.stringify(process.env['PI_DEPTH'] ?? '')}`;
+  }
+  if (depth > maxDepth) {
+    return `refusing to start: spawn depth ${depth} exceeds --max-depth ${maxDepth}`;
+  }
+  return undefined;
+}
+
 async function main(): Promise<void> {
   const jsonRequested = process.argv.slice(2).includes('--json');
+  let parentRunId: string | undefined;
   try {
     const rawArgs = process.argv.slice(2);
     if (rawArgs[0] === 'doctor' && rawArgs[1] === 'sessions') {
@@ -1189,6 +1221,7 @@ async function main(): Promise<void> {
       return;
     }
     const args = parseArgs(rawArgs);
+    parentRunId = args.parentRunId;
     if (args.help) {
       process.stdout.write(`${HELP}\n`);
       return;
@@ -1196,6 +1229,14 @@ async function main(): Promise<void> {
     if (args.audit !== undefined) {
       if (args.json) throw new Error('--json cannot be combined with --audit');
       process.exitCode = auditSession(args.audit, process.cwd());
+      return;
+    }
+    // Read-only surfaces above (help, doctor, audit) stay usable at any depth;
+    // only a run is refused, and it is refused before any provider setup.
+    const refusal = depthRefusal(args.maxDepth);
+    if (refusal !== undefined) {
+      process.stderr.write(`${red(oneLine(refusal, 512))}\n`);
+      process.exitCode = 1;
       return;
     }
     process.exitCode = args.print ? await headless(args) : await repl(args);
@@ -1217,6 +1258,7 @@ async function main(): Promise<void> {
         `${JSON.stringify({
           v: 1,
           ...(failure.sessionId ? { sessionId: failure.sessionId } : {}),
+          ...(parentRunId ? { parentRunId } : {}),
           event: {
             type: 'run_error',
             error: text,

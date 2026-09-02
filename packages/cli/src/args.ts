@@ -25,6 +25,10 @@ export interface CliArgs {
   offlinePricing: boolean;
   trustProject: boolean;
   allowHostBash: boolean;
+  /** parent run correlation for a child spawned by another piko (ADR 0004) */
+  parentRunId?: string;
+  /** deepest PI_DEPTH this process will still run at (ADR 0004) */
+  maxDepth: number;
   /** tool names gated behind a human decision, or '*' for all (ADR 0011) */
   requireApproval?: readonly string[] | '*';
   /** decisions applied to a suspended session when it is reopened */
@@ -43,9 +47,13 @@ export interface CliArgs {
   prompt: string;
 }
 
+/** Deepest nesting a piko child may still start at when --max-depth is absent (ADR 0004). */
+export const DEFAULT_MAX_DEPTH = 2;
+
 export function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
     print: false,
+    maxDepth: DEFAULT_MAX_DEPTH,
     json: false,
     continue: false,
     autoCompact: true,
@@ -78,6 +86,11 @@ export function parseArgs(argv: string[]): CliArgs {
   const integerAtLeast = (flag: string, raw: string, minimum: number): number => {
     const value = positiveInteger(flag, raw);
     if (value < minimum) throw new Error(`${flag} requires an integer >= ${minimum}`);
+    return value;
+  };
+  const nonNegativeInteger = (flag: string, raw: string): number => {
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${flag} requires an integer >= 0`);
     return value;
   };
   const positiveDecimal = (flag: string, raw: string): number => {
@@ -161,6 +174,18 @@ export function parseArgs(argv: string[]): CliArgs {
       }
       case '--ext':
         args.extensions.push(next());
+        break;
+      case '--parent-run': {
+        // Telemetry accepts any non-empty string for parentRunId (telemetry.ts
+        // requireString); the flag applies exactly that rule and nothing more,
+        // so an id minted by any parent tooling round-trips unchanged.
+        const parentRunId = next();
+        if (parentRunId.length === 0) throw new Error('--parent-run requires a non-empty run id');
+        args.parentRunId = parentRunId;
+        break;
+      }
+      case '--max-depth':
+        args.maxDepth = nonNegativeInteger('--max-depth', next());
         break;
       case '--no-auto-compact':
         args.autoCompact = false;
@@ -297,7 +322,15 @@ options:
   doctor sessions      list sessions and lock state (read-only; --json per 0010;
                        --remove <file> --yes removes one verifiably dead local lock)
   --telemetry <path>   append redacted versioned runtime spans/events as owner-only JSONL
-  --ext <path>         load a compiled JavaScript extension module (repeatable)
+  --parent-run <id>    record this run as a child of <id>: the id reaches telemetry as
+                       parentRunId and is echoed on every --json row
+  --max-depth <n>      refuse to start when the inherited PI_DEPTH is deeper than <n>
+                       (default 2). Each bash child is given PI_DEPTH + 1, so a piko
+                       spawned from a tool call sees its own nesting depth. Depth is the
+                       only tree bound today; concurrency and tree-wide spend caps arrive
+                       with ADR 0026.
+  --ext <path>[@sha256:<hex>]  load a compiled JavaScript extension module (repeatable);
+                       with a pin the file's SHA-256 must match or pi refuses to start
   --usage              print a JSON usage summary to stderr when done
   -h, --help           show this help
 
