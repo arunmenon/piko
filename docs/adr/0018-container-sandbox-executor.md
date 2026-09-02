@@ -232,3 +232,38 @@ absent, and CI is where they run.
 ADR 0022's eight containment attacks are deliberately not routed through the
 executor in this change; they remain red against the in-process path, and the
 follow-on that runs them through the worker is what closes 0022's addendum.
+
+### What the first CI run taught, 2026-09-03
+
+Two things the developer host could not have shown, both fixed in place.
+
+The Seatbelt profile was built from directory names, and a hosted macOS runner
+puts `bash` at a Homebrew prefix whose `bin` entry is a symlink into the package
+tree. Seatbelt judges the resolved target, so `(subpath "/opt/homebrew/bin")`
+permitted the link and denied the binary behind it: acquire and the self-test
+both passed, and the first bash call came back as a bare `spawn EPERM` from
+node, naming neither the sandbox nor the binary. The profile now derives its
+exec and read rules from the binaries themselves, resolved through `realpath`
+on the host the sandbox will run on: `process.execPath`, the `bash` that the
+worker's own PATH search will find, and `/bin/bash`, each named as a literal
+alongside its containing directory, with the package prefixes (`/usr/local`,
+`/opt/homebrew`, `/opt/local`) permitted whole rather than by their `bin`.
+The bubblewrap provider binds the same resolved directories read-only for the
+same reason. A denied child process now reports which sandbox denied it and
+that its policy has to permit the binary at its resolved path.
+
+The Linux legs could not build a sandbox at all:
+`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`. bubblewrap
+configures loopback itself whenever it creates a network namespace and offers
+no option to skip that step, and Ubuntu 24.04 with
+`kernel.apparmor_restrict_unprivileged_userns=1` creates the namespace while
+withholding the capability that configuration needs. The invocation is not
+changed: `--share-net` would hand the sandbox the host network, dropping
+`--unshare-user` only works with a setuid bwrap that the Ubuntu package is not,
+and `--disable-userns` addresses something else. The provider fails closed with
+the bwrap message plus a sentence saying what the host has to change, and the
+run falls back to the contained in-process path. The acceptance suite treats an
+unusable provider as a skip with that reason on the record rather than a
+failure, which also stops one refusal from cancelling every later subtest. This
+reasoning comes from bubblewrap's source and the CI output; it was not verified
+on a Linux host.

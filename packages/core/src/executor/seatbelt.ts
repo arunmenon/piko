@@ -26,16 +26,23 @@ const SYSTEM_READ_PATHS = [
   '/dev',
 ] as const;
 
-/** Directories a command inside the sandbox is allowed to execute out of. */
+/**
+ * Directories a command inside the sandbox may execute out of. The package
+ * prefixes are named whole rather than by their `bin` directory because the
+ * entries in `bin` are usually symlinks into the package tree, and Seatbelt
+ * judges the resolved target: `/opt/homebrew/bin` alone permits the link and
+ * denies the binary it points at, which is how a hosted macOS runner produced
+ * `spawn EPERM` for a Homebrew bash while `/bin/bash` would have been fine.
+ */
 const SYSTEM_EXECUTABLE_PATHS = [
   '/bin',
   '/sbin',
   '/usr/bin',
   '/usr/sbin',
   '/usr/libexec',
-  '/usr/local/bin',
-  '/opt/homebrew/bin',
-  '/opt/local/bin',
+  '/usr/local',
+  '/opt/homebrew',
+  '/opt/local',
 ] as const;
 
 /** Character devices a normal process writes to. Everything else under /dev is read-only. */
@@ -109,18 +116,25 @@ function ancestorsOf(path: string): string[] {
  * allowed tree need metadata even though their contents stay unreadable.
  */
 export function seatbeltProfile(spec: SandboxSpec, privateTempDir: string): string {
+  // Each executable's own directory, so a binary resolved outside the system
+  // trees (a node under a hosted runner's tool cache, a shell inside a package
+  // prefix) is readable and executable at the path Seatbelt will see.
+  const executableDirectories = [...new Set(spec.executableRealPaths.map((path) => dirname(path)))].sort();
   const readPaths = [
     ...SYSTEM_READ_PATHS.filter((path) => existsSync(path)),
     spec.nodeInstallPrefix,
     spec.pikoPackageRoot,
+    ...executableDirectories,
     spec.workspaceRoot,
     privateTempDir,
   ];
   const writePaths = [spec.workspaceRoot, privateTempDir];
   const metadataPaths = new Set<string>(['/', '/etc', '/tmp', '/var', '/private', '/private/var', '/private/tmp']);
-  for (const path of [...readPaths, ...writePaths]) for (const ancestor of ancestorsOf(path)) metadataPaths.add(ancestor);
+  for (const path of [...readPaths, ...writePaths, ...spec.executableRealPaths]) {
+    for (const ancestor of ancestorsOf(path)) metadataPaths.add(ancestor);
+  }
   const executablePaths = [
-    join(spec.nodeInstallPrefix, 'bin'),
+    ...new Set([join(spec.nodeInstallPrefix, 'bin'), ...executableDirectories]),
     ...SYSTEM_EXECUTABLE_PATHS.filter((path) => existsSync(path)),
   ];
   const lines = [
@@ -130,11 +144,14 @@ export function seatbeltProfile(spec: SandboxSpec, privateTempDir: string): stri
     '; provider, so there is no allowlist to get wrong (ADR 0018).',
     '(deny network*)',
     '(allow process-fork)',
-    `(allow process-exec ${executablePaths.map(sbplString).map((path) => `(subpath ${path})`).join(' ')})`,
+    // Directories, then the exact resolved binaries. The literals are what make
+    // this profile correct on a machine whose node or shell lives somewhere the
+    // directory list does not name.
+    `(allow process-exec ${executablePaths.map(sbplString).map((path) => `(subpath ${path})`).join(' ')} ${spec.executableRealPaths.map(sbplString).map((path) => `(literal ${path})`).join(' ')})`,
     `(allow file-read-metadata ${[...metadataPaths].sort().map(sbplString).map((path) => `(literal ${path})`).join(' ')})`,
     // The root directory node itself: node reads it while starting, and
     // granting the literal does not grant anything below it.
-    `(allow file-read* (literal "/") ${readPaths.map(sbplString).map((path) => `(subpath ${path})`).join(' ')})`,
+    `(allow file-read* (literal "/") ${readPaths.map(sbplString).map((path) => `(subpath ${path})`).join(' ')} ${spec.executableRealPaths.map(sbplString).map((path) => `(literal ${path})`).join(' ')})`,
     `(allow file-write* ${writePaths.map(sbplString).map((path) => `(subpath ${path})`).join(' ')} ${WRITABLE_DEVICE_PATHS.filter((path) => existsSync(path)).map(sbplString).map((path) => `(literal ${path})`).join(' ')} (regex #"^/dev/tty"))`,
     `(allow sysctl-read ${NODE_STARTUP_SYSCTL_NAMES.map((name) => `(sysctl-name ${sbplString(name)})`).join(' ')})`,
   ];
@@ -177,6 +194,7 @@ export function createSeatbeltProvider(options: SeatbeltProviderOptions = {}): S
       const host = new ToolWorkerHost(commandLine, {
         cwd: spec.workspaceRoot,
         environment,
+        providerName: 'seatbelt',
         onKilled: () => rmSync(privateTempDir, { recursive: true, force: true }),
       });
       try {

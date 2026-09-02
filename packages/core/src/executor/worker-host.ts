@@ -58,6 +58,8 @@ export class ToolWorkerHost {
     private readonly options: {
       readonly cwd: string;
       readonly environment: Readonly<Record<string, string>>;
+      /** Named in diagnostics so a denial says which sandbox denied it. */
+      readonly providerName?: string;
       /** Runs once when the sandbox is killed, including on process exit. */
       readonly onKilled?: () => void;
     },
@@ -260,12 +262,27 @@ export class ToolWorkerHost {
         policy: request.policy,
         cwd: request.cwd,
       });
-      if (response.kind === 'failure') throw new Error(response.error);
+      if (response.kind === 'failure') throw new Error(this.describeFailure(response.error, request.tool));
       if (response.kind !== 'result') throw new Error('sandbox worker answered a tool call with a self-test result');
       return { result: response.result, cwd: response.cwd, observations: response.observations };
     } finally {
       request.signal?.removeEventListener('abort', onAbort);
     }
+  }
+
+  /**
+   * Turn a worker-side failure into something a reader can act on. A child
+   * process the sandbox policy refuses arrives as a bare `spawn EPERM` or
+   * `spawn EACCES` from node, which names neither the sandbox nor the binary;
+   * said plainly it points at the profile that has to permit that executable.
+   */
+  private describeFailure(workerError: string, toolName: string): string {
+    if (!/spawn (EPERM|EACCES)/u.test(workerError)) return workerError;
+    const provider = this.options.providerName ?? 'sandbox';
+    return (
+      `the ${provider} sandbox refused to start a child process for the ${toolName} tool (${workerError}). ` +
+      'Its policy has to permit executing that binary at its resolved path, symlinks followed.'
+    );
   }
 
   /** Kill the sandbox. Synchronous so it is usable from a process exit hook. */

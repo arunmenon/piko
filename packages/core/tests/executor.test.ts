@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { after, test } from 'node:test';
+import { after, test, type TestContext } from 'node:test';
 import {
   acquireVerifiedExecutor,
   bubblewrapCommandLine,
@@ -18,6 +18,7 @@ import {
   createSeatbeltProvider,
   bubblewrapProvider,
   buildSandboxSpec,
+  resolveExecutableOnPath,
   sandboxToolPolicy,
   seatbeltProfile,
   seatbeltProvider,
@@ -63,7 +64,12 @@ process.env['HOME'] = testHome;
 const platformProvider: SandboxProvider | undefined =
   process.platform === 'linux' ? bubblewrapProvider : process.platform === 'darwin' ? seatbeltProvider : undefined;
 
-const providerSkip: string | false =
+/**
+ * Whether the provider's binary is even installed. This is the weaker gate: it
+ * decides whether a test that builds its own deliberately weakened sandbox can
+ * run at all, and says nothing about whether the real one works here.
+ */
+const binarySkip: string | false =
   platformProvider === undefined
     ? `no sandbox provider is defined for platform ${process.platform}`
     : !platformProvider.isAvailable()
@@ -107,22 +113,45 @@ function textOf(output: ToolOutput): string {
 }
 
 let sharedWorkspace: string | undefined;
-let sharedExecutorPromise: Promise<SandboxExecutor> | undefined;
+let sharedExecutor: SandboxExecutor | undefined;
+let sandboxProbe: Promise<string | false> | undefined;
 
-/** One sandbox for the whole file: acquiring is the expensive part, not exec. */
-function sharedExecutor(): Promise<SandboxExecutor> {
-  sharedWorkspace ??= makeWorkspace('pi-executor-ws-');
-  sharedExecutorPromise ??= (async () => {
-    const outcome = await acquireVerifiedExecutor(platformProvider!, sharedWorkspace!);
-    if ('refusal' in outcome) throw new Error(`could not acquire a verified sandbox: ${outcome.refusal}`);
-    return outcome.executor;
+/**
+ * Acquire one verified sandbox for the whole file, once, and remember why not
+ * if it cannot be had. A host where the provider's binary exists but the kernel
+ * or the security policy will not let it build a sandbox (a CI runner whose
+ * unprivileged user namespaces are capability-restricted, say) is a skip with a
+ * stated reason, not a failure: this suite tests piko's executor, not the
+ * runner's configuration. Doing it here rather than in a `before` hook also
+ * keeps a refusal from cancelling unrelated subtests.
+ */
+function probeSandbox(): Promise<string | false> {
+  sandboxProbe ??= (async () => {
+    if (binarySkip !== false) return binarySkip;
+    sharedWorkspace = makeWorkspace('pi-executor-ws-');
+    const outcome = await acquireVerifiedExecutor(platformProvider!, sharedWorkspace);
+    if ('refusal' in outcome) {
+      return `no usable ${platformProvider!.name} sandbox on this host: ${outcome.refusal}`;
+    }
+    sharedExecutor = outcome.executor;
+    return false;
   })();
-  return sharedExecutorPromise;
+  return sandboxProbe;
+}
+
+/**
+ * Gate one test on a working sandbox. Returns true when the caller should stop,
+ * having already recorded the skip and its reason on the test context.
+ */
+async function skipWithoutSandbox(t: TestContext): Promise<boolean> {
+  const reason = await probeSandbox();
+  if (reason === false) return false;
+  t.skip(reason);
+  return true;
 }
 
 async function runInSandbox(tool: string, toolArguments: Record<string, unknown>): Promise<ToolOutput> {
-  const executor = await sharedExecutor();
-  const executed = await executor.exec({
+  const executed = await sharedExecutor!.exec({
     tool,
     arguments: toolArguments,
     policy: policyFor(sharedWorkspace!),
@@ -132,10 +161,11 @@ async function runInSandbox(tool: string, toolArguments: Record<string, unknown>
 }
 
 after(async () => {
-  if (sharedExecutorPromise) await (await sharedExecutorPromise).release().catch(() => undefined);
+  if (sharedExecutor) await sharedExecutor.release().catch(() => undefined);
 });
 
-test('the worker runs the five tools with the same results as the in-process tools', { skip: providerSkip }, async () => {
+test('the worker runs the five tools with the same results as the in-process tools', async (t) => {
+  if (await skipWithoutSandbox(t)) return;
   const hostWorkspace = makeWorkspace('pi-executor-host-');
   const executor = await acquireVerifiedExecutor(platformProvider!, makeWorkspace('pi-executor-sandboxed-'));
   assert.ok(!('refusal' in executor), `sandbox acquire refused: ${'refusal' in executor ? executor.refusal : ''}`);
@@ -174,7 +204,8 @@ test('the worker runs the five tools with the same results as the in-process too
   }
 });
 
-test('the workspace is writable through the sandbox', { skip: providerSkip }, async () => {
+test('the workspace is writable through the sandbox', async (t) => {
+  if (await skipWithoutSandbox(t)) return;
   const written = await runInSandbox('write', { path: 'writable-proof.txt', content: 'inside\n' });
   assert.equal(written.isError, undefined, textOf(written));
   assert.equal(readFileSync(join(sharedWorkspace!, 'writable-proof.txt'), 'utf8'), 'inside\n');
@@ -183,7 +214,8 @@ test('the workspace is writable through the sandbox', { skip: providerSkip }, as
   assert.equal(readFileSync(join(sharedWorkspace!, 'shell-proof.txt'), 'utf8'), 'shell');
 });
 
-test('a canary outside the workspace is unreadable through read', { skip: providerSkip }, async () => {
+test('a canary outside the workspace is unreadable through read', async (t) => {
+  if (await skipWithoutSandbox(t)) return;
   // The read tool refuses an out-of-workspace path in piko's own containment
   // check, before the operating system is asked, so this test records the
   // refusal in whichever form it arrives. The bash case below is what proves
@@ -200,13 +232,15 @@ test('a canary outside the workspace is unreadable through read', { skip: provid
   assert.match(refusal, /absolute paths are not allowed|escapes workspace|not accessible/u);
 });
 
-test('a canary outside the workspace is unreadable through bash', { skip: providerSkip }, async () => {
+test('a canary outside the workspace is unreadable through bash', async (t) => {
+  if (await skipWithoutSandbox(t)) return;
   const output = await runInSandbox('bash', { command: `cat ${canaryPath}` });
   assert.equal(output.isError, true, `bash read the canary: ${textOf(output)}`);
   assert.ok(!textOf(output).includes('canary-contents-that-must-not-leak'), 'the canary contents must not appear');
 });
 
-test('a network connect from bash inside the sandbox fails', { skip: providerSkip }, async () => {
+test('a network connect from bash inside the sandbox fails', async (t) => {
+  if (await skipWithoutSandbox(t)) return;
   const output = await runInSandbox('bash', {
     command: 'exec 3<>/dev/tcp/127.0.0.1/22 && echo PI_CONNECTED || echo pi-blocked',
   });
@@ -214,14 +248,16 @@ test('a network connect from bash inside the sandbox fails', { skip: providerSki
   assert.match(textOf(output), /pi-blocked/u);
 });
 
-test('a secret in the parent environment is absent inside the sandbox', { skip: providerSkip }, async () => {
+test('a secret in the parent environment is absent inside the sandbox', async (t) => {
+  if (await skipWithoutSandbox(t)) return;
   assert.equal(process.env[PARENT_SECRET_NAME], PARENT_SECRET_VALUE, 'the parent really holds the secret');
   const output = await runInSandbox('bash', { command: `printenv ${PARENT_SECRET_NAME} || echo pi-absent` });
   assert.ok(!textOf(output).includes(PARENT_SECRET_VALUE), `the secret leaked into the sandbox: ${textOf(output)}`);
   assert.match(textOf(output), /pi-absent/u);
 });
 
-test('the sessions directory is not visible inside the sandbox', { skip: providerSkip }, async () => {
+test('the sessions directory is not visible inside the sandbox', async (t) => {
+  if (await skipWithoutSandbox(t)) return;
   const listed = await runInSandbox('bash', { command: `ls ${sessionsDirectory}` });
   assert.equal(listed.isError, true, `the session store was listable: ${textOf(listed)}`);
   const read = await runInSandbox('bash', { command: `cat ${sessionMarkerPath}` });
@@ -229,7 +265,7 @@ test('the sessions directory is not visible inside the sandbox', { skip: provide
   assert.ok(!textOf(read).includes('session-marker'), 'no session journal content may appear');
 });
 
-test('the self-test refuses a provider whose sandbox is deliberately broken', { skip: providerSkip }, async () => {
+test('the self-test refuses a provider whose sandbox is deliberately broken', { skip: binarySkip }, async () => {
   const workspace = makeWorkspace('pi-executor-broken-');
   // Each platform's break is the smallest real one: on macOS a profile that
   // grants blanket read, on Linux an argv that keeps the host network namespace.
@@ -296,7 +332,7 @@ test('the worker policy carries containment and never the control plane', () => 
   assert.equal(hostOnly.bash?.allowHostExecution, false, '--allow-host-bash alone does not enable the sandboxed shell');
 });
 
-test('the sandbox spec points at built code and a canonical workspace', { skip: providerSkip }, () => {
+test('the sandbox spec points at built code and a canonical workspace', { skip: binarySkip }, () => {
   const workspace = makeWorkspace('pi-executor-spec-');
   const spec = buildSandboxSpec(workspace);
   assert.equal(spec.workspaceRoot, workspace);
@@ -304,4 +340,37 @@ test('the sandbox spec points at built code and a canonical workspace', { skip: 
   assert.ok(spec.workerEntryPath.startsWith(spec.pikoPackageRoot), 'the worker lives under the bound package root');
   assert.equal(spec.environment[PARENT_SECRET_NAME], undefined, 'the worker environment is the sanitized allowlist');
   assert.ok(spec.environment['PATH'], 'the worker still gets a PATH');
+  assert.ok(
+    spec.executableRealPaths.includes(realpathSync(process.execPath)),
+    'the node that runs the worker is named at its resolved path',
+  );
+});
+
+/**
+ * A hosted macOS runner put `bash` at a Homebrew path whose `bin` entry is a
+ * symlink into the package tree. Seatbelt judges the resolved target, so a
+ * profile built from directory names alone denied the exec and the worker
+ * answered `spawn EPERM`. The profile has to name the binaries themselves.
+ */
+test('the Seatbelt profile names the resolved node and bash binaries', { skip: process.platform !== 'darwin' && 'Seatbelt profiles are generated only on macOS' }, () => {
+  const workspace = makeWorkspace('pi-executor-profile-');
+  const spec = buildSandboxSpec(workspace);
+  const profile = seatbeltProfile(spec, join(workspace, '..', 'private-temp'));
+
+  const nodeRealPath = realpathSync(process.execPath);
+  assert.ok(profile.includes(`(literal "${nodeRealPath}")`), `the profile names ${nodeRealPath}`);
+  const shellRealPath = realpathSync('/bin/bash');
+  assert.ok(profile.includes(`(literal "${shellRealPath}")`), `the profile names ${shellRealPath}`);
+
+  // Naming them is only useful if it is the exec rule that carries them.
+  const execRule = profile.split('\n').find((line) => line.startsWith('(allow process-exec'));
+  assert.ok(execRule, 'the profile has a process-exec rule');
+  assert.ok(execRule.includes(`(literal "${nodeRealPath}")`), 'node is executable at its resolved path');
+  assert.ok(execRule.includes(`(literal "${shellRealPath}")`), 'the shell is executable at its resolved path');
+
+  // And the shell the worker will actually find on its PATH, which is not
+  // always /bin/bash, has to be there too.
+  const pathShell = resolveExecutableOnPath('bash', spec.environment['PATH'] ?? '');
+  assert.ok(pathShell, 'this host has a bash on the sanitized PATH');
+  assert.ok(execRule.includes(`(literal "${pathShell}")`), `the PATH shell ${pathShell} is executable`);
 });

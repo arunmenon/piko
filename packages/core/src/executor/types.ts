@@ -35,6 +35,15 @@ export interface SandboxSpec {
   readonly nodeInstallPrefix: string;
   /** Package root holding piko's built worker (the directory with its package.json). */
   readonly pikoPackageRoot: string;
+  /**
+   * Canonical paths of the binaries the worker is known to execute: the node
+   * that runs it and the shell its bash tool spawns. These are resolved through
+   * `realpath` on the host the sandbox will run on, because a sandbox policy is
+   * evaluated against resolved paths. A machine where `bash` is a symlink into
+   * a package directory (Homebrew's `/opt/homebrew/bin/bash` pointing into
+   * `Cellar/`, for instance) needs the target permitted, not the link.
+   */
+  readonly executableRealPaths: readonly string[];
   /** Built worker entry the sandbox executes. */
   readonly workerEntryPath: string;
   /** The sanitized allowlist environment the worker process receives. */
