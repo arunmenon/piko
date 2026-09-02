@@ -362,6 +362,51 @@ test('the REPL drains under SIGTERM and exits 143', async () => {
   }
 });
 
+test('a REPL turn drains its in-flight tool call before exiting 143', async () => {
+  const item = fixture('repl-turn');
+  const provider = await startToolCallProvider({ tool: 'wait_for_release', reply: 'the repl answered' });
+  try {
+    const run = spawnCli(
+      [
+        cli,
+        '--profile',
+        'openai',
+        '--model',
+        'fake-model',
+        '--session',
+        item.sessionFile,
+        '--ext',
+        item.extensionPath,
+        '--shutdown-grace',
+        '30',
+      ],
+      {
+        cwd: item.workspace,
+        env: environmentFor(item, provider.url),
+        input: 'call the tool\n',
+        keepStdinOpen: true,
+      },
+    );
+    await signalOnceDispatched(run, item, 'SIGTERM');
+    await delay(300);
+    writeFileSync(item.releaseMarker, 'go', 'utf8');
+    const result = await run.result;
+
+    assert.equal(result.status, 143, JSON.stringify(result));
+    assert.match(result.stdout, /shutdown: cooperative drain/);
+    assert.deepEqual(unknownRowTypes(item.sessionFile), [], 'the drained tool settled on its own');
+    const session = reopen(item.sessionFile);
+    assert.equal(
+      session.toolExecutions.find((state) => state.call.name === 'wait_for_release')?.status,
+      'completed',
+    );
+    assert.equal(session.runStatus?.status, 'canceled');
+    assert.equal(session.drainRequests.at(-1)?.graceMs, 30_000);
+  } finally {
+    await provider.close();
+  }
+});
+
 test('SIGINT still exits 130, distinct from a SIGTERM drain', async () => {
   const item = fixture('sigint');
   const provider = await startToolCallProvider({ tool: 'wait_for_release' });
