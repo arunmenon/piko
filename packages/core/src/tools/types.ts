@@ -1,5 +1,6 @@
 import type { ImageBlock, TextBlock } from '@pi/ai';
 import { resolve } from 'node:path';
+import type { ApprovalRule } from './approval-rules.js';
 
 export interface ToolOutput {
   content: (TextBlock | ImageBlock)[];
@@ -55,6 +56,13 @@ export interface ToolExecutionPolicy {
    * an explicit non-goal.
    */
   readonly approval?: readonly string[] | '*';
+  /**
+   * Ordered argument-prefix rules evaluated at dispatch, ahead of the tool-name
+   * gate above (ADR 0011 addendum, 2026-09-02). Same restricted provenance as
+   * `approval`: user config and CLI flags only. Compiled and self-tested by
+   * `loadApprovalRules` before an agent runs with them.
+   */
+  readonly approvalRules?: readonly ApprovalRule[];
 }
 
 /** Whether a policy gates this tool name behind a human decision. */

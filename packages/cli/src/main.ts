@@ -13,6 +13,7 @@ import {
   emptyUsage,
   loadConfig,
   resolveProfile,
+  type ApprovalRuleConfig,
   type PiConfig,
   type Profile,
 } from '@pi/ai';
@@ -32,6 +33,7 @@ import {
   fixedPrefixSize,
   latestSessionFile,
   listSessionsWithLockState,
+  loadApprovalRules,
   LockedSessionHeadError,
   loadPricingTable,
   loadAgentsMd,
@@ -54,6 +56,7 @@ import {
 } from '@pi/core';
 import {
   APPROVAL_PROMPT,
+  defaultGrantPrefix,
   describePendingApproval,
   parseApprovalReply,
   parseEditedArguments,
@@ -92,6 +95,8 @@ interface Setup {
   allowProtectedPaths: boolean;
   /** gated tool names; only CLI flags and user config can reach this */
   approval?: readonly string[] | '*';
+  /** argument-prefix rules, compiled and self-tested before the agent exists (ADR 0011 addendum) */
+  approvalRules: ApprovalRuleConfig[];
   /** parent run correlation from --parent-run (ADR 0004) */
   parentRunId?: string;
   observer?: Observer;
@@ -233,6 +238,7 @@ function buildAgent(setup: Omit<Setup, 'agent'>, cwd: string, model: string): Ag
       bash: { allowHostExecution: setup.allowHostBash },
       ...(setup.allowProtectedPaths ? { allowProtectedPaths: true } : {}),
       ...(setup.approval !== undefined ? { approval: setup.approval } : {}),
+      ...(setup.approvalRules.length > 0 ? { approvalRules: setup.approvalRules } : {}),
     },
     ...(setup.observer ? { observer: setup.observer } : {}),
     ...(setup.parentRunId ? { parentRunId: setup.parentRunId } : {}),
@@ -250,6 +256,12 @@ function buildAgent(setup: Omit<Setup, 'agent'>, cwd: string, model: string): Ag
 async function setup(args: CliArgs): Promise<Setup> {
   const cwd = process.cwd();
   const config = loadConfig();
+  // Command-line rules are evaluated before the config file's, and the whole set
+  // self-tests before anything else happens: a failing inline example refuses to
+  // start (exit 1) rather than running under a rule that no longer means what it
+  // claims (ADR 0011 addendum).
+  const approvalRules = [...args.approvalRules, ...(config.approvals?.rules ?? [])];
+  loadApprovalRules(approvalRules);
   const profile = resolveProfile(config, args.profile, args.model);
   const pricingTable = await loadPricingTable({
     ...(args.pricingPath ? { explicitPath: args.pricingPath } : {}),
@@ -330,6 +342,7 @@ async function setup(args: CliArgs): Promise<Setup> {
     systemPrompt,
     allowHostBash: args.allowHostBash,
     allowProtectedPaths: args.allowProtectedPaths,
+    approvalRules,
     // Provenance is restricted to the flag and the user config file. Project
     // content loaded by --trust-project and extensions never reach this field.
     ...(approval !== undefined ? { approval } : {}),
@@ -354,7 +367,11 @@ async function setup(args: CliArgs): Promise<Setup> {
     ...(args.maxTurns !== undefined ? { maxIterations: args.maxTurns } : {}),
     ...(args.thinking !== undefined && args.thinking > 0 ? { thinkingBudget: args.thinking } : {}),
   };
-  return { ...partial, agent: buildAgent(partial, cwd, profile.model) };
+  const agent = buildAgent(partial, cwd, profile.model);
+  // Headless grants are written before the first turn, so they are journal rows
+  // a resume replays exactly like one typed at the REPL prompt.
+  for (const grant of args.grants) agent.addApprovalGrant(grant.tool, grant.prefix);
+  return { ...partial, agent };
 }
 
 function printUsageSummary(
@@ -866,12 +883,22 @@ function ask(rl: ReturnType<typeof createInterface>, query: string): Promise<str
 async function promptForDecisions(
   rl: ReturnType<typeof createInterface>,
   pending: readonly PendingApproval[],
+  grant?: (tool: string, prefix: string) => void,
 ): Promise<ApprovalDecisionInput[] | undefined> {
   const decisions: ApprovalDecisionInput[] = [];
   for (const item of pending) {
     process.stdout.write(`\n${bold('approval required')} ${dim(oneLine(item.executionId, 128))}\n`);
     process.stdout.write(`  ${bold(oneLine(item.call.name, 64))} ${dim(summarizeArgs(item.call.arguments))}\n`);
     process.stdout.write(`  ${dim(oneLine(JSON.stringify(item.call.arguments), 2_000))}\n`);
+    if (item.rule) {
+      process.stdout.write(
+        `  ${dim(`matched approval rule ${item.rule.index}: ${oneLine(item.rule.tool, 64)}${item.rule.prefix ? `:${oneLine(item.rule.prefix, 128)}` : ''} → ${item.rule.decision}`)}\n`,
+      );
+    }
+    const proposedPrefix = defaultGrantPrefix(item.call);
+    if (grant && proposedPrefix) {
+      process.stdout.write(`  ${dim(`g grants "${oneLine(proposedPrefix, 128)}" for this session; g <prefix> grants another`)}\n`);
+    }
     for (;;) {
       const answer = await ask(rl, `${cyan(APPROVAL_PROMPT)} `);
       if (answer === undefined) return undefined; // stdin closed mid-question
@@ -890,6 +917,18 @@ async function promptForDecisions(
           decision: 'rejected',
           ...(reply.reason ? { reason: reply.reason } : {}),
         });
+        break;
+      }
+      if (reply.kind === 'grant') {
+        // A grant is approval plus a durable "stop asking me about this prefix".
+        const prefix = reply.prefix ?? proposedPrefix;
+        if (!grant || !prefix) {
+          process.stdout.write(red('no prefix to grant for this call; answer a, e, or r\n'));
+          continue;
+        }
+        grant(item.call.name, prefix);
+        process.stdout.write(dim(`granted ${oneLine(item.call.name, 64)}: ${oneLine(prefix, 128)} for this session\n`));
+        decisions.push({ executionId: item.executionId, decision: 'approved' });
         break;
       }
       const raw = await ask(rl, `${cyan('replacement arguments (JSON):')} `);
@@ -1024,6 +1063,35 @@ function handleSlash(
       return {};
     case 'compact':
       return { compact: true };
+    case 'approvals': {
+      const [action = '', target = ''] = argText.split(/\s+/);
+      if (action === 'revoke') {
+        const position = Number(target);
+        if (!Number.isInteger(position) || position < 1) {
+          process.stdout.write(red('usage: /approvals revoke <n>\n'));
+          return {};
+        }
+        const revoked = agent.revokeApprovalGrant(position - 1);
+        process.stdout.write(
+          revoked
+            ? `revoked ${oneLine(revoked.tool, 64)}: ${oneLine(revoked.prefix, 256)}\n`
+            : red(`no grant ${position}\n`),
+        );
+        return {};
+      }
+      if (action.length > 0) {
+        process.stdout.write(red('usage: /approvals [revoke <n>]\n'));
+        return {};
+      }
+      const grants = agent.approvalGrants;
+      if (grants.length === 0) process.stdout.write(dim('no session approval grants\n'));
+      for (const [index, grant] of grants.entries()) {
+        process.stdout.write(
+          `${index + 1}. ${oneLine(grant.tool, 64)}: ${oneLine(grant.prefix, 256)} ${dim(`granted ${oneLine(grant.grantedAt, 64)}`)}\n`,
+        );
+      }
+      return {};
+    }
     case 'branch': {
       const at = Number(argText);
       if (!Number.isInteger(at) || at < 0 || at >= agent.messages.length) {
@@ -1059,7 +1127,8 @@ async function repl(args: CliArgs): Promise<number> {
   // Inline decisions need a live human at the other end. Scripted stdin is a
   // batch: it reports the suspension and exits 4 rather than inventing answers.
   const collectDecisions = process.stdin.isTTY
-    ? (pending: readonly PendingApproval[]) => promptForDecisions(rl, pending)
+    ? (pending: readonly PendingApproval[]) =>
+        promptForDecisions(rl, pending, (tool, prefix) => agent.addApprovalGrant(tool, prefix))
     : undefined;
   const reportSuspension = (suspendedAgent: Agent): void => {
     process.stdout.write(red('[suspended: tool approvals are pending]\n'));

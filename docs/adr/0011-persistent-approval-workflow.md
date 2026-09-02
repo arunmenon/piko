@@ -114,3 +114,86 @@ single-writer decision point in one journal. Carrying suspended executions
 through compaction remains deferred until it has an explicit lifecycle design
 and the same crash-window evidence as this ADR. The Phase 1 evidence map is
 maintained in `docs/adr/evidence/0011-approval-test-map.md`.
+
+## Addendum (2026-09-02, argument-prefix rules and session grants)
+
+Two of this record's named non-goals are retired here: argument-pattern gating
+and session-scoped "always allow" grants. The Research addendum above is why.
+Ji et al. measured that a name-only gate misses the equivalent-effect paths, and
+Wang, Li & Tian measured that a per-call dialog for a chatty tool produces the
+always-allow fatigue this record's context names. A rule that can say
+`git status` is not `git push`, and a grant that can say "stop asking me about
+this prefix", answer the two findings in the same mechanism. Progent and
+AgentSpec are the corroborating shape: symbolic, user-authored policy over tool
+names and arguments, evaluated in milliseconds, where the action space only
+shrinks. Everything else in this record is unchanged: policy provenance is still
+user config and CLI flags only, decisions are still journal rows, and the
+suspension, resume, and crash-window rules are untouched.
+
+### Rules
+
+A config section `approvals.rules` is an ordered list of
+`{ tool, prefix, decision, tests }`. `decision` is `allow | prompt | deny`.
+`prefix` is a word prefix (for bash, the words of a command segment) or a map of
+parameter name to argument-value prefix for a tool whose arguments are not a
+command line; an absent prefix matches every call of the tool. `--approval-rule
+'<tool>:<decision>:<word> <word>...'` is the headless form, evaluated before the
+config file's rules. `tests` is a list of `{ command, expect }` inline examples,
+evaluated against the whole rule set at load: a failing example refuses to start
+with exit 1 naming the rule and the example, so a rule can never quietly stop
+meaning what its author wrote. An example no rule matches is reported as
+`prompt`, which is what the tool-name gate yields for any gated tool.
+
+### Evaluation order
+
+Evaluation happens at dispatch, on the exact arguments the tool will receive, an
+approved edit included, and after argument validation: a call that will never
+run is never matched. A bash command is split into segments on `&&`, `||`, `|`,
+`;`, `&`, and newlines, respected outside quotes; every other tool is one
+implicit segment matched by its arguments. Within a segment the first matching
+rule wins. Across segments deny beats prompt beats an unmatched segment beats
+allow, and an unmatched segment falls back to this record's tool-name policy:
+`git status && curl ...` prompts because `curl` matched nothing and bash is
+gated. A deny refuses the call outright and journals a `tool_skipped` row with
+the rule that refused it; there is nothing for a human to decide, so a deny never
+suspends. The rule that decided a gate rides the `tool_approval_requested` row as
+an optional `rule` field, additive under 0019, so the schema generation does not
+move.
+
+### The tokenizer's refusal set
+
+The tokenizer honors single quotes, double quotes, and backslash escapes, and
+refuses anything whose effective words it cannot know statically: command
+substitution (`` ` `` and `$(`), any expansion (`$`), subshells and process
+substitution (`(`, `<(`, `>(`), an unterminated quote, a trailing backslash,
+`eval`, `source`, `.`, `exec`, `bash -c` and its `sh`/`zsh`/`dash`/`ksh`
+siblings, and an environment assignment before the command. A refused segment is
+never allowed by any rule or grant: it falls to `prompt`, and to `deny` when a
+deny rule's word appears anywhere in a best-effort split of it. Timidity is the
+whole design: the failure mode of a wrong refusal is one extra prompt, and the
+failure mode of a wrong allow is an unreviewed side effect.
+
+### Session-scoped grants
+
+The REPL prompt offers "grant this prefix for the session" alongside approve,
+edit, and reject. The grant is an additive `tool_approval_grant` journal row
+`{ tool, prefix, grantedAt }`. The journal is the grant, so it is honoured for
+the rest of the session and replayed on resume exactly like every other decision
+in this record. `--grant '<tool>:<word> <word>...'` writes the same row at
+startup for headless use, and `/approvals revoke <n>` writes a revoking row of
+the same type, which is why no second row type and no schema bump are needed. A
+grant can only narrow prompting: it turns a prompting or unmatched segment into
+an allow and can never reach a deny rule or a segment the tokenizer refused.
+
+### What a rule cannot see
+
+A rule reads a tool call's own arguments and nothing else. It cannot see what a
+command will do, only what it says; it cannot see the workspace the command will
+land in; and above all it cannot see a command's effect on a file another tool
+edited, or the reverse. That cross-tool equivalence, the 37% of state-changing
+actions Ji et al. found bypassing a shell-oriented classifier through file edits,
+is the containment boundary's problem, not the approval gate's: it belongs to
+0006's tool policy and 0022's executor, and this addendum does not narrow it.
+The TOCTOU window this record already acknowledges is likewise untouched: a rule
+matches at dispatch, and what the workspace holds a moment later is still 0007's
+workspace digest and 0022's mount rule to answer.

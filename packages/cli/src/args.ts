@@ -1,9 +1,17 @@
+import type { ApprovalRuleConfig } from '@pi/ai';
+
 /** A decision supplied on the command line for one suspended execution. */
 export interface ApprovalFlag {
   executionId: string;
   decision: 'approved' | 'edited' | 'rejected';
   editedArguments?: Record<string, unknown>;
   reason?: string;
+}
+
+/** A `--grant '<tool>:<word> <word>...'` grant written at startup (ADR 0011 addendum). */
+export interface GrantFlag {
+  tool: string;
+  prefix: string;
 }
 
 export interface CliArgs {
@@ -39,6 +47,10 @@ export interface CliArgs {
   supervise: boolean;
   /** tool names gated behind a human decision, or '*' for all (ADR 0011) */
   requireApproval?: readonly string[] | '*';
+  /** argument-prefix rules from --approval-rule, evaluated before the config file's */
+  approvalRules: ApprovalRuleConfig[];
+  /** session-scoped grants written at startup by --grant */
+  grants: GrantFlag[];
   /** decisions applied to a suspended session when it is reopened */
   approvals: ApprovalFlag[];
   /** --approve all: every pending approval in the reopened session */
@@ -64,6 +76,40 @@ export const DEFAULT_MAX_DEPTH = 2;
  */
 export const DEFAULT_SHUTDOWN_GRACE_SECONDS = 10;
 
+/**
+ * Parse `--approval-rule '<tool>:<decision>:<word> <word>...'`, the headless
+ * form of a config-file rule. The prefix keeps every character after the second
+ * colon, so a path prefix containing a colon survives. A prefix that is a single
+ * `parameter=value` pair addresses a tool whose arguments are not a command
+ * line; anything else is a word prefix.
+ */
+export function parseApprovalRuleFlag(value: string): ApprovalRuleConfig {
+  const firstSeparator = value.indexOf(':');
+  const secondSeparator = firstSeparator === -1 ? -1 : value.indexOf(':', firstSeparator + 1);
+  if (firstSeparator === -1 || secondSeparator === -1) {
+    throw new Error("--approval-rule requires '<tool>:<allow|prompt|deny>:<word> <word>...'");
+  }
+  const tool = value.slice(0, firstSeparator).trim();
+  const decision = value.slice(firstSeparator + 1, secondSeparator).trim();
+  const prefix = value.slice(secondSeparator + 1).trim();
+  if (tool.length === 0) throw new Error('--approval-rule requires a tool name');
+  if (decision !== 'allow' && decision !== 'prompt' && decision !== 'deny') {
+    throw new Error('--approval-rule decision must be allow, prompt, or deny');
+  }
+  return { tool, decision, ...(prefix.length > 0 ? { prefix } : {}) };
+}
+
+/** Parse `--grant '<tool>:<word> <word>...'`: the headless form of the REPL's grant. */
+export function parseGrantFlag(value: string): GrantFlag {
+  const separator = value.indexOf(':');
+  if (separator === -1) throw new Error("--grant requires '<tool>:<word> <word>...'");
+  const tool = value.slice(0, separator).trim();
+  const prefix = value.slice(separator + 1).trim();
+  if (tool.length === 0) throw new Error('--grant requires a tool name');
+  if (prefix.length === 0) throw new Error('--grant requires a prefix; a grant never covers a whole tool');
+  return { tool, prefix };
+}
+
 export function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
     print: false,
@@ -78,6 +124,8 @@ export function parseArgs(argv: string[]): CliArgs {
     allowHostBash: false,
     allowProtectedPaths: false,
     approvals: [],
+    approvalRules: [],
+    grants: [],
     approveAll: false,
     supervise: false,
     extensions: [],
@@ -241,6 +289,14 @@ export function parseArgs(argv: string[]): CliArgs {
         }
         break;
       }
+      case '--approval-rule': {
+        args.approvalRules.push(parseApprovalRuleFlag(next()));
+        break;
+      }
+      case '--grant': {
+        args.grants.push(parseGrantFlag(next()));
+        break;
+      }
       case '--approve': {
         const value = next();
         if (value === 'all') args.approveAll = true;
@@ -353,7 +409,17 @@ options:
   --require-approval <names|*>  gate these tools behind a human decision; repeatable and
                        comma-separated. The turn suspends at the first gated call (exit 4)
                        and survives process loss; only this flag and ~/.config/pi/config.json
-                       can set it. Gating is per tool name, not per argument.
+                       can set it. Tool-name gating is the fallback for any call no
+                       approval rule matched.
+  --approval-rule '<tool>:<allow|prompt|deny>:<word> <word>...'  argument-prefix rule,
+                       repeatable and evaluated before the config file's approvals.rules.
+                       Bash commands are split on && || | ; & and newlines; the first
+                       matching rule wins per segment and deny beats prompt beats allow.
+                       A prefix of the form <parameter>=<value> matches a tool whose
+                       arguments are not a command line.
+  --grant '<tool>:<word> <word>...'  write a session-scoped "always allow this prefix"
+                       grant at startup (repeatable). A grant only narrows prompting;
+                       it can never override a deny rule or an untokenizable command.
   --approve <id|all>   approve a suspended execution when reopening the session (with -c/--session)
   --reject <id>        reject one, with an optional following --reason "<text>"
   --edit <id> --args '<json>'  run one with replacement arguments (validated, and noted to the model)
@@ -380,5 +446,7 @@ options:
   --usage              print a JSON usage summary to stderr when done
   -h, --help           show this help
 
-interactive slash commands: /help /tokens /model /session /branch /compact /exit
+interactive slash commands: /help /tokens /model /session /branch /compact /approvals /exit
+  /approvals            list the session's approval grants and rules
+  /approvals revoke <n> revoke grant <n> for the rest of the session
 prompt templates: ~/.agent/commands/*.md always; project .agent/commands/*.md requires --trust-project`;

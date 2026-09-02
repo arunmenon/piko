@@ -26,6 +26,7 @@ import {
   journalRepairs,
   journalSchemaVersion,
   parseSessionEntry,
+  reduceApprovalGrants,
   reduceModelRequests,
   reduceOpenRun,
   reduceToolExecutions,
@@ -42,6 +43,7 @@ import {
   type ToolExecutionState,
   type WorkspaceDigest,
 } from './journal.js';
+import type { ApprovalRuleMatch, ToolApprovalGrant } from './tools/approval-rules.js';
 import {
   addCostSummary,
   costComplete,
@@ -129,6 +131,7 @@ type SessionMutator =
   | 'markToolOutcomeUnknown'
   | 'planTool'
   | 'recordDrainRequested'
+  | 'recordApprovalGrant'
   | 'requestToolApproval'
   | 'setRunStatus'
   | 'skipTool'
@@ -1318,8 +1321,25 @@ export class Session {
   }
 
   /** Defer a planned call pending a human decision; the derived status becomes awaiting_approval. */
-  requestToolApproval(executionId: string): void {
-    this.append({ t: 'tool_approval_requested', v: 2, at: now(), executionId });
+  requestToolApproval(executionId: string, rule?: ApprovalRuleMatch): void {
+    this.append({ t: 'tool_approval_requested', v: 2, at: now(), executionId, ...(rule ? { rule } : {}) });
+  }
+
+  /**
+   * Record a session-scoped "always allow this prefix" grant, or its revocation
+   * (ADR 0011 addendum). Additive: no schema generation bump, and a session
+   * written without grants replays identically.
+   */
+  recordApprovalGrant(grant: ToolApprovalGrant): void {
+    this.append({
+      t: 'tool_approval_grant',
+      v: 2,
+      at: now(),
+      tool: grant.tool,
+      prefix: grant.prefix,
+      grantedAt: grant.grantedAt,
+      ...(grant.revoked ? { revoked: true } : {}),
+    });
   }
 
   /**
@@ -1565,6 +1585,11 @@ export class Session {
 
   get pendingToolExecutions(): readonly ToolExecutionState[] {
     return this.toolExecutions.filter((state) => state.status === 'planned' || state.status === 'started');
+  }
+
+  /** Live session-scoped approval grants, replayed from the journal (ADR 0011 addendum). */
+  get approvalGrants(): readonly ToolApprovalGrant[] {
+    return reduceApprovalGrants(this.entries);
   }
 
   /** Gated calls with no recorded decision yet. */

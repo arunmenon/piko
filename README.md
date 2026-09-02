@@ -61,7 +61,13 @@ industry harnesses.
   recorded human decision. The batch runs in order until the first gated call, journals the rest,
   and the turn ends `suspended` (exit 4) without another model request. The decision is a journal
   row, not process state, so a suspended run can be approved, edited, or rejected minutes or days
-  later — after a crash or a reboot — by resuming the session. Gating is per tool name; the policy
+  later — after a crash or a reboot — by resuming the session. Ordered argument-prefix rules
+  (`approvals.rules`, `--approval-rule '<tool>:<allow|prompt|deny>:<word> <word>...'`) decide per
+  bash command segment ahead of the tool-name gate, carry inline `{ command, expect }` tests that
+  refuse to start when they fail, and fall back to the tool-name gate for anything they do not
+  match. `--grant` and the REPL's `g` answer write a session-scoped "always allow this prefix"
+  grant as a journal row that a resume replays; a grant only narrows prompting and never overrides
+  a deny rule. The policy
   comes only from CLI flags and `~/.config/pi/config.json`, never from project files or extensions.
   A resumed run continues the suspended run's token, tool-call, and model-request accounting under
   the ceilings recorded on its terminal row: raising one needs an explicit flag and is journaled.
@@ -229,9 +235,9 @@ trusted-environment capability.
 Piko is an experimental, pre-1.0 framework. Its current local evidence includes unit, integration,
 fault-injection, packaging, and prompt-budget checks, plus an eval runner that writes versioned
 per-trial artifacts. It has not had an independent security audit, does not yet provide an OS
-sandbox, and has no published representative industry benchmark. Approval gating is per tool name
-only: no argument-pattern matching, no session-scoped "always allow", and a rejected call is not a
-sandbox — containment still does that work.
+sandbox, and has no published representative industry benchmark. Approval rules match a tool call's
+own arguments and nothing more: they cannot see a command's effect on a file another tool edited,
+and a denied or rejected call is not a sandbox — containment still does that work.
 APIs are unstable until a compatibility policy is published. The journal now carries an explicit
 schema generation: sessions written before the marker are read as generation 1, and a file
 declaring a newer generation is refused rather than half-understood.

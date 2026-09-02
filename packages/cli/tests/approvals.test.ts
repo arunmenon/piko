@@ -1,18 +1,21 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
+import { validateConfig } from '@pi/ai';
 import { Session, tryLockSession } from '@pi/core';
 import {
+  APPROVAL_PROMPT,
+  defaultGrantPrefix,
   describePendingApproval,
   parseApprovalReply,
   parseEditedArguments,
   resolveDecisionFlags,
 } from '../src/approvals.js';
-import { parseArgs } from '../src/args.js';
+import { parseApprovalRuleFlag, parseArgs, parseGrantFlag } from '../src/args.js';
 
 const cli = resolve(import.meta.dirname, '..', 'dist', 'main.js');
 
@@ -487,4 +490,94 @@ test('a scripted REPL run reports the suspension and exits 4 instead of inventin
   } finally {
     await provider.close();
   }
+});
+
+test('parseArgs reads argument-prefix rules and session grants off the command line', () => {
+  const args = parseArgs([
+    '--approval-rule',
+    'bash:deny:rm -rf',
+    '--approval-rule',
+    'bash:allow:git status',
+    '--approval-rule',
+    'write:deny:path=.git/',
+    '--grant',
+    'bash:git push',
+    'go',
+  ]);
+  assert.deepEqual(args.approvalRules, [
+    { tool: 'bash', decision: 'deny', prefix: 'rm -rf' },
+    { tool: 'bash', decision: 'allow', prefix: 'git status' },
+    { tool: 'write', decision: 'deny', prefix: 'path=.git/' },
+  ]);
+  assert.deepEqual(args.grants, [{ tool: 'bash', prefix: 'git push' }]);
+  assert.deepEqual(parseArgs(['go']).approvalRules, []);
+  assert.deepEqual(parseArgs(['go']).grants, []);
+  // The prefix keeps every character after the second colon, colons included.
+  assert.deepEqual(parseApprovalRuleFlag('read:allow:path=https://x'), {
+    tool: 'read',
+    decision: 'allow',
+    prefix: 'path=https://x',
+  });
+  assert.throws(() => parseApprovalRuleFlag('bash:deny'), /<tool>:<allow\|prompt\|deny>:/);
+  assert.throws(() => parseApprovalRuleFlag('bash:maybe:ls'), /must be allow, prompt, or deny/);
+  assert.throws(() => parseApprovalRuleFlag(':deny:ls'), /requires a tool name/);
+  assert.throws(() => parseGrantFlag('bash'), /<tool>:<word>/);
+  assert.throws(() => parseGrantFlag('bash:'), /never covers a whole tool/);
+});
+
+test('the inline prompt offers a session grant and proposes the command prefix', () => {
+  assert.deepEqual(parseApprovalReply('g'), { kind: 'grant' });
+  assert.deepEqual(parseApprovalReply('grant git push'), { kind: 'grant', prefix: 'git push' });
+  assert.match(APPROVAL_PROMPT, /g\)rant/);
+  const call = (args: Record<string, unknown>) => ({
+    type: 'toolCall' as const,
+    id: 'c1',
+    name: 'bash',
+    arguments: args,
+  });
+  assert.equal(defaultGrantPrefix(call({ command: 'git status --porcelain' })), 'git status');
+  assert.equal(defaultGrantPrefix(call({ command: 'ls -la' })), 'ls');
+  assert.equal(defaultGrantPrefix(call({ command: 'git status && rm -rf x' })), 'git status');
+  assert.equal(defaultGrantPrefix(call({ path: 'src/a.ts', content: 'x' })), 'path=src/a.ts');
+  assert.equal(defaultGrantPrefix(call({})), undefined);
+});
+
+test('a failing inline rule test refuses to start and names the rule and the example', async () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'pi-cli-approval-rules-'));
+  mkdirSync(join(workspace, '.config', 'pi'), { recursive: true });
+  const writeRules = (rules: unknown[]): void =>
+    writeFileSync(join(workspace, '.config', 'pi', 'config.json'), JSON.stringify({ approvals: { rules } }), 'utf8');
+  // The allow rule is shadowed by the earlier prompt rule, so its example lies.
+  writeRules([
+    { tool: 'bash', prefix: 'git', decision: 'prompt' },
+    { tool: 'bash', prefix: 'git status', decision: 'allow', tests: [{ command: 'git status', expect: 'allow' }] },
+  ]);
+  const env = { ...process.env, OPENAI_API_KEY: 'test-key', HOME: workspace };
+  const refused = await runCli([cli, '-p', '--model', 'fake-model', 'go'], { cwd: workspace, env });
+  assert.equal(refused.status, 1, refused.stdout);
+  assert.match(refused.stderr, /approval rule tests failed/);
+  assert.match(refused.stderr, /approvals\.rules\[1\] bash:git status/);
+  assert.match(refused.stderr, /"git status" expected allow but the rule set says prompt/);
+
+  // The same example passes once the shadowing rule is gone.
+  writeRules([
+    { tool: 'bash', prefix: 'git status', decision: 'allow', tests: [{ command: 'git status', expect: 'allow' }] },
+  ]);
+  const accepted = await runCli([cli, '-p', '--model', 'fake-model', 'go'], { cwd: workspace, env });
+  assert.doesNotMatch(accepted.stderr, /approval rule tests failed/);
+});
+
+test('a malformed approvals section is refused rather than silently ignored', () => {
+  assert.throws(() => validateConfig({ approvals: { rules: [{ tool: 'bash' }] } }), /rules\[0\]\.decision/);
+  assert.throws(() => validateConfig({ approvals: { rules: [{ decision: 'deny' }] } }), /rules\[0\]\.tool/);
+  assert.throws(() => validateConfig({ approvals: { rules: 'all' } }), /rules must be an array/);
+  assert.throws(
+    () => validateConfig({ approvals: { rules: [{ tool: 'bash', decision: 'deny', tests: [{ command: 'x' }] }] } }),
+    /tests\[0\]\.expect/,
+  );
+  assert.deepEqual(
+    validateConfig({ approvals: { rules: [{ tool: 'write', decision: 'deny', prefix: { path: '.git/' } }] } })
+      .approvals,
+    { rules: [{ tool: 'write', decision: 'deny', prefix: { path: '.git/' } }] },
+  );
 });

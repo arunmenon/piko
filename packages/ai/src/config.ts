@@ -45,6 +45,31 @@ interface ProfileConfig {
   cacheTtl?: AnthropicCacheTtl;
 }
 
+/** What an argument-prefix rule may decide (ADR 0011 addendum, 2026-09-02). */
+export type ApprovalRuleDecisionConfig = 'allow' | 'prompt' | 'deny';
+
+/** One inline example the rule must keep producing, checked at load. */
+export interface ApprovalRuleTestConfig {
+  command: string;
+  expect: ApprovalRuleDecisionConfig;
+}
+
+/**
+ * One ordered rule. `prefix` is a word prefix (for bash, the words of a command
+ * segment) or a map of parameter name to argument-value prefix for a tool whose
+ * arguments are not a command line. An absent prefix matches every call.
+ */
+export interface ApprovalRuleConfig {
+  tool: string;
+  prefix?: string | Record<string, string>;
+  decision: ApprovalRuleDecisionConfig;
+  tests?: ApprovalRuleTestConfig[];
+}
+
+export interface ApprovalsConfig {
+  rules?: ApprovalRuleConfig[];
+}
+
 export interface PiConfig {
   defaultProfile?: string;
   profiles?: Record<string, ProfileConfig>;
@@ -54,6 +79,12 @@ export interface PiConfig {
   /** seconds in-flight work gets after SIGTERM before the run is aborted (ADR 0027);
    *  --shutdown-grace overrides it, and the built-in default applies when neither is set */
   shutdownGraceSeconds?: number;
+  /**
+   * Argument-prefix rules evaluated ahead of the tool-name gate. Same restricted
+   * provenance as `approval`: the config file and CLI flags only, never project
+   * content or an extension.
+   */
+  approvals?: ApprovalsConfig;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -75,6 +106,66 @@ function optionalApproval(value: unknown, path: string): ApprovalPolicy | undefi
   return [...(value as string[])];
 }
 
+function requireRuleDecision(value: unknown, path: string): ApprovalRuleDecisionConfig {
+  if (value !== 'allow' && value !== 'prompt' && value !== 'deny') {
+    throw new TypeError(`${path} must be "allow", "prompt", or "deny"`);
+  }
+  return value;
+}
+
+function requireNonEmptyString(value: unknown, path: string): string {
+  if (typeof value !== 'string' || value.length === 0) throw new TypeError(`${path} must be a non-empty string`);
+  return value;
+}
+
+/**
+ * Shape-check the rule list. The rule engine in @pi/core parses the prefixes and
+ * runs the inline tests; this keeps a malformed config from being silently
+ * ignored the way a malformed profile is not.
+ */
+function optionalApprovals(value: unknown, path: string): ApprovalsConfig | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new TypeError(`${path} must be an object`);
+  if (value['rules'] === undefined) return {};
+  if (!Array.isArray(value['rules'])) throw new TypeError(`${path}.rules must be an array`);
+  const rules = value['rules'].map((raw, index): ApprovalRuleConfig => {
+    const rulePath = `${path}.rules[${index}]`;
+    if (!isRecord(raw)) throw new TypeError(`${rulePath} must be an object`);
+    const tool = requireNonEmptyString(raw['tool'], `${rulePath}.tool`);
+    const decision = requireRuleDecision(raw['decision'], `${rulePath}.decision`);
+    let prefix: string | Record<string, string> | undefined;
+    if (typeof raw['prefix'] === 'string') {
+      prefix = requireNonEmptyString(raw['prefix'], `${rulePath}.prefix`);
+    } else if (raw['prefix'] !== undefined) {
+      if (!isRecord(raw['prefix'])) throw new TypeError(`${rulePath}.prefix must be a string or an object`);
+      const keyed: Record<string, string> = {};
+      for (const [parameter, parameterPrefix] of Object.entries(raw['prefix'])) {
+        keyed[parameter] = requireNonEmptyString(parameterPrefix, `${rulePath}.prefix.${parameter}`);
+      }
+      prefix = keyed;
+    }
+    let tests: ApprovalRuleTestConfig[] | undefined;
+    if (raw['tests'] !== undefined) {
+      if (!Array.isArray(raw['tests'])) throw new TypeError(`${rulePath}.tests must be an array`);
+      tests = raw['tests'].map((rawTest, testIndex): ApprovalRuleTestConfig => {
+        const testPath = `${rulePath}.tests[${testIndex}]`;
+        if (!isRecord(rawTest)) throw new TypeError(`${testPath} must be an object`);
+        return {
+          command: requireNonEmptyString(rawTest['command'], `${testPath}.command`),
+          expect: requireRuleDecision(rawTest['expect'], `${testPath}.expect`),
+        };
+      });
+    }
+    return {
+      tool,
+      decision,
+      ...(prefix !== undefined ? { prefix } : {}),
+      ...(tests !== undefined ? { tests } : {}),
+    };
+  });
+  return { rules };
+}
+
 export function validateConfig(value: unknown): PiConfig {
   if (!isRecord(value)) throw new TypeError('config must be an object');
   const config: PiConfig = {};
@@ -93,6 +184,8 @@ export function validateConfig(value: unknown): PiConfig {
     }
     config.shutdownGraceSeconds = shutdownGraceSeconds as number;
   }
+  const approvals = optionalApprovals(value['approvals'], 'approvals');
+  if (approvals !== undefined) config.approvals = approvals;
   if (value['extensions'] !== undefined) {
     if (!Array.isArray(value['extensions']) || value['extensions'].some((item) => typeof item !== 'string' || !item)) {
       throw new TypeError('extensions must be an array of non-empty strings');
