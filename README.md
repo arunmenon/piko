@@ -29,8 +29,10 @@ industry harnesses.
 - **Repo map**: `map` renders source files with line counts and top-level symbols (zero-dep,
   regex-based, vendor dirs skipped) to provide a compact starting point for exploration.
 - **No sub-agent orchestration in core**: the headless CLI and JSONL stream are composable by an
-  external controller. An opted-in host-bash run can invoke another process, but piko does not
-  provide delegation, parent/child accounting, or isolation for that pattern.
+  external controller. A run can invoke another `pi -p` through bash; the child carries its
+  parent's run id (`--parent-run`), its nesting depth (`PI_DEPTH`, capped by `--max-depth`), and
+  joins the parent's budget tree (`PI_BUDGET_AUTHORITY`, ADR 0026). Piko still provides no
+  delegation primitive of its own and no per-child isolation beyond the sandbox executor.
 - **No MCP in core**: integrations require an explicitly loaded extension or an external
   controller; trusted host-bash mode can invoke installed CLIs.
 - **No planning mode / todo tool**: plans live in `PLAN.md` with markdown checkboxes.
