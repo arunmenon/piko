@@ -41,7 +41,13 @@ export {
   NODE_STARTUP_SYSCTL_NAMES,
   type SeatbeltProviderOptions,
 } from './seatbelt.js';
-export { ToolWorkerHost, WORKER_READY_TIMEOUT_MS } from './worker-host.js';
+export { ToolWorkerHost, WORKER_READY_TIMEOUT_MS, workerHostFor } from './worker-host.js';
+export {
+  ContainmentBarrierChannel,
+  CONTAINMENT_BARRIER_FD,
+  CONTAINMENT_BARRIER_FLAG,
+  type ContainmentBarrierEvent,
+} from './containment-barrier.js';
 
 /** How the operator asked for the executor to be chosen (`--sandbox`). */
 export type SandboxMode = 'auto' | 'off' | 'require';
@@ -211,15 +217,28 @@ export async function runSandboxSelfTest(
   });
 }
 
+export interface AcquireVerifiedExecutorOptions {
+  /**
+   * Test-only: start the worker with ADR 0022's containment barrier bridge, so
+   * an acceptance test can pause it at a named point and perform a parent swap
+   * from outside. Nothing on the CLI path passes this.
+   */
+  readonly containmentBarrierChannel?: boolean;
+}
+
 /**
  * Acquire one provider and prove it before using it. A provider that acquires
  * but fails any check is released and reported, never used: falling back to the
  * host silently is the one outcome ADR 0018 forbids.
+ *
+ * The handle comes back beside the executor because ADR 0022's acceptance tests
+ * need the worker behind it; the agent loop takes the executor and ignores it.
  */
 export async function acquireVerifiedExecutor(
   provider: SandboxProvider,
   workspaceRoot: string,
-): Promise<{ executor: SandboxExecutor } | { refusal: string }> {
+  options: AcquireVerifiedExecutorOptions = {},
+): Promise<{ executor: SandboxExecutor; handle: SandboxHandle } | { refusal: string }> {
   let fixture: SelfTestFixture;
   try {
     fixture = await openSelfTestFixture(workspaceRoot);
@@ -228,7 +247,9 @@ export async function acquireVerifiedExecutor(
   }
   let handle: SandboxHandle | undefined;
   try {
-    const spec = buildSandboxSpec(workspaceRoot);
+    const baseSpec = buildSandboxSpec(workspaceRoot);
+    const spec: SandboxSpec =
+      options.containmentBarrierChannel === true ? { ...baseSpec, containmentBarrierChannel: true } : baseSpec;
     handle = await provider.acquire(spec);
     const checks = await runSandboxSelfTest(handle, fixture);
     if (!selfTestPassed(checks)) {
@@ -236,7 +257,7 @@ export async function acquireVerifiedExecutor(
       await provider.release(handle);
       return { refusal: `${provider.name}: ${failure}` };
     }
-    return { executor: bindSandboxExecutor(provider, handle) };
+    return { executor: bindSandboxExecutor(provider, handle), handle };
   } catch (error) {
     if (handle) await provider.release(handle).catch(() => undefined);
     const message = error instanceof Error ? error.message : String(error);

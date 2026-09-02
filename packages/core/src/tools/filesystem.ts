@@ -25,14 +25,17 @@ export class ToolPolicyError extends Error {
  * result and re-traverses it. Those are exactly the windows a parent swap
  * wins, so ADR 0022's acceptance regression drives its attacks from here.
  */
-export type ContainmentBarrierName =
-  | 'after-resolve'
-  | 'before-open'
-  | 'before-mkdir'
-  | 'before-temp-create'
-  | 'before-rename'
-  | 'before-cleanup'
-  | 'before-map-directory-open';
+export const CONTAINMENT_BARRIER_NAMES = [
+  'after-resolve',
+  'before-open',
+  'before-mkdir',
+  'before-temp-create',
+  'before-rename',
+  'before-cleanup',
+  'before-map-directory-open',
+] as const;
+
+export type ContainmentBarrierName = (typeof CONTAINMENT_BARRIER_NAMES)[number];
 
 /**
  * Test-only seam: a barrier registered under one of the names above runs at

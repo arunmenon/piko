@@ -18,6 +18,7 @@ import { mapTool } from '../tools/map.js';
 import { readTool } from '../tools/read.js';
 import { writeTool } from '../tools/write.js';
 import type { Tool, ToolContext, ToolPolicyObservation } from '../tools/types.js';
+import { CONTAINMENT_BARRIER_FLAG, installContainmentBarrierChannel } from './containment-barrier.js';
 import {
   encodeMessage,
   NewlineDelimitedJsonReader,
@@ -26,6 +27,11 @@ import {
   type WorkerResponse,
 } from './protocol.js';
 import type { SandboxSelfTestChecks } from './types.js';
+
+// ADR 0022's test-only barrier bridge, and the whole of its production cost:
+// one boolean check at startup. The flag can only come from the acquire spec,
+// never from the environment, and the shipped CLI path never sets it.
+if (process.argv.includes(CONTAINMENT_BARRIER_FLAG)) installContainmentBarrierChannel();
 
 const toolsByName = new Map<string, Tool>(
   [readTool, writeTool, editTool, mapTool, bashTool].map((tool) => [tool.name, tool]),

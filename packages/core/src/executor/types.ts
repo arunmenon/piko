@@ -39,6 +39,15 @@ export interface SandboxSpec {
   readonly workerEntryPath: string;
   /** The sanitized allowlist environment the worker process receives. */
   readonly environment: Readonly<Record<string, string>>;
+  /**
+   * Test-only: start the worker with ADR 0022's containment barrier bridge, so
+   * an acceptance test can pause the worker at a named point of the shipped
+   * implementation and perform a parent swap from outside it. Never set on the
+   * CLI path, and reachable only from this spec: the worker takes it as an argv
+   * flag, never from its environment. Absent, the worker registers nothing and
+   * the barrier registry stays the empty map production runs with.
+   */
+  readonly containmentBarrierChannel?: boolean;
 }
 
 /** A live sandbox with a tool worker running inside it. */
