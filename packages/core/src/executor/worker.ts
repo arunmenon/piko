@@ -13,7 +13,7 @@
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { connect } from 'node:net';
-import { bashTool } from '../tools/bash.js';
+import { createBashTool } from '../tools/bash.js';
 import { editTool } from '../tools/edit.js';
 import { mapTool } from '../tools/map.js';
 import { readTool } from '../tools/read.js';
@@ -27,7 +27,7 @@ import {
   type WorkerRequest,
   type WorkerResponse,
 } from './protocol.js';
-import { resolveExecutableOnPath, WORKER_SHELL_NAME } from './resolve-executable.js';
+import { readShellPathArgument, resolveExecutableOnPath, WORKER_SHELL_NAME } from './resolve-executable.js';
 import type { SandboxSelfTestChecks } from './types.js';
 
 // ADR 0022's test-only barrier bridge, and the whole of its production cost:
@@ -35,8 +35,23 @@ import type { SandboxSelfTestChecks } from './types.js';
 // never from the environment, and the shipped CLI path never sets it.
 if (process.argv.includes(CONTAINMENT_BARRIER_FLAG)) installContainmentBarrierChannel();
 
+/**
+ * The shell this worker's bash tool spawns: the absolute path the parent
+ * resolved when it built the sandbox spec, carried on argv beside the barrier
+ * flag so it can come only from that spec.
+ *
+ * The bash tool never spawns the bare name here. `execvp` walks PATH and
+ * continues only on ENOENT, ENOTDIR and EACCES, so a directory earlier on the
+ * worker's PATH that the sandbox profile denies answers EPERM and ends the
+ * search there. A hosted macOS runner reached exactly that state: `/bin/bash`
+ * by absolute path started, the bare `bash` failed with `spawn EPERM`.
+ */
+const workerShellExecutablePath = readShellPathArgument(process.argv);
+
 const toolsByName = new Map<string, Tool>(
-  [readTool, writeTool, editTool, mapTool, bashTool].map((tool) => [tool.name, tool]),
+  [readTool, writeTool, editTool, mapTool, createBashTool({ shellExecutablePath: workerShellExecutablePath })].map(
+    (tool) => [tool.name, tool],
+  ),
 );
 
 /** How long the network probe waits before calling a silent socket a failure. */
@@ -129,21 +144,24 @@ async function runSelfTest(
     );
   });
 
-  // Both spellings, because they can disagree: the parent resolved one shell
-  // from its own view of PATH, and the tool will hand a bare name to the
-  // operating system's own search. Reporting each outcome separately is what
-  // turns a bare EPERM on a remote runner into a path a human can act on.
+  // The absolute path is what the check is about, because it is what the bash
+  // tool inside this worker spawns. The bare name is probed too, but only as a
+  // diagnostic: `execvp` gives up on the first PATH entry that answers EPERM
+  // instead of skipping it, so a denied directory ahead of the shell's own
+  // makes the bare spelling fail on a sandbox that runs the shell perfectly
+  // well by path. Failing the check on that would refuse a working provider.
   const workerResolvedShell = resolveExecutableOnPath(WORKER_SHELL_NAME, process.env['PATH'] ?? '');
   const byAbsolutePath = shellPath === undefined ? 'no shell was resolved by the parent' : await probeChildProcess(shellPath);
   const byName = await probeChildProcess(WORKER_SHELL_NAME);
-  const childProcessStarted = byAbsolutePath === 'ok' && byName === 'ok';
+  const childProcessStarted = byAbsolutePath === 'ok';
 
   const markerValue = process.env[markerName];
   return {
     childProcessStarted,
     childProcessDetail:
       `parent resolved ${shellPath ?? 'nothing'} (${byAbsolutePath}); ` +
-      `"${WORKER_SHELL_NAME}" on the worker PATH resolves to ${workerResolvedShell ?? 'nothing'} (${byName})`,
+      `diagnostic only: "${WORKER_SHELL_NAME}" on the worker PATH resolves to ` +
+      `${workerResolvedShell ?? 'nothing'} (${byName})`,
     canaryReadRefused,
     canaryDetail,
     networkConnectRefused: network.refused,

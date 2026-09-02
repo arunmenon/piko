@@ -313,3 +313,35 @@ the new profile and the new check, and by construction for the refusal path
 the canary check fails, one that permits only node so the child-process check
 fails). Whether the widened profile fixes the hosted runner is confirmed by CI
 and not by this host.
+
+### The fourth check probes by path, not by name, 2026-09-03
+
+CI on the hosted macOS runner (macOS 26.5, node under
+`/Users/runner/hostedtoolcache`) separated the two probes for the first time:
+inside the Seatbelt sandbox, spawning `/bin/bash` by absolute path succeeded
+and spawning the bare name `bash` failed with `spawn EPERM`. The cause is
+`execvp`, which walks PATH and continues only on ENOENT, ENOTDIR and EACCES. A
+directory earlier on the worker's PATH that the profile denies answers EPERM,
+which ends the search rather than being skipped, so the bare spelling fails on
+a sandbox that runs the very same shell perfectly well by path. The fourth
+check was failing a working provider, and the macOS executor tests skipped on a
+sandbox that was fine. On Linux the bubblewrap provider ran live and passed.
+
+Two changes. The bash tool now takes the shell it spawns as an option,
+defaulting to the bare name `bash`, and the worker constructs its own bash tool
+with the absolute path the acquire spec resolved. That path travels on argv
+(`--pi-shell-path=<path>`, added by both providers' command lines) for the same
+reason ADR 0022's barrier flag does: it can come only from the spec. The
+parent-side host bash path is untouched and still resolves `bash` on PATH,
+because there is no profile there to trip over. And the fourth self-test check
+is now decided by the absolute-path probe alone; the bare-name probe stays in
+the summary as a diagnostic string, so a future PATH-resolution difference is
+still visible without refusing the provider.
+
+Both spellings work on this development host, so the refusal cannot be
+reproduced locally and the reasoning is from the code and the profile. Unit
+tests pin the behaviour without needing a provider: a fake shell placed outside
+every PATH entry is reached by a bash tool built with its path and by the
+worker started with that path, and is not reached by the default tool. CI on
+the hosted runner is the verification that the macOS executor tests now run
+instead of skipping.
