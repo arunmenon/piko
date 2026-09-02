@@ -33,3 +33,25 @@ exception." Validation bounds what an extension advertises, not what it does.
   software, and docs say so.
 - Approval policy (0011) can gate extension tools by name, but extensions can
   never modify policy.
+
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it.
+
+- challenges: "Credential Leakage in LLM Agent Skills", Chen et al.,
+  arXiv 2604.03070, 2026. Of 17,022 skills, 520 carry 1,708 issues with 83
+  confirmed malicious and 89.6% exploitable without elevated privileges; the
+  risk this record knowingly accepts is measured, not hypothetical.
+- challenges: "Skill-Inject", Schmotz et al., arXiv 2602.20156, 2026. Up to 80%
+  attack success through skill files, including exfiltration and
+  ransomware-like behaviour.
+- challenges: "IsolateGPT", Wu et al., NDSS 2025, arXiv 2403.04960.
+  Hub-and-spoke isolation of third-party apps prevents cross-app attacks at
+  under 30% overhead on three quarters of queries, so partial isolation is
+  feasible, against this record's argument that it would only buy a false sense
+  of safety.
+- corroborates: "LLM Platform Security", Iqbal, Kohno & Roesner, AIES 2024,
+  doi 10.1609/aies.v7i1.31664. The taxonomy of third-party extension risk on LLM
+  platforms, which is the trust level this record states rather than implies.

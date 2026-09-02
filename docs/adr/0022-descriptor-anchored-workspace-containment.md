@@ -53,3 +53,28 @@ with a clear error rather than falling back to path-based traversal.
 - The implementation must degrade explicitly (fail closed with a clear
   error) on platforms where `O_NOFOLLOW` semantics differ; benchmark
   containers and macOS/Linux dev hosts are the supported matrix.
+
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it. The
+record's central sentence, that additional realpath checks cannot close the
+race, has four papers behind it.
+
+- corroborates: "Fixing Races for Fun and Profit: How to use access(2)", Dean &
+  Hu, USENIX Security 2004. Proposes re-checking a path k times, the mitigation
+  this record rejects.
+- corroborates: "Fixing Races for Fun and Profit: How to Abuse atime", Borisov
+  et al., USENIX Security 2005. Filesystem mazes win the k-race
+  deterministically.
+- corroborates: "Portably Solving File TOCTTOU Races with Hardness
+  Amplification", Tsafrir et al., FAST 2008. Hardens path checking further and
+  remains path-based.
+- corroborates: "Exploiting Unix File-System Races via Algorithmic Complexity
+  Attacks", Cai, Gui & Johnson, IEEE S&P 2009. Slowing kernel name resolution
+  defeats both of the above, which is why only descriptor-relative access holds.
+- corroborates: "The Balkanization of Execution-Security Research for AI Coding
+  Agents", Rashidi, arXiv 2607.05743, 2026 (single-author systematisation of 39
+  papers). Names single-check authorization treated as permanently valid as a
+  recurring root defect.

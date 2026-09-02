@@ -59,3 +59,20 @@ The implementation evidence is maintained in
 
 
 Scope note (2026-09-02): `maxSpendUSD` is enforced per user turn (see 0009's scope note). The reservation is conservative (byte-derived input bound, maximum applicable rates), so a nominal cap stops work at roughly half its value on long contexts; the effective ceiling is the number to design against. Aggregate session and child-tree ceilings: ADR 0026 (proposed).
+
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it.
+
+- corroborates: "AI Agents That Matter", Kapoor et al., TMLR 2025,
+  arXiv 2407.01502. Accuracy-only evaluation yields needlessly costly agents and
+  cost must be a first-class controlled variable; the origin of the
+  cost-per-solve framing this record and 0017 share.
+- corroborates: "Efficient Agents", Wang et al., arXiv 2508.02694, 2025.
+  Formalises cost-of-pass, the quantity a dollar ceiling protects.
+- corroborates: "BAGEN: Are LLM Agents Budget-Aware?", Lin et al.,
+  arXiv 2606.00198, 2026. Agents keep spending on failing tasks, which is the
+  justification for reserving before dispatch rather than trusting the model to
+  stop itself.

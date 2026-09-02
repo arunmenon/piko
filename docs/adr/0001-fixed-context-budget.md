@@ -29,6 +29,36 @@ raise the budget in the same commit with justification.
   is discipline and proof-of-philosophy, not the headline economic claim.
 
 
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it.
+
+- corroborates: "Stop Comparing LLM Agents Without Disclosing the Harness",
+  Zhang et al., arXiv 2605.23950, 2026. A factorial of 3 models by 3 harnesses
+  by 2 seeds over 100 SWE-bench Verified tasks measures harness-induced variance
+  at 7.8 times model-induced, with six ranking reversals in nine comparisons.
+  This is the paper the record already cites.
+- challenges: "Terminal-Bench", Merrill et al., arXiv 2601.11868, 2026. With a
+  neutral scaffold, model choice matters more than agent choice. The
+  harness-first claim should be cited alongside this counterweight rather than
+  alone.
+- corroborates: "Instruction Stacking Collapse", Anand & Chattaraj,
+  arXiv 2608.02639, 2026. Compliance falls from about 96% to as low as 20% as
+  stacked instructions approach 20, which is the mechanism a bounded fixed
+  prefix protects against, and which nothing yet bounds for trusted-project
+  instructions.
+- corroborates: "Prompt Design at Scale", Eliav, arXiv 2607.19257, 2026.
+  Adherence collapses by roughly 80 rules; the same argument counted in rules
+  rather than tokens.
+- corroborates: "Tool Attention Is All You Need", Sadani & Kumar,
+  arXiv 2604.21816, 2026. The per-turn tools tax measures 10k to 60k tokens in
+  multi-server MCP deployments, quantifying the overhead this budget refuses.
+- corroborates: "Lost in the Middle", Liu et al., TACL 2024. Position effects
+  degrade retrieval from long contexts, the canonical result behind keeping the
+  resident prefix small.
+
 ## Proposed amendment (2026-09-02, token rent; re-homed from 0017 — awaiting owner ratification)
 
 1. Every line of the system prompt and every tool schema byte must keep

@@ -17,9 +17,12 @@ cannot adopt piko today no matter how good the engineering is.
    public step below. Recorded here as a gate, not made here — it is an
    owner/legal decision.
 2. Journal versioning: each session carries a `journal_schema` marker row —
-   the mechanism the 0011 implementation introduced; the current shape is v1.
-   Additive row types bump nothing and must be ignorable by older readers;
-   breaking changes bump the marker and ship with a migration note. The
+   the mechanism the 0011 implementation introduced; the current shape is
+   generation 2. Generation history: 1 is the v0.2 lifecycle rows; 2 adds the
+   approval, suspension, and request-linked pricing fields introduced with 0011
+   and 0020. Additive row types do not bump the generation and must be
+   ignorable by older readers; breaking changes bump the marker and ship with a
+   migration note. The
    `--json` stream keeps 0010's rules; the two contracts version
    independently.
 3. Packages: published under public names with provenance and a changelog.
@@ -43,3 +46,22 @@ cannot adopt piko today no matter how good the engineering is.
   artifact to maintain, not a README aspiration.
 - Until the license lands, all of this queues; engineering proceeds, publishing
   waits.
+
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it.
+
+- corroborates: "SoK: Taxonomy of Attacks on Open-Source Software Supply
+  Chains", Ladisa et al., IEEE S&P 2023, arXiv 2204.04008. 107 attack vectors
+  mapped to 94 real incidents; provenance and integrity controls are the
+  safeguards this record's provenance clause names.
+- corroborates: "I depended on you and you broke me", Venturini et al., TOSEM
+  2023, arXiv 2301.04563. In npm, 44% of manifesting breaking changes arrived in
+  minor or patch releases, so stated 0.x instability is honest about a measured
+  failure rate rather than a disclaimer.
+- challenges: "Analyzing Challenges in Deployment of SLSA", Tamanna et al.,
+  arXiv 2409.05014, 2024. Across 1,523 issues in 233 repositories, provenance
+  adoption stalls on documentation and tooling gaps; a cost warning for the
+  provenance clause, which this record prices as a checkbox.

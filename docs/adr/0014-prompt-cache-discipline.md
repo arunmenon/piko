@@ -34,3 +34,24 @@ economic mechanism — this ADR owns that mechanism.
 - Costs: append-only discipline constrains future features (anything that
   edits history must batch or fork), and first turns/short sessions/fleet
   fan-outs pay uncached rates — the regime where the small prefix wins anyway.
+
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it.
+
+- corroborates: "Don't Break the Cache", Lumer et al., arXiv 2601.06007, 2026.
+  Across more than 500 agent sessions on three providers, caching cuts API cost
+  41 to 80% and time-to-first-token 13 to 31%, and the consistent wins come from
+  dynamic content last, stable tool definitions, and dynamic tool results
+  excluded; this record's ordering rules, measured.
+- corroborates: "Learning Agent Execution for KV-Cache Management", Zhang et al.,
+  arXiv 2608.14624, 2026. Agent workloads repeatedly reuse the system prompt and
+  tool definitions, and execution-aware eviction lifts hit rate by 10 to 18
+  points.
+- corroborates: "Prompt Cache", Gim et al., MLSys 2024, arXiv 2311.04934. The
+  serving-side mechanism that makes a stable prefix pay.
+- corroborates: "SGLang RadixAttention", Zheng et al., NeurIPS 2024,
+  arXiv 2312.07104. Radix-tree prefix sharing as the same property implemented
+  in the serving layer.

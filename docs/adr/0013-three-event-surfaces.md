@@ -34,3 +34,25 @@ surface derives its contract from another's rows.
 - Costs: some triple bookkeeping in the loop, and contributors must pick the
   right surface for new signals (the decision table lives in this ADR: durable
   fact -> journal; user-visible progress -> AgentEvent; measurement -> telemetry).
+
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it.
+
+- corroborates: "Dapper", Sigelman et al., Google technical report, 2010.
+  Tracing kept separate from application logging, with restricted access to
+  sensitive payloads; the three-surface split, thirteen years earlier.
+- corroborates: "Protecting Privacy in Software Logs", Aghili, Li & Khomh,
+  arXiv 2409.11313, 2024. Across 25 log datasets and 45 practitioners there is
+  no consistent definition of sensitive content, which is the case for redacting
+  by default rather than by review.
+- corroborates: "Agents That Know Too Much", Lahjouji & Colaco,
+  arXiv 2606.26627, 2026. Leaks travel through intermediate results, memory and
+  inter-agent messages, so traces are themselves a leakage surface.
+- corroborates: "Credential Leakage in LLM Agent Skills", Chen et al.,
+  arXiv 2604.03070, 2026. 73.5% of credential leaks in agent skills originate in
+  debug logging, the strongest argument for redacting telemetry at write time.
+- corroborates: "AgentOps", Dong et al., arXiv 2411.05285, 2024. The taxonomy of
+  what an agent system should trace, against which the three surfaces divide.

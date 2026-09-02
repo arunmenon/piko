@@ -35,6 +35,23 @@ The headless contract is versioned and fail-closed:
   versioning discipline; a richer bidirectional RPC surface remains future
   work (roadmap v0.3) and must not fork this contract.
 
+## Research (2026-09-02)
+
+Citations from the 2026-09-02 red-team review
+(docs/reviews/2026-09-02-red-team-review.md), added after the fact. They
+corroborate or challenge the decision above; they do not change it. The review
+found no direct literature on exit-code or JSONL automation contracts; these two
+are the nearest evidence, and both support fail-closed by construction.
+
+- corroborates: "AgentChaos", Tan et al., ASE 2026, arXiv 2608.06790. Silent
+  failures without an error signal are the critical vulnerability, and diagnosis
+  accuracy stays below 53% when the signal is missing; the case for failure as
+  the initial exit value.
+- corroborates: "Capability Gates Are Not Authorization", Mellafe Zuvic et al.,
+  arXiv 2606.28679, 2026. LangChain, LlamaIndex and the Stripe toolkit all lack
+  a deterministic fail-closed per-call gate by default, so a fail-closed
+  automation contract is less common than it sounds.
+
 ## Amendment (2026-08-25, exit code 5 and typed lock-contention error)
 
 0024 adds one exit code to the headless contract: 5 means the newest
@@ -46,3 +63,29 @@ can now distinguish it. In --json mode the run_error event carries
 code: "locked_session_head" for the same purpose, and pi doctor sessions
 emits doctor_session / doctor_recover / doctor_error rows under the same
 versioned envelope, keeping argument errors on the typed stdout channel.
+
+## Addendum (2026-09-02, exit codes)
+
+143 is the exit code for termination by signal, whether the shutdown was forced
+or cooperative. It is delivered with 0027 in tranche 2; this addendum records
+the contract now so an operator writing a supervisor unit knows what to expect,
+and so 0027 has a code to point at.
+
+The complete code list, restored:
+
+| Code | Meaning |
+|---|---|
+| 0 | verified completed turn |
+| 1 | error |
+| 2 | budget_exceeded |
+| 3 | incomplete or unknown terminal state |
+| 4 | suspended awaiting approval (0011) |
+| 5 | newest resumable session is locked; nothing was resumed or created (0024) |
+| 130 | user cancellation (SIGINT) |
+| 143 | terminated by signal (SIGTERM), forced or cooperative (0027) |
+
+The 2026-08-25 amendment above lists 0, 1, 4 and 5. That was a restatement in
+the context of the newly added code 5, not a change to the set: 2, 3 and 130
+were never withdrawn and remain part of the accepted contract. The rule that
+failure is the initial value and success must be proven by a terminal status is
+unchanged; 143 joins 130 as a signal outcome, not a success.
