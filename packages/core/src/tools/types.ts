@@ -1,5 +1,6 @@
 import type { ImageBlock, TextBlock } from '@pi/ai';
 import { resolve } from 'node:path';
+import type { SandboxExecutor } from '../executor/types.js';
 
 export interface ToolOutput {
   content: (TextBlock | ImageBlock)[];
@@ -17,6 +18,13 @@ export interface BashExecutionPolicy {
    * is not a filesystem or network sandbox.
    */
   readonly allowHostExecution?: boolean;
+  /**
+   * Permit bash inside the sandbox executor (ADR 0018). Separate from
+   * `allowHostExecution` on purpose: the two enable different shells, and the
+   * sandboxed one is not an opt-in to the host. Without an executor on the
+   * policy this field enables nothing.
+   */
+  readonly sandboxedExecution?: boolean;
   /** Additional names to copy from the parent process environment. */
   readonly inheritEnvironment?: readonly string[];
   /** Explicit variables to add/override. `undefined` removes a default variable. */
@@ -55,6 +63,17 @@ export interface ToolExecutionPolicy {
    * an explicit non-goal.
    */
   readonly approval?: readonly string[] | '*';
+  /**
+   * An acquired operating-system sandbox (ADR 0018). When present, the five
+   * built-in tools' effects run inside it instead of in this process; the
+   * control plane (model calls, credentials, the journal, budgets, approvals,
+   * and the agent loop) stays outside it either way. Absent means today's
+   * in-process behaviour, never a silent host fallback.
+   *
+   * Provenance follows the approval field: only user config and CLI flags may
+   * set it. Project content and extensions must never reach it.
+   */
+  readonly executor?: SandboxExecutor;
 }
 
 /** Whether a policy gates this tool name behind a human decision. */

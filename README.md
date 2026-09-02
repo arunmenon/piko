@@ -20,8 +20,12 @@ industry harnesses.
 
 ## Design
 
-- **Five built-ins**: workspace-confined `map`, `read`, `write`, and `edit`; host `bash` exists but
-  is not exposed unless `--allow-host-bash` is explicit. Bash receives a sanitized environment.
+- **Five built-ins**: workspace-confined `map`, `read`, `write`, and `edit`; `bash` is exposed only
+  inside the sandbox executor or behind an explicit `--allow-host-bash`. Bash receives a sanitized
+  environment.
+- **Sandbox executor**: with a provider available (bubblewrap on Linux, Seatbelt on macOS) the five
+  tools' effects run inside an operating-system sandbox while the control plane stays outside it.
+  `--sandbox auto|off|require`; see [Sandboxing](#sandboxing).
 - **Repo map**: `map` renders source files with line counts and top-level symbols (zero-dep,
   regex-based, vendor dirs skipped) to provide a compact starting point for exploration.
 - **No sub-agent orchestration in core**: the headless CLI and JSONL stream are composable by an
@@ -99,6 +103,9 @@ node packages/cli/dist/main.js
 # trusted local development: opt into repository instructions and unsandboxed host bash
 node packages/cli/dist/main.js --trust-project --allow-host-bash
 
+# refuse to start unless the five tools' effects can run inside an OS sandbox
+node packages/cli/dist/main.js --sandbox require -p "run the tests"
+
 # headless: final reply on stdout, progress on stderr
 node packages/cli/dist/main.js -p "review these files" --max-turns 20
 
@@ -170,17 +177,55 @@ past the cap with exit 1 before any model call.
 
 ## Sandboxing
 
-By default, piko exposes only workspace-confined file tools. Parent traversal, absolute paths,
-symlink escapes, and special files are rejected by path-based checks; writes are atomic. These
-checks are not race-proof: a reproduced parent-symlink swap can defeat them (ADR 0022, accepted,
-not yet implemented), so the boundary is best-effort against a hostile repository until 0022
-lands. Repository `AGENTS.md` and skills are ignored until `--trust-project` is explicit. Host
-bash is absent until `--allow-host-bash` is explicit, and then receives a sanitized environment
-that omits provider credential environment variables. That sanitization is hygiene, not a
-credential boundary: a host-bash command runs as your user and can inspect the parent piko
-process (for example via `ps`), including its environment. The executor split in ADR 0018 is
-the real boundary; until it ships, enable host bash only where you would run the model as
-yourself.
+Piko now has an operating-system sandbox executor (ADR 0018). When a provider is available, the
+five built-in tools' effects (read, write, edit, map, and bash) run inside it, in a tool worker
+that is piko's own code started as a child process with the workspace as its working directory.
+The control plane stays outside: model calls, credentials, the session journal, budgets,
+approvals, and the agent loop all remain in the parent process.
+
+| Provider | Platform | How |
+| --- | --- | --- |
+| bubblewrap | Linux, when `bwrap` is on PATH | `--unshare-all` (so there is no network namespace at all), `--die-with-parent`, `--new-session`, read-only binds of the system paths node needs, a read-write bind of the workspace, `--proc`, `--dev`, `--tmpfs /tmp` |
+| Seatbelt | macOS, via `/usr/bin/sandbox-exec` | a generated deny-by-default profile: reads limited to the system trees node needs plus the workspace, writes limited to the workspace and a private temp directory, network denied, exec limited to node, `/bin/bash`, and the standard tool directories |
+
+`--sandbox auto` (the default) uses a provider when one passes its acquire-time self-test:
+inside the sandbox, reading a canary file the parent just created outside the workspace must
+fail, connecting to a loopback listener the parent really opened must fail, and a marker
+variable the parent really holds must be absent. A provider that fails any of the three is
+released and reported, never used. `--sandbox require` exits 1 when none passes.
+`--sandbox off` skips the executor entirely. One line on stderr at startup names the provider in
+use or says why there is none.
+
+What it contains: writes outside the workspace, reads of your home directory, the piko session
+store, the piko configuration, and anything else outside the workspace, all network access from
+tool calls, and the provider credential, which is never placed in the sandbox environment.
+Because bash runs inside the boundary, `--allow-host-bash` is no longer the only way to get a
+shell; when both are set the executor wins.
+
+What it does not contain yet: seccomp system-call filtering on Linux (bwrap wants a compiled BPF
+program, which would mean a native dependency, so it is deferred rather than faked); reads of
+system directories such as `/usr`, `/System`, `/Library`, and `/private/etc`, which node and
+bash cannot start without; a Docker provider; and Windows, which has no provider at all. There
+is no contained-delegation path for headless children yet: the executor is per run.
+
+Without a provider nothing changed. On a host where neither `bwrap` nor `sandbox-exec` is usable,
+`--sandbox auto` leaves the run exactly as it was before this feature existed: workspace-confined
+file tools in process, and bash absent until `--allow-host-bash` is explicit. There is no silent
+fallback to host execution anywhere on the path.
+
+The in-process path, which is what you get with no provider or with `--sandbox off`, is still the
+one ADR 0022 describes: parent traversal, absolute paths, symlink escapes, and special files are
+rejected by path-based checks and writes are atomic, but those checks are not race-proof. A
+reproduced parent-symlink swap can defeat them, so that path is best-effort against a hostile
+repository. Routing ADR 0022's containment attacks through the executor is follow-on work; the
+attacks are red against the in-process path today.
+
+Repository `AGENTS.md` and skills are ignored until `--trust-project` is explicit. Host bash is
+absent until `--allow-host-bash` is explicit, and then receives a sanitized environment that
+omits provider credential environment variables. That sanitization is hygiene, not a credential
+boundary: a host-bash command runs as your user and can inspect the parent piko process (for
+example via `ps`), including its environment. Enable host bash without a sandbox provider only
+where you would run the model as yourself.
 
 Containment also covers paths inside the workspace. `write` and `edit` refuse anything that
 resolves, after symlink resolution, into `.git/`, `.pi/`, `.agent/`, or `.claude/` at any depth,
@@ -191,11 +236,12 @@ through bash, so refusing all of `.git/` costs no legitimate workflow. The refus
 and the rule it broke. `--allow-protected-paths` turns the deny list off for a run and prints a
 warning.
 
-`--allow-host-bash` is still not an OS sandbox: commands can access host files and network using
-the process user's authority. For untrusted autonomous work, run the built CLI inside a container
-or microVM with a project-only mount and an egress policy. Keep the provider credential in a
-separate control-plane proxy or use a short-lived scoped credential; merely injecting a permanent
-key into the same container is not strong isolation.
+`--allow-host-bash` on a host with no sandbox provider is still not an OS sandbox: commands can
+access host files and network using the process user's authority. For untrusted autonomous work
+there, run the built CLI inside a container or microVM with a project-only mount and an egress
+policy. Keep the provider credential in a separate control-plane proxy or use a short-lived
+scoped credential; merely injecting a permanent key into the same container is not strong
+isolation.
 
 Tool extensions are trusted controller code, not sandboxed model tools. Modules named in config or
 passed with `--ext` execute in the CLI process and can use the process user's filesystem, network,
@@ -204,15 +250,16 @@ make their JavaScript safe. The sanitized bash environment only withholds creden
 variables from the child process—it cannot stop a command or extension from reading credentials
 that are otherwise accessible on disk.
 
-Piko does not yet ship a turnkey container/microVM executor, so host bash remains an explicit
-trusted-environment capability.
+Piko does not yet ship a container or microVM provider, so on a host where neither bubblewrap nor
+Seatbelt is usable, host bash remains an explicit trusted-environment capability.
 
 ## Maturity
 
 Piko is an experimental, pre-1.0 framework. Its current local evidence includes unit, integration,
 fault-injection, packaging, and prompt-budget checks, plus an eval runner that writes versioned
-per-trial artifacts. It has not had an independent security audit, does not yet provide an OS
-sandbox, and has no published representative industry benchmark. Approval gating is per tool name
+per-trial artifacts. It has not had an independent security audit, ships its first OS sandbox
+providers (bubblewrap and Seatbelt) without seccomp filtering or a container provider, and has no
+published representative industry benchmark. Approval gating is per tool name
 only: no argument-pattern matching, no session-scoped "always allow", and a rejected call is not a
 sandbox — containment still does that work.
 APIs are unstable until a compatibility policy is published. The journal now carries an explicit

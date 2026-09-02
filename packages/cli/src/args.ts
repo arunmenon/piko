@@ -6,6 +6,13 @@ export interface ApprovalFlag {
   reason?: string;
 }
 
+/**
+ * `--sandbox`: `auto` uses a provider when one passes its acquire-time
+ * self-test, `require` refuses to start when none does, and `off` keeps
+ * today's in-process behaviour (ADR 0018).
+ */
+export type SandboxMode = 'auto' | 'off' | 'require';
+
 export interface CliArgs {
   print: boolean;
   json: boolean;
@@ -27,6 +34,8 @@ export interface CliArgs {
   allowHostBash: boolean;
   /** let write and edit modify the protected paths inside the workspace (ADR 0006) */
   allowProtectedPaths: boolean;
+  /** how hard to insist on an operating-system sandbox for tool effects (ADR 0018) */
+  sandbox: SandboxMode;
   /** parent run correlation for a child spawned by another piko (ADR 0004) */
   parentRunId?: string;
   /** deepest PI_DEPTH this process will still run at (ADR 0004) */
@@ -65,6 +74,7 @@ export function parseArgs(argv: string[]): CliArgs {
     trustProject: false,
     allowHostBash: false,
     allowProtectedPaths: false,
+    sandbox: 'auto',
     approvals: [],
     approveAll: false,
     extensions: [],
@@ -208,6 +218,14 @@ export function parseArgs(argv: string[]): CliArgs {
       case '--allow-protected-paths':
         args.allowProtectedPaths = true;
         break;
+      case '--sandbox': {
+        const mode = next();
+        if (mode !== 'auto' && mode !== 'off' && mode !== 'require') {
+          throw new Error('--sandbox requires auto, off, or require');
+        }
+        args.sandbox = mode;
+        break;
+      }
       case '--require-approval': {
         // Repeatable and comma-separated; "*" anywhere gates every tool.
         sawApprovalGate = true;
@@ -322,6 +340,11 @@ options:
   --allow-protected-paths  let write and edit modify .git/, .pi/, .agent/, .claude/, AGENTS.md,
                        .mcp.json, and workspace-root shell rc files (dangerous; reads are
                        always allowed and git changes belong in bash)
+  --sandbox <mode>     auto (default): run the five tools' effects inside an operating-system
+                       sandbox when a provider passes its acquire-time self-test, which also
+                       enables bash inside that sandbox; require: exit 1 when none does;
+                       off: today's in-process behaviour. There is never a silent fallback
+                       to host execution.
   --require-approval <names|*>  gate these tools behind a human decision; repeatable and
                        comma-separated. The turn suspends at the first gated call (exit 4)
                        and survives process loss; only this flag and ~/.config/pi/config.json

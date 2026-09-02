@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { JOURNAL_SCHEMA_VERSION, MAX_USER_INPUT_BYTES, Session, tryLockSession } from '@pi/core';
-import { parseArgs } from '../src/args.js';
+import { HELP, parseArgs } from '../src/args.js';
 import { interpolate } from '../src/templates.js';
 
 test('parseArgs handles flags, budgets, and positional prompt', () => {
@@ -461,6 +461,73 @@ test('a mid-session model switch warns that the cache key changes (0014)', () =>
   assert.equal(unchanged.status, 0);
   assert.match(unchanged.stdout, /model: openai:gpt-test/);
   assert.doesNotMatch(unchanged.stdout, /prompt cache key/);
+});
+
+/** The smallest argv that gets a headless run past provider and pricing setup. */
+const HEADLESS_MODEL_ARGV = ['--json', '--profile', 'openai', '--model', 'fake-model', '--offline-pricing'] as const;
+
+test('--sandbox accepts the three modes and refuses anything else', () => {
+  assert.equal(parseArgs(['hi']).sandbox, 'auto');
+  assert.equal(parseArgs(['--sandbox', 'off', 'hi']).sandbox, 'off');
+  assert.equal(parseArgs(['--sandbox', 'require', 'hi']).sandbox, 'require');
+  assert.throws(() => parseArgs(['--sandbox', 'maybe', 'hi']), /--sandbox requires auto, off, or require/);
+  assert.throws(() => parseArgs(['--sandbox']), /--sandbox requires a value/);
+  assert.match(HELP, /--sandbox <mode>/);
+});
+
+test('--sandbox off keeps today behaviour: no executor, and bash stays disabled', () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'pi-sandbox-off-'));
+  const contained = headlessJsonRows([...HEADLESS_MODEL_ARGV, '--sandbox', 'off', 'hello'], workspace);
+  assert.match(contained.stderr, /sandbox: off by --sandbox off/);
+  assert.equal(contained.rows[0]?.capabilities?.tools?.includes('bash'), false, JSON.stringify(contained.rows[0]));
+
+  const withHostBash = headlessJsonRows(
+    [...HEADLESS_MODEL_ARGV, '--sandbox', 'off', '--allow-host-bash', 'hello'],
+    workspace,
+  );
+  assert.equal(withHostBash.rows[0]?.capabilities?.tools?.includes('bash'), true);
+  assert.match(withHostBash.stderr, /host bash enabled without OS isolation/);
+});
+
+/**
+ * ADR 0018: on a host with a working provider the executor is the boundary and
+ * bash arrives with it; on a host without one nothing changed and `require`
+ * refuses to start. Both halves are asserted against the real host this runs on.
+ */
+test('--sandbox auto and require agree with what this host can actually provide', () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'pi-sandbox-auto-'));
+  // HOME is the workspace in this harness, which is exactly the case ADR 0018
+  // forbids: the session store would be inside the mount. Point it elsewhere so
+  // the run measures provider availability instead.
+  const home = mkdtempSync(join(tmpdir(), 'pi-sandbox-home-'));
+  const auto = headlessJsonRows([...HEADLESS_MODEL_ARGV, 'hello'], workspace, { HOME: home });
+  const sandboxActive = /sandbox: \w+ provider active/.test(auto.stderr);
+  assert.equal(
+    auto.rows[0]?.capabilities?.tools?.includes('bash'),
+    sandboxActive,
+    `bash availability must follow the executor: ${auto.stderr}`,
+  );
+
+  const required = headlessJsonRows(
+    [...HEADLESS_MODEL_ARGV, '--sandbox', 'require', 'hello'],
+    workspace,
+    { HOME: home },
+  );
+  if (sandboxActive) {
+    assert.match(required.stderr, /sandbox: \w+ provider active/);
+    assert.equal(required.rows[0]?.capabilities?.tools?.includes('bash'), true);
+  } else {
+    assert.equal(required.status, 1, `--sandbox require must exit 1 here: ${required.stderr}`);
+    const row = required.rows.find((entry) => entry.event?.type === 'run_error');
+    assert.match(String(row?.event?.error), /--sandbox require: /);
+  }
+});
+
+test('the sandbox is refused when the session store would sit inside the workspace', () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'pi-sandbox-home-workspace-'));
+  const result = headlessJsonRows([...HEADLESS_MODEL_ARGV, 'hello'], workspace, { HOME: workspace });
+  assert.match(result.stderr, /session store .* is inside the workspace/);
+  assert.equal(result.rows[0]?.capabilities?.tools?.includes('bash'), false);
 });
 
 test('interpolate replaces every $ARGUMENTS occurrence', () => {

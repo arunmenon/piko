@@ -1,4 +1,5 @@
 export * from './tools/index.js';
+export * from './executor/index.js';
 export * from './truncate.js';
 export * from './prompt.js';
 export * from './context-budget.js';

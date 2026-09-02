@@ -55,6 +55,9 @@ import { truncateMiddle } from './truncate.js';
 import { workspaceDigestFor } from './tools/bash.js';
 import { atomicWriteTextFile, resolveWorkspacePath, resolveWorkspaceRoot } from './tools/filesystem.js';
 import { validateToolArguments } from './tools/validation.js';
+import { isBuiltInTool } from './tools/index.js';
+import { sandboxToolPolicy } from './executor/index.js';
+import type { SandboxExecutor } from './executor/types.js';
 import {
   createRuntimeEvent,
   createSpanEnded,
@@ -771,6 +774,53 @@ export class Agent {
     };
   }
 
+  /**
+   * The single point where a tool's effects happen (ADR 0018). Everything that
+   * decides whether they may happen (argument validation, the tool-call
+   * budget, approval, cancellation, and the workspace digest) has already run
+   * in this process and stays here. Only the effect moves.
+   *
+   * With an executor on the policy the five built-in tools run inside it; with
+   * no executor they run in this process exactly as before. There is no third
+   * branch: a sandbox that could not be acquired never becomes a quiet host
+   * fallback, because it never reaches this field at all.
+   */
+  private dispatchToolExecution(
+    tool: Tool,
+    call: ToolCallBlock,
+    signal?: AbortSignal,
+    telemetry?: TelemetryContext,
+  ): Promise<ToolOutput> {
+    const executor = this.toolPolicy.executor;
+    if (executor === undefined || !isBuiltInTool(tool)) {
+      return Promise.resolve(tool.execute(call.arguments, this.toolContext(signal, telemetry)));
+    }
+    return this.executeInSandbox(executor, tool.name, call.arguments, signal, telemetry);
+  }
+
+  private async executeInSandbox(
+    executor: SandboxExecutor,
+    toolName: string,
+    toolArguments: Record<string, unknown>,
+    signal?: AbortSignal,
+    telemetry?: TelemetryContext,
+  ): Promise<ToolOutput> {
+    const executed = await executor.exec({
+      tool: toolName,
+      arguments: toolArguments,
+      policy: sandboxToolPolicy(this.toolPolicy, this.cwd),
+      cwd: this.cwd,
+      ...(signal ? { signal } : {}),
+    });
+    // bash's `cd` persistence lives in the worker for the length of one call;
+    // this is where it comes back, so the parent stays the authority on cwd.
+    if (executed.cwd !== this.cwd) this.cwd = executed.cwd;
+    if (telemetry && this.options.observer) {
+      for (const observation of executed.observations) await this.observeToolPolicy(telemetry, observation);
+    }
+    return executed.result;
+  }
+
   private async executeCall(
     call: ToolCallBlock,
     signal?: AbortSignal,
@@ -788,7 +838,7 @@ export class Agent {
 
     let execution: Promise<ToolOutput>;
     try {
-      execution = Promise.resolve(tool.execute(call.arguments, this.toolContext(signal, telemetry)));
+      execution = this.dispatchToolExecution(tool, call, signal, telemetry);
     } catch (error) {
       return { result: { content: [{ type: 'text', text: String(error) }], isError: true } };
     }
@@ -841,7 +891,12 @@ export class Agent {
    * call under a fail-closed policy) never justifies probing the workspace.
    */
   private dispatchesEnabledBash(toolName: string): boolean {
-    return toolName === 'bash' && this.toolPolicy.bash?.allowHostExecution === true;
+    if (toolName !== 'bash') return false;
+    // A shell inside the executor changes the same workspace the host shell
+    // would, so its started row wants the same fingerprint. The probe itself
+    // stays in the parent: it is control-plane diagnosis, not a tool effect.
+    if (this.toolPolicy.executor !== undefined && this.toolPolicy.bash?.sandboxedExecution === true) return true;
+    return this.toolPolicy.bash?.allowHostExecution === true;
   }
 
   /**
