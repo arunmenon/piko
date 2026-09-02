@@ -201,6 +201,16 @@ Every user-visible change since the 0.2.0 tree. No tag exists yet; ADR 0019
   SIGINT keeps 130; `--json` terminal rows carry `drain: cooperative | forced`.
   `--supervise` adds an optional parent that owns the hard-kill deadline for
   the blocking-extension case and never writes the journal.
+- ADR 0022 through the executor: the eight parent-swap containment attacks
+  run through the sandbox executor in
+  `packages/core/tests/containment-executor.test.ts` and pass; the swapped
+  parent resolves to nothing the sandboxed worker can reach, so each operation
+  fails at the operating-system boundary. A negative control with the
+  sandbox's view widened reproduces the escape. A test-only barrier bridge on
+  `SandboxSpec.containmentBarrierChannel` (never from the environment) lets a
+  test pause the worker at a named point. Open and stated: the in-workspace
+  half of the cleanup clause (a stranded temporary inside the workspace) and
+  the in-process path without a provider, which remain todo.
 - Argument-aware approvals (ADR 0011): ordered argument-prefix rules
   (`approvals.rules` in config, `--approval-rule`) evaluated at dispatch on the
   exact arguments a tool will receive, with bash commands split into segments
