@@ -44,18 +44,30 @@ Every user-visible change since the 0.2.0 tree. No tag exists yet; ADR 0019
   tolerated partial tail (repair kind, byte offset, bytes discarded);
   `pi doctor sessions` reports the count per session in text and `--json`.
   An append refused for exceeding the size limit no longer repairs the
-  boundary first, so a repair cannot occur without its record. (ADR 0015
-  addendum)
+  boundary first. The repair and its row are one durable operation: the row
+  and the pending rows are written positionally at the repair offset on a
+  descriptor without O_APPEND and fsynced before the journal is truncated to
+  the new end and fsynced again; a crash between the two fsyncs leaves the
+  rest of the old fragment as another undelimited tail, which the next open
+  tolerates and records as a second row, so no discarded byte goes
+  unrecorded. (ADR 0015 addendum and correction; R2 finding 4)
 - Bash calls record an optional planning-time `workspaceDigest` on their
   `tool_planned` row (SHA-256 over `git rev-parse HEAD` and
   `git status --porcelain=v1 -z`, best effort under 2 seconds, omitted outside
   a git checkout) so a resumer can tell whether the workspace moved under an
-  unknown outcome; write takes an optional `expected_sha256` precondition;
-  an example-based replay conformance test covers the journal. (ADR 0007
-  addendum)
+  unknown outcome; write takes an optional `expected_sha256` precondition,
+  a stale-at-check-time check hashed through a bounded descriptor (files over
+  the 10 MB ceiling are refused before reading), not a compare-and-swap: a
+  writer landing between the check and the rename is still overwritten; an
+  example-based replay conformance test covers the journal. (ADR 0007
+  addendum; R2 finding 3)
 - An additive `extension_loaded` journal row (path, sha256, tool names,
-  pinned) is written for every loaded extension. No schema generation bump.
-  (ADR 0012 addendum)
+  pinned, entryOnly) is written for every loaded extension. The digest covers
+  the entry module's bytes as read around the import, not transitive imports;
+  the loader re-reads and re-hashes after the import and refuses to start
+  (exit 1) if the bytes changed, which detects a swap in that window but
+  cannot prevent one. No schema generation bump. (ADR 0012 addendum; R2
+  finding 2)
 
 ### Telemetry and privacy
 - `policy.env_sanitized` carries a count instead of the allowlist;
@@ -75,11 +87,17 @@ Every user-visible change since the 0.2.0 tree. No tag exists yet; ADR 0019
 - Protected-path deny list inside the workspace: write and edit refuse
   `.git/`, `.pi/`, `.agent/`, `.claude/`, `AGENTS.md`, `.mcp.json`, and the
   workspace-root shell rc files, evaluated on the resolved path after symlink
-  resolution; reads unaffected; explicit opt-out `--allow-protected-paths`,
-  warned like `--allow-host-bash`. (ADR 0006 addendum)
-- ADR 0022 acceptance tests exist as `todo` in
-  `packages/core/tests/containment.test.ts` and fail on the current tree by
-  design; the evidence map points at them.
+  resolution; path case is folded only where a per-workspace probe shows the
+  filesystem folds it, so `.Git/notes.txt` is not refused on a case-sensitive
+  volume; reads unaffected; explicit opt-out `--allow-protected-paths`,
+  warned like `--allow-host-bash`. (ADR 0006 addendum; R2 finding 12)
+- ADR 0022's eight containment attacks run through `read`, `write`, `edit`,
+  and `map` `Tool.execute()` via a test-only barrier registry in
+  `packages/core/src/tools/filesystem.ts` (empty in production, one Map
+  lookup per named point) and exist as `todo` in
+  `packages/core/tests/containment.test.ts`, failing on the current tree by
+  design; the resolver-level tests are kept as lower-level supplements and
+  the evidence map points at both. (R2 finding 6)
 
 ### Bounded execution
 - Flail guard classifies every tool outcome, not only failures: calls are
@@ -100,22 +118,42 @@ Every user-visible change since the 0.2.0 tree. No tag exists yet; ADR 0019
 
 ### Context economics
 - The compaction summarizer reuses the live system prompt and tool list with
-  the instruction as the final user message so it can hit the cached prefix;
-  tool use is disabled through a new `toolChoice: 'none'` request field
-  mapped for both providers. Compaction appends a rehydration block
-  (AGENTS.md on a trusted run, the last 5 written or edited paths as stubs).
-  Explicit compactions-per-turn cap (default 3) ends the turn `incomplete`
-  before another summary is billed. (ADR 0003 addendum)
+  the instruction as the final user message, and by default matches the live
+  request's thinking budget (`compaction.matchLiveCacheKey`, recorded as
+  `summaryCacheKeyMode` on the compaction spans), so every provider cache-key
+  field matches and the summary can share the cached prefix; with the option
+  off the summary is small and re-pays the prefix. An actual cache-read
+  measurement on the dev set is still outstanding. Tool use is disabled
+  through a new `toolChoice: 'none'` request field mapped for both providers.
+  Compaction appends a rehydration block (AGENTS.md on a trusted run, the
+  last 5 written or edited paths as JSON strings inside a fenced block
+  labelled as untrusted data). Explicit compactions-per-turn cap (default 3)
+  ends the turn `incomplete` before another summary is billed. (ADR 0003
+  addendum; R2 findings 7 and 8)
 - Startup prints one stderr line stating the fixed prefix size against the
-  provider's minimum cacheable size; `/model` warns that a mid-session switch
+  provider's published minimum cacheable size, from a dated per-model table
+  with its source URL; a model with no published row reports the minimum as
+  unknown and draws no conclusion. `/model` warns that a mid-session switch
   changes the cache key; `profiles.<name>.cacheTtl` selects the Anthropic
   cache lifetime (5m or 1h); bench/compare_runs.py gains a cache hit-rate
-  column. (ADR 0014 addendum)
+  column. (ADR 0014 addendum; R2 finding 9)
 
 ### Headless and JSON
-- The first headless `--json` row carries a `capabilities` object: journal
-  schema generation, tool names, the exit-code set, and the budget scope
-  (`turn`). Additive and first-row only. (ADR 0010 addendum)
+- Headless `--json` emits a dedicated first row carrying a `capabilities`
+  object (journal schema generation, tool names, the exit-code set, the
+  budget scope `turn`) after setup and before the first agent event; every
+  `run_error` row, including provider failure before the first event, an
+  undecided suspended session, a locked head, and a `--max-depth` refusal,
+  carries a static partial form (`partial: true`, tool names omitted).
+  `doctor sessions --json` carries none. (ADR 0010 addendum and correction;
+  R2 finding 5)
+- The eval fallback detector accepts both `turn <status>:` and
+  `run <status>:` and is tested against the CLI's own producer string;
+  truncated runs were briefly scored as passes after the wording change.
+  (R2 finding 10)
+- Spend-stop lines use adaptive precision: at least six decimals, more when a
+  nonzero amount would otherwise show fewer than two significant digits, and
+  never scientific notation. (R2 finding 11)
 
 ### Governance
 - ADRs 0021 (proposed), 0022 (accepted, unimplemented), 0023, 0024
