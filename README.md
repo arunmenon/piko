@@ -251,8 +251,10 @@ The in-process path, which is what you get with no provider or with `--sandbox o
 one ADR 0022 describes: parent traversal, absolute paths, symlink escapes, and special files are
 rejected by path-based checks and writes are atomic, but those checks are not race-proof. A
 reproduced parent-symlink swap can defeat them, so that path is best-effort against a hostile
-repository. Routing ADR 0022's containment attacks through the executor is follow-on work; the
-attacks are red against the in-process path today.
+repository. The filesystem race is therefore closed when a sandbox provider is active and open in
+process: ADR 0022's eight parent-swap attacks now run through the executor and pass, because the
+swapped path resolves to nothing the sandboxed worker can reach, while the same eight attacks stay
+red against the in-process path and are reported as todo by `npm test`.
 
 Repository `AGENTS.md` and skills are ignored until `--trust-project` is explicit. Host bash is
 absent until `--allow-host-bash` is explicit, and then receives a sanitized environment that

@@ -1,4 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { Duplex } from 'node:stream';
+import { ContainmentBarrierChannel } from './containment-barrier.js';
 import {
   encodeMessage,
   NewlineDelimitedJsonReader,
@@ -52,6 +54,11 @@ export class ToolWorkerHost {
   private exitReason: string | undefined;
   private killed = false;
   private readonly onProcessExit: () => void;
+  /**
+   * The parent end of ADR 0022's containment barrier bridge, present only when
+   * the acquire spec asked for it. Undefined on every production path.
+   */
+  readonly containmentBarrier: ContainmentBarrierChannel | undefined;
 
   constructor(
     readonly commandLine: readonly string[],
@@ -62,6 +69,8 @@ export class ToolWorkerHost {
       readonly providerName?: string;
       /** Runs once when the sandbox is killed, including on process exit. */
       readonly onKilled?: () => void;
+      /** Test-only: give the worker a fourth descriptor for the barrier bridge. */
+      readonly containmentBarrierChannel?: boolean;
     },
   ) {
     const [command, ...commandArguments] = commandLine;
@@ -69,8 +78,13 @@ export class ToolWorkerHost {
     this.child = spawn(command, commandArguments, {
       cwd: options.cwd,
       env: options.environment,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: options.containmentBarrierChannel === true ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'],
     }) as ChildProcessWithoutNullStreams;
+    const barrierStream = options.containmentBarrierChannel === true ? this.child.stdio[3] : undefined;
+    this.containmentBarrier =
+      barrierStream === undefined || barrierStream === null
+        ? undefined
+        : new ContainmentBarrierChannel(barrierStream as Duplex);
     this.child.stdout.setEncoding('utf8');
     this.child.stderr.setEncoding('utf8');
     this.child.stdout.on('data', (chunk: string) => this.onStdout(chunk));

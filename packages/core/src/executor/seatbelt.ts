@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { CONTAINMENT_BARRIER_FLAG } from './containment-barrier.js';
 import { forgetWorkerHost, registerWorkerHost, ToolWorkerHost, workerHostFor } from './worker-host.js';
 import type {
   SandboxExecRequest,
@@ -160,7 +161,11 @@ export function seatbeltProfile(spec: SandboxSpec, privateTempDir: string): stri
 
 /** Build the `sandbox-exec` argv that starts the worker under a profile. */
 export function seatbeltCommandLine(spec: SandboxSpec, profile: string): string[] {
-  return [SEATBELT_BINARY, '-p', profile, spec.nodeExecutablePath, spec.workerEntryPath];
+  const argv = [SEATBELT_BINARY, '-p', profile, spec.nodeExecutablePath, spec.workerEntryPath];
+  // ADR 0022's test-only barrier bridge travels as an argv flag, so it can come
+  // only from the spec and never from an environment the model could reach.
+  if (spec.containmentBarrierChannel === true) argv.push(CONTAINMENT_BARRIER_FLAG);
+  return argv;
 }
 
 export interface SeatbeltProviderOptions {
@@ -196,6 +201,7 @@ export function createSeatbeltProvider(options: SeatbeltProviderOptions = {}): S
         environment,
         providerName: 'seatbelt',
         onKilled: () => rmSync(privateTempDir, { recursive: true, force: true }),
+        containmentBarrierChannel: spec.containmentBarrierChannel === true,
       });
       try {
         await host.awaitReady();

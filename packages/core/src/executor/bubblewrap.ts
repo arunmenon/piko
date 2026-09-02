@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { isPathInsideWorkspace } from '../tools/filesystem.js';
+import { CONTAINMENT_BARRIER_FLAG } from './containment-barrier.js';
 import { forgetWorkerHost, registerWorkerHost, ToolWorkerHost, workerHostFor } from './worker-host.js';
 import type {
   SandboxExecRequest,
@@ -105,6 +106,9 @@ export function bubblewrapCommandLine(spec: SandboxSpec, privateTempDir: string)
   argv.push('--bind', privateTempDir, privateTempDir);
   argv.push('--chdir', spec.workspaceRoot);
   argv.push('--', spec.nodeExecutablePath, spec.workerEntryPath);
+  // ADR 0022's test-only barrier bridge travels as an argv flag, so it can come
+  // only from the spec and never from an environment the model could reach.
+  if (spec.containmentBarrierChannel === true) argv.push(CONTAINMENT_BARRIER_FLAG);
   return argv;
 }
 
@@ -163,6 +167,7 @@ export function createBubblewrapProvider(options: BubblewrapProviderOptions = {}
         environment,
         providerName: 'bubblewrap',
         onKilled: () => rmSync(privateTempDir, { recursive: true, force: true }),
+        containmentBarrierChannel: spec.containmentBarrierChannel === true,
       });
       try {
         await host.awaitReady();

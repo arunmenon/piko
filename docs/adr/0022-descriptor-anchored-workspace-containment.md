@@ -96,3 +96,53 @@ today. The native addon exposing openat, renameat, mkdirat, and unlinkat
 remains the recorded fallback if the executor path cannot pass the tests
 on both operating systems. Rationale: it keeps the zero-native-dependency
 property and puts the race behind the same boundary that 0018 needs anyway.
+
+## Addendum (2026-09-02, acceptance through the executor)
+
+The eight acceptance attacks now run through the executor and pass, so the
+mechanism named in the addendum above is exercised rather than asserted.
+They are in packages/core/tests/containment-executor.test.ts, one per
+clause, each acquiring a real self-tested sandbox (Seatbelt on macOS,
+bubblewrap on Linux), driving read, write, edit, or map through it, and
+performing the parent swap from the test while the worker is paused inside
+the shipped implementation. Each asserts the security property this record
+is about: nothing outside the workspace disclosed, nothing outside the
+workspace created, replaced, or removed, and a failure reported rather than
+a success. The observed failures are the operating system's, not a
+re-check: EPERM on the stat, open, or mkdir that resolves through the
+swapped parent, and ENOENT on the rename whose source now points outside
+the sandbox's view. The native addon stays unbuilt and stays the fallback.
+
+How the swap is timed across the process boundary. The tool runs in the
+worker, so the acquire spec carries a test-only barrier bridge
+(`SandboxSpec.containmentBarrierChannel`): the worker announces each named
+barrier it reaches on a dedicated descriptor and blocks until the test
+writes one line back. The switch exists only on the spec, never in the
+environment, the CLI never sets it, and its production cost is one boolean
+check at worker startup. A negative control in the same file reruns the
+read attack with the sandbox's filesystem view deliberately widened and
+shows the disclosure reappearing, which is what keeps the eight from
+passing for the wrong reason.
+
+Two things this does not close, stated plainly.
+
+- The in-workspace half of the cleanup clause. When the swap lands in the
+  rename window, the temporary the write staged inside the workspace before
+  the swap is stranded: the cleanup unlink re-traverses the same swapped
+  parent the rename did and fails with it. The sandbox cannot help, because
+  both the staging and the stranding are inside the workspace, the one tree
+  the worker may write. It is marked todo in the executor test file with
+  that reason, and closing it needs a descriptor-relative unlink or a
+  cleanup that unlinks through the descriptor the temporary was created
+  with. No file outside the workspace is created, replaced, or removed in
+  this case, so the containment clause itself holds.
+- The in-process path. With no provider, or under `--sandbox off`, the file
+  tools still re-traverse a checked path string and the eight attacks in
+  packages/core/tests/containment.test.ts still defeat them. Those tests
+  stay todo and stay the honest statement about that path. This record's
+  acceptance regression is therefore satisfied for a configuration, not for
+  the harness in general, and the README says which.
+
+The Linux rows were not executed on the host this was written on, which is
+macOS; CI is where the bubblewrap side runs, as ADR 0018's own addendum
+already says of that provider.
