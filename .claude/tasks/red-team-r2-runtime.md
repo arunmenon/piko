@@ -5,14 +5,14 @@ Each item: at most five files, its test, a dated addendum to its ADR in the same
 
 - [x] 1. 0006 protected-path deny list
 - [x] 2. 0020 legible ceiling: reserved, spent, ceiling, effective at every spend stop; --usage ceiling
-- [ ] 3. 0005 loop classifier: all outcomes hashed, relaxed success thresholds, alternating pairs
+- [x] 3. 0005 loop classifier: all outcomes hashed, relaxed success thresholds, alternating pairs
 - [x] 4. 0004 --parent-run and PI_DEPTH / --max-depth
 - [x] 5. 0012 extension sha256 pins and extension_loaded journal row
 - [x] 6. 0015 journal_repaired row; doctor lists repaired sessions
 - [x] 7. 0009 wording: run budget to turn budget in user-visible text
 - [x] 8. 0001 two-number check-budget with per-provider minimum cacheable size
 - [x] 9. 0014 measurement: eligibility line, model-switch warning, compare_runs hit-rate column, TTL option
-- [ ] 10. 0003 compaction: summarizer on the cached prefix, rehydration list, compaction counter
+- [x] 10. 0003 compaction: summarizer on the cached prefix, rehydration list, compaction counter
 - [x] 11. 0010 capabilities array in the first JSON row
 - [x] 12. 0007 idempotency: write expected-hash precondition, bash workspace hash, replay conformance test
 - [x] 13. 0022 acceptance tests written as todo, failing on the current tree
