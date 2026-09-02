@@ -25,6 +25,69 @@ export interface ResolveWorkspacePathOptions {
   readonly mustExist?: boolean;
   /** Internal callers may validate an absolute path such as bash's resulting $PWD. */
   readonly allowAbsolute?: boolean;
+  /**
+   * The caller intends to create, replace, or delete this path, so the
+   * protected-path deny list applies (ADR 0006 addendum, 2026-09-02). Reads
+   * leave this unset.
+   */
+  readonly forMutation?: boolean;
+}
+
+/**
+ * Directories the file tools never write into, at any depth below the
+ * workspace root. `.git/` is refused wholesale because git changes go through
+ * bash, so no file-tool workflow needs it; the others carry harness and agent
+ * configuration that must not be rewritten by the model it configures.
+ */
+const PROTECTED_DIRECTORY_NAMES = new Set(['.git', '.pi', '.agent', '.claude']);
+
+/** Files the file tools never write, at the workspace root only. */
+const PROTECTED_WORKSPACE_ROOT_FILES = new Set([
+  'agents.md',
+  '.mcp.json',
+  '.bashrc',
+  '.bash_profile',
+  '.zshrc',
+  '.zprofile',
+  '.profile',
+]);
+
+/**
+ * Name the deny-list rule a canonical path breaks, or undefined when it breaks
+ * none. Comparison is case-insensitive so a case-insensitive filesystem cannot
+ * turn `.GIT/hooks/pre-commit` into a bypass.
+ */
+export function protectedPathRule(workspaceRoot: string, canonicalPath: string): string | undefined {
+  const relativePath = relative(workspaceRoot, canonicalPath);
+  if (relativePath === '' || relativePath.length === 0) return undefined;
+  const segments = relativePath.split(sep);
+  for (const segment of segments) {
+    const normalizedSegment = segment.toLowerCase();
+    if (PROTECTED_DIRECTORY_NAMES.has(normalizedSegment)) {
+      return `${normalizedSegment}/ is protected at any depth in the workspace`;
+    }
+  }
+  const firstSegment = segments[0]!;
+  if (segments.length === 1 && PROTECTED_WORKSPACE_ROOT_FILES.has(firstSegment.toLowerCase())) {
+    return `${firstSegment} is protected at the workspace root`;
+  }
+  return undefined;
+}
+
+/** Refuse a mutating path that lands on the protected-path deny list. */
+export function assertPathNotProtected(
+  context: ToolContext,
+  workspaceRoot: string,
+  canonicalPath: string,
+  requestedPath: string,
+): void {
+  if (context.policy?.allowProtectedPaths === true) return;
+  const brokenRule = protectedPathRule(workspaceRoot, canonicalPath);
+  if (brokenRule === undefined) return;
+  throw new ToolPolicyError(
+    `protected path refused: ${requestedPath} resolves to ${canonicalPath}, and ${brokenRule} ` +
+      `(ADR 0006). Reads are still allowed; change it with bash, or start pi with --allow-protected-paths.`,
+  );
 }
 
 function isMissingPathError(error: unknown): boolean {
@@ -126,6 +189,7 @@ export function resolveWorkspacePath(
     throw new ToolPolicyError(`path is not accessible: ${requestedPath} (${String(error)})`);
   }
   assertInside(root, canonicalCandidate);
+  if (options.forMutation === true) assertPathNotProtected(context, root, canonicalCandidate, requestedPath);
   return canonicalCandidate;
 }
 

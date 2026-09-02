@@ -99,7 +99,7 @@ export const editTool: Tool = {
 
   async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolOutput> {
     const requestedPath = requireString(args, 'path');
-    const path = resolveWorkspacePath(context, requestedPath);
+    const path = resolveWorkspacePath(context, requestedPath, { forMutation: true });
     const preOpenStat = assertRegularFile(path, 'edit')!;
     if (preOpenStat.size > EDIT_MAX_FILE_BYTES) {
       return textOutput(

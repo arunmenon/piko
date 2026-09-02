@@ -25,6 +25,8 @@ export interface CliArgs {
   offlinePricing: boolean;
   trustProject: boolean;
   allowHostBash: boolean;
+  /** let write and edit modify the protected paths inside the workspace (ADR 0006) */
+  allowProtectedPaths: boolean;
   /** tool names gated behind a human decision, or '*' for all (ADR 0011) */
   requireApproval?: readonly string[] | '*';
   /** decisions applied to a suspended session when it is reopened */
@@ -54,6 +56,7 @@ export function parseArgs(argv: string[]): CliArgs {
     offlinePricing: false,
     trustProject: false,
     allowHostBash: false,
+    allowProtectedPaths: false,
     approvals: [],
     approveAll: false,
     extensions: [],
@@ -177,6 +180,9 @@ export function parseArgs(argv: string[]): CliArgs {
       case '--allow-host-bash':
         args.allowHostBash = true;
         break;
+      case '--allow-protected-paths':
+        args.allowProtectedPaths = true;
+        break;
       case '--require-approval': {
         // Repeatable and comma-separated; "*" anywhere gates every tool.
         sawApprovalGate = true;
@@ -286,6 +292,9 @@ options:
   --no-offload         keep old bulky tool outputs inline instead of offloading to disk
   --trust-project      load repository AGENTS.md, skill index, and prompt templates
   --allow-host-bash    expose unsandboxed host bash (dangerous; environment is sanitized)
+  --allow-protected-paths  let write and edit modify .git/, .pi/, .agent/, .claude/, AGENTS.md,
+                       .mcp.json, and workspace-root shell rc files (dangerous; reads are
+                       always allowed and git changes belong in bash)
   --require-approval <names|*>  gate these tools behind a human decision; repeatable and
                        comma-separated. The turn suspends at the first gated call (exit 4)
                        and survives process loss; only this flag and ~/.config/pi/config.json

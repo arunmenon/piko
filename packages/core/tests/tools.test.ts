@@ -13,8 +13,9 @@ import {
   truncateSync,
   writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import {
   bashTool,
@@ -363,6 +364,169 @@ test('bash is fail-closed when a core consumer omits tool policy', async () => {
   assert.equal(result.isError, true);
   assert.match((result.content[0] as { text: string }).text, /disabled by tool policy/);
   assert.equal(existsSync(join(workDir, 'must-not-run-without-policy')), false);
+});
+
+const PROTECTED_TARGETS = [
+  '.git/config',
+  '.git/hooks/pre-commit',
+  '.pi/state.json',
+  '.agent/commands/go.md',
+  '.claude/settings.json',
+  'AGENTS.md',
+  '.mcp.json',
+  '.bashrc',
+  '.bash_profile',
+  '.zshrc',
+  '.zprofile',
+  '.profile',
+];
+
+function makeProtectedWorkspace(prefix: string): string {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+  for (const target of PROTECTED_TARGETS) {
+    const path = join(root, target);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, 'original', 'utf8');
+  }
+  return root;
+}
+
+test('write and edit refuse every protected path inside the workspace', async () => {
+  const root = makeProtectedWorkspace('pi-protected-');
+  const localContext = makeContext(root);
+
+  for (const target of PROTECTED_TARGETS) {
+    await assert.rejects(
+      () => writeTool.execute({ path: target, content: 'persisted' }, localContext),
+      (error: Error) => {
+        assert.match(error.message, /protected path refused/);
+        assert.ok(error.message.includes(target), `refusal must name ${target}`);
+        return true;
+      },
+      `write must refuse ${target}`,
+    );
+    await assert.rejects(
+      () => editTool.execute({ path: target, old_text: 'original', new_text: 'persisted' }, localContext),
+      /protected path refused/,
+      `edit must refuse ${target}`,
+    );
+    assert.equal(readFileSync(join(root, target), 'utf8'), 'original');
+  }
+});
+
+test('a symlink alias inside the workspace does not launder a protected path', async () => {
+  const root = makeProtectedWorkspace('pi-protected-alias-');
+  symlinkSync(join(root, '.git'), join(root, 'git-alias'), 'dir');
+  symlinkSync(join(root, 'AGENTS.md'), join(root, 'guidance.md'));
+  const localContext = makeContext(root);
+
+  await assert.rejects(
+    () => writeTool.execute({ path: 'git-alias/hooks/pre-commit', content: 'persisted' }, localContext),
+    /protected path refused.*\.git\/ is protected/s,
+  );
+  await assert.rejects(
+    () => writeTool.execute({ path: 'git-alias/hooks/post-merge', content: 'persisted' }, localContext),
+    /protected path refused/,
+  );
+  await assert.rejects(
+    () => editTool.execute({ path: 'guidance.md', old_text: 'original', new_text: 'persisted' }, localContext),
+    /protected path refused.*AGENTS\.md is protected at the workspace root/s,
+  );
+  assert.equal(readFileSync(join(root, '.git', 'hooks', 'pre-commit'), 'utf8'), 'original');
+  assert.equal(readFileSync(join(root, 'AGENTS.md'), 'utf8'), 'original');
+});
+
+test('a nested .git directory deeper in the tree is protected too', async () => {
+  const root = makeProtectedWorkspace('pi-protected-nested-');
+  const nested = join(root, 'packages', 'inner', '.git', 'hooks');
+  mkdirSync(nested, { recursive: true });
+  writeFileSync(join(nested, 'pre-push'), 'original', 'utf8');
+  const localContext = makeContext(root);
+
+  await assert.rejects(
+    () => writeTool.execute({ path: 'packages/inner/.git/hooks/pre-push', content: 'persisted' }, localContext),
+    /protected path refused/,
+  );
+  await assert.rejects(
+    () => writeTool.execute({ path: 'packages/inner/.claude/settings.json', content: 'persisted' }, localContext),
+    /protected path refused/,
+  );
+  assert.equal(readFileSync(join(nested, 'pre-push'), 'utf8'), 'original');
+});
+
+test('ordinary files beside the protected ones stay writable', async () => {
+  const root = makeProtectedWorkspace('pi-protected-neighbors-');
+  const localContext = makeContext(root);
+
+  for (const target of ['.gitignore', 'AGENTS.notes.md', 'docs/AGENTS.md', 'src/profile.ts']) {
+    const result = await writeTool.execute({ path: target, content: 'allowed' }, localContext);
+    assert.equal(result.isError, undefined, `write must accept ${target}`);
+    assert.equal(readFileSync(join(root, target), 'utf8'), 'allowed');
+  }
+});
+
+test('--allow-protected-paths style policy opt-out permits the write', async () => {
+  const root = makeProtectedWorkspace('pi-protected-optout-');
+  const localContext = makeContext(root, {
+    ...defaultToolExecutionPolicy(root),
+    allowProtectedPaths: true,
+  });
+
+  const written = await writeTool.execute({ path: '.git/hooks/pre-commit', content: 'opted in' }, localContext);
+  assert.equal(written.isError, undefined);
+  assert.equal(readFileSync(join(root, '.git', 'hooks', 'pre-commit'), 'utf8'), 'opted in');
+  const edited = await editTool.execute(
+    { path: 'AGENTS.md', old_text: 'original', new_text: 'opted in' },
+    localContext,
+  );
+  assert.equal(edited.isError, undefined);
+  assert.equal(readFileSync(join(root, 'AGENTS.md'), 'utf8'), 'opted in');
+});
+
+test('reads of protected paths stay allowed', async () => {
+  const root = makeProtectedWorkspace('pi-protected-read-');
+  const localContext = makeContext(root);
+
+  const result = await readTool.execute({ path: '.git/config' }, localContext);
+  assert.equal(result.isError, undefined);
+  assert.equal((result.content[0] as { text: string }).text, 'original');
+});
+
+test('write honors an expected_sha256 precondition', async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'pi-write-precondition-')));
+  const localContext = makeContext(root);
+  const path = join(root, 'resumable.txt');
+  writeFileSync(path, 'planned state', 'utf8');
+  const currentDigest = createHash('sha256').update('planned state').digest('hex');
+
+  const matched = await writeTool.execute(
+    { path: 'resumable.txt', content: 'next state', expected_sha256: currentDigest },
+    localContext,
+  );
+  assert.equal(matched.isError, undefined);
+  assert.equal(readFileSync(path, 'utf8'), 'next state');
+
+  const mismatched = await writeTool.execute(
+    { path: 'resumable.txt', content: 'clobbered', expected_sha256: currentDigest },
+    localContext,
+  );
+  assert.equal(mismatched.isError, true);
+  const mismatchText = (mismatched.content[0] as { text: string }).text;
+  assert.match(mismatchText, /expected_sha256 mismatch for resumable\.txt/);
+  assert.ok(mismatchText.includes(currentDigest), 'the refusal names the expected digest');
+  assert.ok(
+    mismatchText.includes(createHash('sha256').update('next state').digest('hex')),
+    'the refusal names the digest actually found',
+  );
+  assert.equal(readFileSync(path, 'utf8'), 'next state');
+
+  const missing = await writeTool.execute(
+    { path: 'gone.txt', content: 'recreated', expected_sha256: currentDigest },
+    localContext,
+  );
+  assert.equal(missing.isError, true);
+  assert.match((missing.content[0] as { text: string }).text, /does not exist/);
+  assert.equal(existsSync(join(root, 'gone.txt')), false);
 });
 
 test('truncateMiddle keeps head and tail with a marker', () => {

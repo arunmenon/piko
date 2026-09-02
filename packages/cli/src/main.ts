@@ -79,6 +79,8 @@ interface Setup {
   budget: Partial<RunBudget>;
   systemPrompt: string;
   allowHostBash: boolean;
+  /** opt-out from the protected-path deny list; CLI flag only (ADR 0006) */
+  allowProtectedPaths: boolean;
   /** gated tool names; only CLI flags and user config can reach this */
   approval?: readonly string[] | '*';
   observer?: Observer;
@@ -200,6 +202,7 @@ function buildAgent(setup: Omit<Setup, 'agent'>, cwd: string, model: string): Ag
     toolPolicy: {
       workspaceRoot: cwd,
       bash: { allowHostExecution: setup.allowHostBash },
+      ...(setup.allowProtectedPaths ? { allowProtectedPaths: true } : {}),
       ...(setup.approval !== undefined ? { approval: setup.approval } : {}),
     },
     ...(setup.observer ? { observer: setup.observer } : {}),
@@ -252,6 +255,9 @@ async function setup(args: CliArgs): Promise<Setup> {
   if (args.allowHostBash) {
     process.stderr.write(dim('warning: host bash enabled without OS isolation; commands run as your user and can inspect this process and its credentials; use only where you would run the model as yourself\n'));
   }
+  if (args.allowProtectedPaths) {
+    process.stderr.write(dim('warning: protected-path deny list disabled; write and edit can now change .git/, .pi/, .agent/, .claude/, AGENTS.md, .mcp.json, and shell rc files in this workspace, which is how a repository makes the agent persist\n'));
+  }
   const tools = validateToolSet(
     [
       ...builtins,
@@ -282,6 +288,7 @@ async function setup(args: CliArgs): Promise<Setup> {
     offload: args.offload,
     systemPrompt: buildSystemPrompt({ cwd, agentsMd, skills, bashAvailable: args.allowHostBash }),
     allowHostBash: args.allowHostBash,
+    allowProtectedPaths: args.allowProtectedPaths,
     // Provenance is restricted to the flag and the user config file. Project
     // content loaded by --trust-project and extensions never reach this field.
     ...(approval !== undefined ? { approval } : {}),

@@ -30,6 +30,7 @@ test('parseArgs handles flags, budgets, and positional prompt', () => {
     '--offline-pricing',
     '--trust-project',
     '--allow-host-bash',
+    '--allow-protected-paths',
     '--telemetry',
     'trace.jsonl',
     '--ext',
@@ -50,6 +51,7 @@ test('parseArgs handles flags, budgets, and positional prompt', () => {
   assert.equal(args.offlinePricing, true);
   assert.equal(args.trustProject, true);
   assert.equal(args.allowHostBash, true);
+  assert.equal(args.allowProtectedPaths, true);
   assert.equal(args.telemetry, 'trace.jsonl');
   assert.deepEqual(args.extensions, ['a.ts']);
   assert.equal(args.prompt, 'fix the bug');
@@ -71,6 +73,7 @@ test('parseArgs rejects unsafe timer and tool-output budgets', () => {
 test('project instructions are opt-in', () => {
   assert.equal(parseArgs(['hello']).trustProject, false);
   assert.equal(parseArgs(['hello']).allowHostBash, false);
+  assert.equal(parseArgs(['hello']).allowProtectedPaths, false);
 });
 
 test('--json implies headless print mode', () => {
