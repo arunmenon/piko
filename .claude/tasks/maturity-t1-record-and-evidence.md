@@ -12,6 +12,6 @@ Source: docs/maturity-plan-2026-09.md section 4. Owner-approved to start.
 - [x] 8. Governance drafts for T0: token-rent re-homed to 0001 (proposed amendment); 0021 retention classes; ADR 0026 budgets; ADR 0027 shutdown (a8ed5ea)
 - [x] 9. Re-review received against fdc39bb; report committed as docs/reviews/2026-09-02-t1-review.md; weighted 2.65 (reported 2.7), docs 2 -> 3
 - [x] 10. T1.1 closure patch per the re-review's minimum (39e19f7): extracts superseded by r3 with digests; manifest fully generated and CI-checked; live telemetry untracked; 0022 map expanded; boundary wording corrected in README/CHANGELOG/0006; host-bash warning; 0021 tiers and deletion obligations; changelog tag semantics; check-budget comment
-- [ ] 11. T1 closes at 2.7 on owner confirmation of the T1.1 patch (reviewer's stated condition)
+- [x] 11. T1 closed at 2.7 by owner delegation on 2026-09-02
 
 T0 decisions outstanding (owner): license; token-rent amendment to 0001; 0021 accept with defaults or as principles; 0018 ratify (gates T2); 0019 ratify (gates publication); 0022 mechanism addendum; @pi npm scope.
