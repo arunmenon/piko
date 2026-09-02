@@ -121,6 +121,8 @@ export function buildAnthropicBody(request: CompletionRequest): Record<string, u
       description: tool.description,
       input_schema: tool.parameters,
     })),
+    // Only meaningful alongside a tool list; an empty list already forbids tool use.
+    ...(request.toolChoice === 'none' && request.tools.length > 0 ? { tool_choice: { type: 'none' } } : {}),
     messages,
     stream: true,
   };

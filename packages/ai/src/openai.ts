@@ -98,6 +98,8 @@ export function buildOpenAIBody(request: CompletionRequest): Record<string, unkn
             type: 'function',
             function: { name: tool.name, description: tool.description, parameters: tool.parameters },
           })),
+          // Only meaningful alongside a tool list; an empty list already forbids tool use.
+          ...(request.toolChoice === 'none' ? { tool_choice: 'none' } : {}),
         }
       : {}),
     ...(reasoningModel ? { max_completion_tokens: maxTokens } : { max_tokens: maxTokens }),

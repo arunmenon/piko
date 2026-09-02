@@ -90,6 +90,13 @@ export interface CompletionRequest {
   tools: ToolDefinition[];
   maxTokens?: number;
   temperature?: number;
+  /**
+   * Set to 'none' to forbid tool use for one request while still sending the
+   * tool list. Dropping the tools instead would change the cached prefix, so a
+   * request that must not call tools (the compaction summarizer) keeps the
+   * prefix byte-identical and disables the tools here.
+   */
+  toolChoice?: 'none';
   /** extended-thinking budget in tokens (Anthropic only; ignored elsewhere) */
   thinkingBudget?: number;
   /**

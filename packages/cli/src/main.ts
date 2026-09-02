@@ -39,6 +39,7 @@ import {
   validateToolSet,
   type AgentEvent,
   type ApprovalDecisionInput,
+  type FlailKind,
   type Observer,
   type PendingApproval,
   type PricingTable,
@@ -101,6 +102,13 @@ class JsonRunFailure extends Error {
     const body = (error as { body?: unknown })?.body;
     if (typeof body === 'string') this.body = body;
   }
+}
+
+/** What the flail guard actually saw, so a successful loop is not reported as failures. */
+function describeFlail(event: { consecutiveFailures: number; kind: FlailKind }): string {
+  if (event.kind === 'successful_repeat') return 'the same succeeding tool call repeating without progress';
+  if (event.kind === 'alternating') return 'the same two tool calls alternating without progress';
+  return `${event.consecutiveFailures} failed tool calls in a row`;
 }
 
 function openSession(args: CliArgs, cwd: string, model: string): Session {
@@ -435,9 +443,9 @@ async function headless(args: CliArgs): Promise<number> {
       } else if (event.type === 'session_rotated') {
         process.stderr.write(dim(`rotated session journal to ${oneLine(event.sessionFile, 4096)}\n`));
       } else if (event.type === 'flail_nudge') {
-        process.stderr.write(dim(`flail guard: nudged after ${event.consecutiveFailures} consecutive failures\n`));
+        process.stderr.write(dim(`flail guard: nudged after ${describeFlail(event)}\n`));
       } else if (event.type === 'flail_stop') {
-        process.stderr.write(`flail guard: stopped the turn after repeated failures\n`);
+        process.stderr.write(`flail guard: stopped the turn after ${describeFlail(event)}\n`);
       } else if (event.type === 'offloaded') {
         process.stderr.write(dim(`offloaded ${event.count} old tool outputs\n`));
       } else if (event.type === 'budget_exceeded') {
@@ -524,11 +532,11 @@ function handleEvent(event: AgentEvent, state: ReplState): void {
       break;
     case 'flail_nudge':
       ensureNewline();
-      process.stdout.write(dim(`[⚠ ${event.consecutiveFailures} failed tool calls in a row: nudging a change of approach]\n`));
+      process.stdout.write(dim(`[⚠ ${describeFlail(event)}: nudging a change of approach]\n`));
       break;
     case 'flail_stop':
       ensureNewline();
-      process.stdout.write(red(`[✋ stopping turn: repeated tool failures without progress; asking for a final report]\n`));
+      process.stdout.write(red(`[✋ stopping turn: ${describeFlail(event)}; asking for a final report]\n`));
       break;
     case 'offloaded':
       ensureNewline();

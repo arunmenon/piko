@@ -282,7 +282,8 @@ options:
   --offline-pricing    use only the 24h/stale local pricing cache; never fetch
   --thinking <tokens>  enable extended thinking with this token budget (Anthropic models)
   --no-auto-compact    never summarize automatically when the context window fills
-  --no-flail-guard     disable the doom-loop guard (nudge/stop on repeated tool failures)
+  --no-flail-guard     disable the doom-loop guard (nudge/stop on failing, repeating, or
+                       alternating tool calls)
   --no-offload         keep old bulky tool outputs inline instead of offloading to disk
   --trust-project      load repository AGENTS.md, skill index, and prompt templates
   --allow-host-bash    expose unsandboxed host bash (dangerous; environment is sanitized)
