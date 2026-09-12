@@ -114,7 +114,7 @@ export interface ScoutBatch {
 export interface Acceptance {
   repeats: number; maxQualityLoss: number; minSavings: number; perTrialUSD: number;
 }
-export function compare(rows: Measurement[], taskNames: string[], rule: Acceptance, confirm = true) {
+export function compare(rows: Measurement[], taskNames: string[], rule: Acceptance, confirm = true, requireMechanismActivation = true) {
   const insufficient = (reason: string) => ({ verdict: 'insufficient_evidence' as const, reason });
   if (!taskNames.length || new Set(taskNames).size !== taskNames.length
       || !Number.isSafeInteger(rule.repeats) || rule.repeats < 1
@@ -146,7 +146,7 @@ export function compare(rows: Measurement[], taskNames: string[], rule: Acceptan
     activation += b.offloaded;
   }
   const n = expected / 2;
-  if (!baselinePass || !candidatePass || !baselineCost || !activation) return insufficient('no verified solves, baseline cost, or candidate mechanism activation');
+  if (!baselinePass || !candidatePass || !baselineCost || (requireMechanismActivation && !activation)) return insufficient('no verified solves, baseline cost, or candidate mechanism activation');
   const qualityDifference = (candidatePass - baselinePass) / n;
   // Paired bounded differences in [-1, 1]. Each one-sided bound has alpha=.025;
   // union bound gives >=95% joint coverage under independent repeat trials.

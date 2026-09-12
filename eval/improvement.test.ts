@@ -80,6 +80,13 @@ test('missing/duplicate pairs, unknown costs, and dormant mechanisms cannot pass
   }
   assert.equal(compare(pairs().map(row => ({ ...row, offloaded: 0 })), ['a'], rule).verdict, 'insufficient_evidence');
 });
+test('model-routing comparison can omit offload activation while preserving quality and cost gates', () => {
+  const rows = pairs().map((row) => ({ ...row, offloaded: 0 }));
+  assert.equal(compare(rows, ['a'], rule, false, false).verdict, 'supported');
+  rows[1]!.pass = false;
+  assert.equal(compare(rows, ['a'], rule, false, false).verdict, 'rejected');
+});
+
 test('cheaper but substantially worse candidate is rejected', () => {
   const rows = pairs(); rows[1]!.pass = false;
   assert.equal(compare(rows, ['a'], rule).verdict, 'rejected');
