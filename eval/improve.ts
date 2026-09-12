@@ -5,7 +5,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, re
 import { dirname, join, resolve } from 'node:path';
 import { configPath, loadConfig } from '@pi/ai';
 import { baselinePolicy, diagnose, runCycle, reserveTrial, settleTrial, type Acceptance, type Measurement, type OffloadPolicy } from './improvement.js';
-import { representativeDevelopment, representativeConfirmation } from './representative-tasks.js';
+import { longCodingDevelopment, longCodingConfirmation } from './long-coding-tasks.js';
 import { taskDefinitionSha256 } from './task-definition.js';
 import type { UsageSummary } from './result.js';
 
@@ -20,11 +20,11 @@ Small pilot runs normally return insufficient_evidence. No automatic promotion.
 Exit 0: rejected; 2: insufficient evidence/budget; 4: supported, parked for review.
 `;
 const root = resolve(import.meta.dirname, '..');
-const suiteNames = { development: 'representative-development', confirmation: 'representative-confirmation' } as const;
+const suiteNames = { development: 'long-coding-development', confirmation: 'long-coding-confirmation' } as const;
 function plannedTrials(repeats: number) {
   const rows: Array<{ phase: 'scout' | 'measurement'; suite: string; task: string; repeat: number; arm: 'baseline' | 'candidate' }> = [];
-  for (const task of representativeDevelopment) rows.push({ phase: 'scout', suite: suiteNames.development, task: task.name, repeat: 0, arm: 'baseline' });
-  for (const [suite, tasks] of [[suiteNames.development, representativeDevelopment], [suiteNames.confirmation, representativeConfirmation]] as const) {
+  for (const task of longCodingDevelopment) rows.push({ phase: 'scout', suite: suiteNames.development, task: task.name, repeat: 0, arm: 'baseline' });
+  for (const [suite, tasks] of [[suiteNames.development, longCodingDevelopment], [suiteNames.confirmation, longCodingConfirmation]] as const) {
     for (let repeat = 0; repeat < repeats; repeat++) for (const [index, task] of tasks.entries()) {
       const arms = (repeat + index) % 2 ? ['candidate', 'baseline'] as const : ['baseline', 'candidate'] as const;
       for (const arm of arms) rows.push({ phase: 'measurement', suite, task: task.name, repeat, arm });
@@ -79,7 +79,7 @@ function main(): number {
   const sourcePaths = spawnSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' });
   if (sourcePaths.status !== 0) throw new Error('cannot establish source provenance');
   const files = [...sourcePaths.stdout.split('\0').filter(Boolean),
-    'eval/improve.ts', 'eval/improvement.ts', 'eval/representative-tasks.ts', 'eval/task-definition.ts'];
+    'eval/improve.ts', 'eval/improvement.ts', 'eval/long-coding-tasks.ts', 'eval/representative-tasks.ts', 'eval/task-definition.ts'];
   const fingerprint = () => digest(JSON.stringify({
     files: [...new Set(files)].sort().map(path => [path, existsSync(join(root, path)) ? digest(readFileSync(join(root, path))) : null]),
     pricing: digest(readFileSync(opts.pricing)),
@@ -107,8 +107,8 @@ function main(): number {
     baseline: baselinePolicy,
     proposalRule: { noRecall: { thresholdChars: 2000, keepRecentMessages: 4 },
       recallObserved: { thresholdChars: 8000, keepRecentMessages: 12 } },
-    development: representativeDevelopment.map(task => ({ name: task.name, definitionSha256: taskDefinitionSha256(task) })),
-    confirmation: representativeConfirmation.map(task => ({ name: task.name, definitionSha256: taskDefinitionSha256(task) })),
+    development: longCodingDevelopment.map(task => ({ name: task.name, definitionSha256: taskDefinitionSha256(task) })),
+    confirmation: longCodingConfirmation.map(task => ({ name: task.name, definitionSha256: taskDefinitionSha256(task) })),
     confirmationIsolation: 'proposal uses development scouts only; confirmation begins only after the frozen development screen passes',
     trials: plannedTrials(opts.rule.repeats),
     maximumTrialCount: 3 + 12 * opts.rule.repeats,
@@ -126,9 +126,9 @@ function main(): number {
     atomic(join(opts.output, 'experiment.json'), state);
   };
   const history: unknown[] = [];
-  record({ stage: 'created', scoutTasks: representativeDevelopment.map(task => task.name),
+  record({ stage: 'created', scoutTasks: longCodingDevelopment.map(task => task.name),
     scoutPolicy: 'one baseline attempt per development task; aggregate all; no retries or early stop on evidence',
-    confirmationTasks: representativeConfirmation.map(task => task.name),
+    confirmationTasks: longCodingConfirmation.map(task => task.name),
     preregistration: 'preregistration.json', taskHashes: {
       development: plan.development, confirmation: plan.confirmation,
     }, acceptance: plan.acceptance, maximumTrialCount: plan.maximumTrialCount });
@@ -203,8 +203,8 @@ Quality difference lower bound: ${metrics.qualityLower}. Cost-improvement lower 
       return { row, evidence };
     };
     return finish(runCycle({
-      development: representativeDevelopment.map(task => task.name),
-      confirmation: representativeConfirmation.map(task => task.name), rule: opts.rule, suiteNames, trial,
+      development: longCodingDevelopment.map(task => task.name),
+      confirmation: longCodingConfirmation.map(task => task.name), rule: opts.rule, suiteNames, trial,
       onProposal(proposal, scouts) {
         candidateForReport = proposal.policy;
         atomic(join(opts.output, 'proposal.json'), { ...proposal, evidence: scouts.evidence,

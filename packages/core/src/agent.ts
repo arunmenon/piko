@@ -395,6 +395,9 @@ export type AgentEvent =
   | { type: 'session_rotated'; sessionFile: string }
   | { type: 'flail_nudge'; consecutiveFailures: number; kind: FlailKind }
   | { type: 'flail_stop'; consecutiveFailures: number; kind: FlailKind }
+  | { type: 'offload_observed'; retainedResultCount: number; retainedChars: number; maxResultChars: number;
+      eligibleResultCount: number; eligibleChars: number; thresholdChars: number; batchMinimumChars: number;
+      suppressedByBatchMinimum: boolean }
   | { type: 'offloaded'; count: number; savedChars: number }
   | { type: 'steered'; text: string }
   | { type: 'approval_required'; executions: PendingApproval[] }
@@ -1761,7 +1764,9 @@ export class Agent {
           }
           if (terminal) break;
 
-          const offloaded = this.offloadOldToolResults();
+          const offloadInspection = this.offloadOldToolResults();
+          if (offloadInspection) yield { type: 'offload_observed', ...offloadInspection.observation };
+          const offloaded = offloadInspection?.offloaded;
           if (offloaded) {
             // The provider-based projection describes the pre-offload request. Once
             // history shrinks, rebase to the serialized request instead of pinning
@@ -3040,13 +3045,28 @@ export class Agent {
    * paid, and the session JSONL keeps the original content. Rewriting history is a
    * prompt-cache break, so this runs in batches (>= OFFLOAD_BATCH_MIN_CHARS).
    */
-  private offloadOldToolResults(): { count: number; savedChars: number } | undefined {
+  private offloadOldToolResults(): {
+    observation: {
+      retainedResultCount: number;
+      retainedChars: number;
+      maxResultChars: number;
+      eligibleResultCount: number;
+      eligibleChars: number;
+      thresholdChars: number;
+      batchMinimumChars: number;
+      suppressedByBatchMinimum: boolean;
+    };
+    offloaded?: { count: number; savedChars: number };
+  } | undefined {
     const option = this.options.offload;
     if (option === false) return undefined;
     const cfg = { thresholdChars: 4_000, keepRecentMessages: 6, ...(typeof option === 'object' ? option : {}) };
     const cutoff = this.messages.length - cfg.keepRecentMessages;
     const eligible: { block: ToolResultBlock; chars: number }[] = [];
-    for (let index = 0; index < cutoff; index++) {
+    let retainedResultCount = 0;
+    let retainedChars = 0;
+    let maxResultChars = 0;
+    for (let index = 0; index < this.messages.length; index++) {
       const message = this.messages[index]!;
       if (message.role !== 'user') continue;
       for (const block of message.content) {
@@ -3058,11 +3078,25 @@ export class Agent {
           (sum, inner) => sum + (inner.type === 'text' ? inner.text.length : 0),
           0,
         );
-        if (chars >= cfg.thresholdChars) eligible.push({ block, chars });
+        retainedResultCount++;
+        retainedChars += chars;
+        maxResultChars = Math.max(maxResultChars, chars);
+        if (index < cutoff && chars >= cfg.thresholdChars) eligible.push({ block, chars });
       }
     }
-    const total = eligible.reduce((sum, entry) => sum + entry.chars, 0);
-    if (eligible.length === 0 || total < OFFLOAD_BATCH_MIN_CHARS) return undefined;
+    if (retainedResultCount === 0) return undefined;
+    const eligibleChars = eligible.reduce((sum, entry) => sum + entry.chars, 0);
+    const observation = {
+      retainedResultCount,
+      retainedChars,
+      maxResultChars,
+      eligibleResultCount: eligible.length,
+      eligibleChars,
+      thresholdChars: cfg.thresholdChars,
+      batchMinimumChars: OFFLOAD_BATCH_MIN_CHARS,
+      suppressedByBatchMinimum: eligible.length > 0 && eligibleChars < OFFLOAD_BATCH_MIN_CHARS,
+    };
+    if (eligible.length === 0 || eligibleChars < OFFLOAD_BATCH_MIN_CHARS) return { observation };
     let count = 0;
     let savedChars = 0;
     for (const { block, chars } of eligible) {
@@ -3087,7 +3121,7 @@ export class Agent {
       count++;
       savedChars += chars;
     }
-    return count > 0 ? { count, savedChars } : undefined;
+    return count > 0 ? { observation, offloaded: { count, savedChars } } : { observation };
   }
 
   /** Compaction fires before the projected next request crosses window - reserve. */

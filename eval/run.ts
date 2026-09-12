@@ -27,15 +27,18 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { classifyEvalOutcome, parseUsageSummary, type EvalOutcome, type UsageSummary } from './result.js';
 import { tasks } from './tasks.js';
 import { suites as mechanismSuites } from './offload-tasks.js';
+import { longCodingSuites } from './long-coding-tasks.js';
 import { representativeSuites } from './representative-tasks.js';
 import { taskDefinitionSha256 } from './task-definition.js';
 
-const suites = { ...mechanismSuites, ...representativeSuites };
+const suites = { ...mechanismSuites, ...representativeSuites, ...longCodingSuites };
 const suiteSource: Record<string, string> = {
   'offload-development': 'offload-tasks.ts',
   'offload-confirmation': 'offload-tasks.ts',
   'representative-development': 'representative-tasks.ts',
   'representative-confirmation': 'representative-tasks.ts',
+  'long-coding-development': 'long-coding-tasks.ts',
+  'long-coding-confirmation': 'long-coding-tasks.ts',
 };
 
 interface Options {

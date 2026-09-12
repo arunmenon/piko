@@ -3,6 +3,14 @@ export interface OffloadPolicy { thresholdChars: number; keepRecentMessages: num
 export const baselinePolicy: OffloadPolicy = { thresholdChars: 4000, keepRecentMessages: 6 };
 export interface TraceEvidence {
   offloaded: number; largeOutputs: number; recalls: number; references: number[];
+  diagnostics?: {
+    observations: number;
+    maxRetainedChars: number;
+    maxResultChars: number;
+    maxEligibleChars: number;
+    maxEligibleResultCount: number;
+    batchSuppressions: number;
+  };
 }
 export function diagnose(jsonl: string): TraceEvidence {
   const evidence: TraceEvidence = { offloaded: 0, largeOutputs: 0, recalls: 0, references: [] };
@@ -31,6 +39,22 @@ export function diagnose(jsonl: string): TraceEvidence {
     if (!row.event || typeof row.event.type !== 'string') throw new Error(`invalid event stream at line ${index + 1}`);
     const event = row.event;
     let relevant = false;
+    if (event.type === 'offload_observed') {
+      for (const name of ['retainedChars', 'maxResultChars', 'eligibleChars', 'eligibleResultCount']) {
+        if (!Number.isSafeInteger(event[name]) || event[name] < 0) throw new Error(`invalid offload observation ${name}`);
+      }
+      const diagnostics = evidence.diagnostics ??= {
+        observations: 0, maxRetainedChars: 0, maxResultChars: 0,
+        maxEligibleChars: 0, maxEligibleResultCount: 0, batchSuppressions: 0,
+      };
+      diagnostics.observations++;
+      diagnostics.maxRetainedChars = Math.max(diagnostics.maxRetainedChars, event.retainedChars);
+      diagnostics.maxResultChars = Math.max(diagnostics.maxResultChars, event.maxResultChars);
+      diagnostics.maxEligibleChars = Math.max(diagnostics.maxEligibleChars, event.eligibleChars);
+      diagnostics.maxEligibleResultCount = Math.max(diagnostics.maxEligibleResultCount, event.eligibleResultCount);
+      if (event.suppressedByBatchMinimum === true) diagnostics.batchSuppressions++;
+      relevant = true;
+    }
     if (event.type === 'offloaded') {
       if (!Number.isSafeInteger(event.count) || event.count < 0) throw new Error('invalid offload event');
       evidence.offloaded += event.count; relevant = true;

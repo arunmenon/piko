@@ -949,6 +949,8 @@ function handleEvent(event: AgentEvent, state: ReplState): void {
       ensureNewline();
       process.stdout.write(red(`[✋ stopping turn: ${describeFlail(event)}; asking for a final report]\n`));
       break;
+    case 'offload_observed':
+      break; // passive JSON/telemetry evidence; keep the interactive UI quiet
     case 'offloaded':
       ensureNewline();
       process.stdout.write(dim(`[offloaded ${event.count} old tool output${event.count === 1 ? '' : 's'} to disk (~${event.savedChars.toLocaleString()} chars)]\n`));
