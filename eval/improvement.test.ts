@@ -99,6 +99,95 @@ test('rejected development candidate never consumes confirmation tasks', () => {
   assert.equal(result.verdict, 'rejected');
 });
 
+test('fixed scout batch includes zero-evidence tasks and later recalls before freezing', () => {
+  const calls: string[] = []; let proposals = 0;
+  const result = runCycle({
+    development: ['dev-a', 'dev-b', 'dev-c'], confirmation: ['sealed'], rule: { ...rule, repeats: 1 },
+    trial(suite, task, repeat, arm, policy, phase) {
+      calls.push(`${phase}:${task}:${arm}`);
+      if (phase === 'scout') {
+        assert.equal(proposals, 0);
+        assert.equal(suite, 'offload-development');
+        assert.equal(arm, 'baseline');
+        assert.equal(policy.thresholdChars, 4000);
+      } else {
+        assert.equal(proposals, 1);
+        if (arm === 'candidate') assert.equal(policy.thresholdChars, 8000);
+      }
+      return {
+        // Expensive, failed scouts must not contaminate the paired quality/cost screen.
+        row: { task, repeat, arm, phase, pass: phase === 'measurement',
+          usd: phase === 'scout' ? 1 : arm === 'baseline' ? .2 : .1, offloaded: 1, artifact: `${phase}/${task}/${arm}` },
+        evidence: { offloaded: task === 'dev-b' ? 1 : 0, largeOutputs: task === 'dev-b' ? 1 : 0,
+          recalls: task === 'dev-c' ? 1 : 0, references: task === 'dev-a' ? [] : [25] },
+      };
+    },
+    onProposal(proposal, scouts) {
+      proposals++;
+      assert.deepEqual(calls, ['scout:dev-a:baseline', 'scout:dev-b:baseline', 'scout:dev-c:baseline']);
+      assert.deepEqual(scouts.evidence, { offloaded: 1, largeOutputs: 1, recalls: 1 });
+      assert.deepEqual(scouts.sources.map(s => [s.row.artifact, s.evidence.references]),
+        [['scout/dev-a/baseline', []], ['scout/dev-b/baseline', [25]], ['scout/dev-c/baseline', [25]]]);
+      assert.equal(proposal.policy.keepRecentMessages, 12);
+    },
+    onStage(suite, decision) {
+      if (suite === 'offload-development') {
+        assert.equal(decision.verdict, 'supported');
+        assert.ok('metrics' in decision);
+        assert.equal(decision.metrics.baselinePass, 3);
+        assert.equal(decision.metrics.candidatePass, 3);
+        assert.ok(Math.abs(decision.metrics.baselineCost - .6) < 1e-9);
+      }
+    },
+  });
+  assert.equal(result.verdict, 'insufficient_evidence');
+  assert.equal(calls.length, 11); // three scouts + six development + two confirmation
+});
+
+test('all-zero scout batch completes once without proposing or measuring', () => {
+  const tasks: string[] = [];
+  const result = runCycle({
+    development: ['a', 'b', 'c'], confirmation: ['sealed'], rule,
+    trial(suite, task, repeat, arm, policy, phase) {
+      assert.equal(phase, 'scout'); tasks.push(task);
+      return { row: { task, repeat, arm, phase, pass: true, usd: .01, offloaded: 0, artifact: task },
+        evidence: { offloaded: 0, largeOutputs: 0, recalls: 0, references: [] } };
+    },
+    onProposal() { assert.fail('no proposal without evidence'); },
+    onStage() { assert.fail('no comparison without proposal'); },
+  });
+  assert.deepEqual(tasks, ['a', 'b', 'c']);
+  assert.equal(result.verdict, 'insufficient_evidence');
+  assert.match(result.reason, /fixed scout batch/);
+});
+
+test('incomplete scout batch cannot propose from early evidence or exceed the budget', () => {
+  const account = { spentUSD: 0, reservedUSD: 0 }; const dispatched: string[] = [];
+  assert.throws(() => runCycle({
+    development: ['a', 'b', 'c'], confirmation: ['sealed'], rule,
+    trial(suite, task, repeat, arm, policy, phase) {
+      reserveTrial(account, 1, 1.5);
+      dispatched.push(task);
+      settleTrial(account, { complete: true, usd: .75, unknownRequests: 0, unpricedRequests: 0, reservedUSD: 0 });
+      return { row: { task, repeat, arm, phase, pass: true, usd: .75, offloaded: 1, artifact: task },
+        evidence: { offloaded: 1, largeOutputs: 1, recalls: 0, references: [25] } };
+    },
+    onProposal() { assert.fail('no proposal from partial batch'); },
+    onStage() { assert.fail('no measurements after incomplete batch'); },
+  }), /research budget exhausted/);
+  assert.deepEqual(dispatched, ['a']);
+  assert.deepEqual(account, { spentUSD: .75, reservedUSD: 0 });
+});
+
+test('duplicate scout tasks and scout rows in comparisons are rejected', () => {
+  const result = runCycle({
+    development: ['a', 'a'], confirmation: ['sealed'], rule,
+    trial() { throw new Error('invalid suite must not dispatch'); }, onProposal() {}, onStage() {},
+  });
+  assert.equal(result.verdict, 'insufficient_evidence');
+  assert.equal(compare(pairs().map(row => ({ ...row, phase: 'scout' })), ['a'], rule).verdict, 'insufficient_evidence');
+});
+
 test('research reservations bound dispatch and retain unknown exposure', () => {
   const account = { spentUSD: 0, reservedUSD: 0 };
   reserveTrial(account, 1, 2);

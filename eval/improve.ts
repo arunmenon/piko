@@ -13,7 +13,7 @@ const HELP = `Usage: npm run improve -- --target offload --model MODEL --profile
   [--repeats 5] [--per-trial-usd 1] [--timeout-seconds 120]
   [--max-quality-loss 0.05] [--min-savings 0.05]
 
-Runs one deterministic, trace-derived policy proposal through paired development
+Scouts every development task once, then runs one trace-derived policy proposal through paired development
 and separate confirmation trials. Uses sandbox require and complete USD evidence.
 Small pilot runs normally return insufficient_evidence. No automatic promotion.
 Exit 0: rejected; 2: insufficient evidence/budget; 4: supported, parked for review.
@@ -87,7 +87,9 @@ function main(): number {
     atomic(join(opts.output, 'experiment.json'), state);
   };
   const history: unknown[] = [];
-  record({ stage: 'created', confirmationTasks: offloadConfirmation.map(task => task.name) });
+  record({ stage: 'created', scoutTasks: offloadDevelopment.map(task => task.name),
+    scoutPolicy: 'one baseline attempt per development task; aggregate all; no retries or early stop on evidence',
+    confirmationTasks: offloadConfirmation.map(task => task.name) });
   let candidateForReport: OffloadPolicy | undefined;
   const finish = (decision: { verdict: string; reason: string; metrics?: unknown }) => {
     state.status = decision.verdict === 'supported' ? 'parked' : decision.verdict;
@@ -132,11 +134,11 @@ Quality difference lower bound: ${metrics.qualityLower}. Cost-improvement lower 
     const frozenRuntime = runtimeFingerprint();
     record({ stage: 'runtime-frozen', hash: frozenRuntime });
     let serial = 0;
-    const trial = (suite: string, task: string, repeat: number, arm: Measurement['arm'], policy: OffloadPolicy) => {
+    const trial = (suite: string, task: string, repeat: number, arm: Measurement['arm'], policy: OffloadPolicy, phase: 'scout' | 'measurement') => {
       if (fingerprint() !== frozen || runtimeFingerprint() !== frozenRuntime) throw new Error('source, evaluator, pricing, or config changed during experiment');
       const output = join(opts.output, `trial-${serial++}`);
       reserveTrial(state, opts.rule.perTrialUSD, opts.budgetUSD);
-      record({ stage: 'trial-reserved', suite, task, repeat, arm, output, policy });
+      record({ stage: 'trial-reserved', suite, task, repeat, arm, output, policy, phase });
       const args = ['--import', 'tsx', join(root, 'eval/run.ts'), '--json-events', '--suite', suite, '--only', task,
         '--harness-root', root, '--model', opts.model, '--profile', opts.profile,
         '--pricing', opts.pricing, '--max-spend-usd', String(opts.rule.perTrialUSD),
@@ -152,7 +154,7 @@ Quality difference lower bound: ${metrics.qualityLower}. Cost-improvement lower 
       const usd = settleTrial(state, result.usage?.cost);
       const stream = readFileSync(join(output, 'trials', task, 'stdout.txt'), 'utf8');
       const evidence = diagnose(stream);
-      const row: Measurement = { task, repeat, arm, pass: result.outcome.pass, usd, offloaded: evidence.offloaded, artifact: output };
+      const row: Measurement = { task, repeat, arm, phase, pass: result.outcome.pass, usd, offloaded: evidence.offloaded, artifact: output };
       state.trials.push(row);
       record({ stage: 'trial-completed', ...row, evidence });
       if (fingerprint() !== frozen || runtimeFingerprint() !== frozenRuntime) throw new Error('experiment inputs changed during trial');
@@ -161,9 +163,10 @@ Quality difference lower bound: ${metrics.qualityLower}. Cost-improvement lower 
     return finish(runCycle({
       development: offloadDevelopment.map(task => task.name),
       confirmation: offloadConfirmation.map(task => task.name), rule: opts.rule, trial,
-      onProposal(proposal, scout) {
+      onProposal(proposal, scouts) {
         candidateForReport = proposal.policy;
-        atomic(join(opts.output, 'proposal.json'), { ...proposal, evidence: scout.evidence, source: scout.row.artifact, baseline: baselinePolicy,
+        atomic(join(opts.output, 'proposal.json'), { ...proposal, evidence: scouts.evidence,
+          sources: scouts.sources.map(scout => ({ task: scout.row.task, artifact: scout.row.artifact, evidence: scout.evidence })), baseline: baselinePolicy,
           candidateArgs: ['--offload-threshold', String(proposal.policy.thresholdChars), '--offload-keep-recent', String(proposal.policy.keepRecentMessages)] });
         record({ stage: 'candidate-frozen', proposal });
       },

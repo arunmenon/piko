@@ -49,7 +49,7 @@ export function diagnose(jsonl: string): TraceEvidence {
   }
   return evidence;
 }
-export function propose(evidence: TraceEvidence): { policy: OffloadPolicy; hypothesis: string } | undefined {
+export function propose(evidence: Omit<TraceEvidence, 'references'>): { policy: OffloadPolicy; hypothesis: string } | undefined {
   if (!evidence.offloaded && !evidence.largeOutputs) return undefined;
   if (evidence.recalls > 0) return {
     policy: { thresholdChars: 8000, keepRecentMessages: 12 },
@@ -63,6 +63,11 @@ export function propose(evidence: TraceEvidence): { policy: OffloadPolicy; hypot
 export interface Measurement {
   task: string; repeat: number; arm: 'baseline' | 'candidate'; pass: boolean;
   usd: number | null; offloaded: number; artifact: string;
+  phase?: 'scout' | 'measurement';
+}
+export interface ScoutBatch {
+  evidence: Omit<TraceEvidence, 'references'>;
+  sources: Array<{ row: Measurement; evidence: TraceEvidence }>;
 }
 export interface Acceptance {
   repeats: number; maxQualityLoss: number; minSavings: number; perTrialUSD: number;
@@ -83,7 +88,7 @@ export function compare(rows: Measurement[], taskNames: string[], rule: Acceptan
     const key = `${row.task}:${row.repeat}:${row.arm}`;
     if (indexed.has(key) || !taskNames.includes(row.task) || !Number.isSafeInteger(row.repeat)
         || row.repeat < 0 || row.repeat >= rule.repeats || !['baseline', 'candidate'].includes(row.arm)
-        || typeof row.pass !== 'boolean') return insufficient('invalid or duplicate trial identity');
+        || typeof row.pass !== 'boolean' || row.phase === 'scout') return insufficient('invalid or duplicate trial identity');
     if (row.usd === null || !Number.isFinite(row.usd) || row.usd < 0 || row.usd > rule.perTrialUSD) {
       return insufficient('cost evidence is incomplete or exceeds its predeclared bound');
     }
@@ -127,23 +132,34 @@ export function compare(rows: Measurement[], taskNames: string[], rule: Acceptan
 }
 
 /** One frozen proposal, then screening, then a separately evaluated confirmation.
+ * Scout each predeclared development task once, with no early success stop.
  * Callers own execution and budget accounting; the proposer sees scout evidence only. */
 export function runCycle(input: {
   development: string[]; confirmation: string[]; rule: Acceptance;
-  trial(suite: string, task: string, repeat: number, arm: Measurement['arm'], policy: OffloadPolicy): { row: Measurement; evidence: TraceEvidence };
-  onProposal(proposal: NonNullable<ReturnType<typeof propose>>, scout: { row: Measurement; evidence: TraceEvidence }): void;
+  trial(suite: string, task: string, repeat: number, arm: Measurement['arm'], policy: OffloadPolicy, phase: 'scout' | 'measurement'): { row: Measurement; evidence: TraceEvidence };
+  onProposal(proposal: NonNullable<ReturnType<typeof propose>>, scouts: ScoutBatch): void;
   onStage(suite: string, decision: ReturnType<typeof compare>): void;
 }): ReturnType<typeof compare> {
   if (!input.development.length || !input.confirmation.length
+      || new Set(input.development).size !== input.development.length
+      || new Set(input.confirmation).size !== input.confirmation.length
       || input.development.some(task => input.confirmation.includes(task))) {
-    return { verdict: 'insufficient_evidence', reason: 'development and confirmation tasks must be nonempty and disjoint' };
+    return { verdict: 'insufficient_evidence', reason: 'development and confirmation tasks must be nonempty, unique, and disjoint' };
   }
-  const scout = input.trial('offload-development', input.development[0]!, 0, 'baseline', baselinePolicy);
-  const proposal = propose(scout.evidence);
-  if (!proposal) return { verdict: 'insufficient_evidence', reason: 'scout found no large-output evidence to justify an offload experiment' };
+  const scouts: ScoutBatch = {
+    evidence: { offloaded: 0, largeOutputs: 0, recalls: 0 },
+    sources: input.development.map(task => input.trial('offload-development', task, 0, 'baseline', baselinePolicy, 'scout')),
+  };
+  for (const { evidence } of scouts.sources) {
+    scouts.evidence.offloaded += evidence.offloaded;
+    scouts.evidence.largeOutputs += evidence.largeOutputs;
+    scouts.evidence.recalls += evidence.recalls;
+  }
+  const proposal = propose(scouts.evidence);
+  if (!proposal) return { verdict: 'insufficient_evidence', reason: 'fixed scout batch found no large-output evidence to justify an offload experiment' };
   Object.freeze(proposal.policy);
   Object.freeze(proposal);
-  input.onProposal(proposal, scout);
+  input.onProposal(proposal, scouts);
   for (const [suite, tasks, confirmation] of [
     ['offload-development', input.development, false],
     ['offload-confirmation', input.confirmation, true],
@@ -151,7 +167,7 @@ export function runCycle(input: {
     const rows: Measurement[] = [];
     for (let repeat = 0; repeat < input.rule.repeats; repeat++) for (const [index, task] of tasks.entries()) {
       const arms = (repeat + index) % 2 ? ['candidate', 'baseline'] as const : ['baseline', 'candidate'] as const;
-      for (const arm of arms) rows.push(input.trial(suite, task, repeat, arm, arm === 'baseline' ? baselinePolicy : proposal.policy).row);
+      for (const arm of arms) rows.push(input.trial(suite, task, repeat, arm, arm === 'baseline' ? baselinePolicy : proposal.policy, 'measurement').row);
     }
     const decision = compare(rows, tasks, input.rule, confirmation);
     input.onStage(suite, decision);

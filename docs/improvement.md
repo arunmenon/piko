@@ -8,9 +8,11 @@ The command is `npm run improve`, not a new core `pi improve` command.
 
 1. Freeze source/config/pricing provenance and acceptance settings; run `npm test`
    and `npm run check-budget`, then freeze the built runtime hash.
-2. Scout one development task using the default offload policy (4,000 characters,
-   six recent messages). Inspect actual JSON events for large outputs, offloads,
-   and reads of offload artifacts. Store the event line references.
+2. Predeclare all three development tasks and scout each once using the default
+   offload policy (4,000 characters, six recent messages). Complete the fixed
+   batch before aggregating actual JSON events for large outputs, offloads, and
+   artifact reads. No retries or early stop when evidence appears. Store event
+   line references with their source artifacts; retain zero-evidence scouts too.
 3. Propose exactly one alternative: earlier offload (2,000/four) when large-output
    evidence exists without observed recalls; longer retention (8,000/twelve) when
    artifact recalls occur. These are hypotheses, not estimates of savings.
@@ -46,6 +48,14 @@ reserves the full per-trial ceiling before dispatch. A complete cost record
 releases the unused reservation; missing/unknown usage retains it and stops the
 experiment. Failed trials still cost money and remain in all comparisons. If
 this example exhausts its budget, its verdict is insufficient evidence.
+
+Scouts share that same budget and are labeled separately from measurement trials.
+Their costs count toward research spend, but scout results are never reused as
+paired measurements. If any scout cannot complete with valid usage and evidence,
+the controller stops without proposing from a partial batch. With five repeats,
+a full run is three scouts plus 30 development and 30 confirmation attempts;
+development rejection skips confirmation. An all-zero scout batch stops without
+a proposal, even if a prior experiment observed offloading.
 
 The evaluator is fixed outside the task workspace. Each task runs in a fresh
 workspace using the same built Piko executable with different offload flags.
@@ -87,8 +97,9 @@ Each new output directory contains:
 
 - `experiment.json`: frozen configuration, committed spend and reservations.
 - `history.json`: fsynced, atomically replaced complete event ledger; single writer.
-- `proposal.json`, when evidence justifies a proposal: policy, hypothesis, scout
-  artifact, event line references, and candidate CLI arguments.
+- `proposal.json`, when evidence justifies a proposal: policy, hypothesis,
+  aggregate evidence, a `sources` array of all scout artifacts with their own
+  event line references, and candidate CLI arguments.
 - `trial-N/`: evaluation manifest, source/build hashes, deterministic verdict,
   complete usage when available, full JSON event stream, and copied session.
 - `decision.json` and `report.md`: result, measurements, and review status.
