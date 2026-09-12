@@ -48,9 +48,10 @@ The cumulative $5 authorization includes compatibility probes and failed/inconcl
 | Kimi sandboxed tool-call probe | $0.00145799 | complete, priced |
 | Original one-scout pilot (controller rejected capabilities header) | $0.01440805 | complete, priced; infrastructure failure after scout |
 | Fresh one-scout pilot after parser fix | $0.00594214 | complete, priced; zero evidence |
-| Updated three-scout pilot | $0.01809180 | complete, priced; zero evidence |
-| **Cumulative** | **$0.04059423** | **no unknown or outstanding usage** |
-| **Remaining authorized ceiling** | **$4.95940577** | calculated-cost basis |
+| Updated three-scout mechanism pilot | $0.01809180 | complete, priced; zero evidence |
+| Representative coding-fixture milestone | $0.02672512 | complete, priced; 2/3 scouts verified, zero offload evidence |
+| **Cumulative** | **$0.06731935** | **no unknown or outstanding usage** |
+| **Remaining authorized ceiling** | **$4.93268065** | calculated-cost basis |
 
 The gateway does not expose an independently reconcilable billed-dollar field. Dollar totals are exact under the frozen explicit pricing table and provider-reported token counters, but are not an invoice reconciliation.
 
@@ -137,7 +138,7 @@ This is a design, not authorization to run immediately.
 - Development: five paired repeats per task, alternating arm order.
 - Confirmation: five paired repeats per held-out task only if the unchanged development screen passes.
 - Acceptance: unchanged maximum quality loss 0.05, minimum cost saving 0.05, and strictly lower observed cost per verified solve.
-- Cost: per-trial ceiling $1; cumulative next-run ceiling no more than **$4.95**, which keeps the already reconciled $0.04059423 below $5 even if the next run reaches its ceiling.
+- Cost: per-trial ceiling $1; any future cumulative run ceiling must be no more than **$4.93**, keeping the reconciled $0.06731935 below $5 even if that run reaches its ceiling.
 - Interpretation: call the result a pipeline/representativeness pilot unless the predeclared confidence bounds pass. Do not adopt settings from point estimates alone.
 
 Before running, register the fixture source, verifier, split, pricing hash, model identifier, context window, timeout, and command in a tracked preregistration document. Any post-registration task or threshold change creates a new experiment.
@@ -171,3 +172,64 @@ Before running, register the fixture source, verifier, split, pricing hash, mode
 ## Conclusion
 
 RSI-01's control pipeline now behaves correctly for a complete zero-evidence scout batch: it spends little, preserves evidence, reconciles usage, and stops rather than forcing a candidate. That is successful pipeline validation. There is currently no measured offload improvement and no statistical support for changing defaults. The next useful work is representative task construction and offline preregistration, followed by one new bounded experiment—not another attempt on the same synthetic logs.
+
+## Representative coding-fixture milestone
+
+### Implementation and offline qualification
+
+Commit `179f95b0bd689524e9af8441ce06671228a061df` implemented six deterministic, network-free coding repositories and switched the offload controller to their three-development/three-confirmation split:
+
+- Integration-test diagnosis and repair: Node request gateway (development) and an independently varied request-contract fixture (confirmation).
+- Cross-file behavior-preserving change: Node label formatting (development) and Python record export (confirmation).
+- Regression investigation and validation: Python mixed-version ledger history (development) and Node cancellation lifecycle (confirmation).
+
+The verifier runs outside each model workspace. It executes repository tests, checks that protected public tests remain byte-identical, and applies additional hidden behavior checks. Offline qualification contains a seeded-failure check, a maintainer-repair pass, and two deliberately incorrect solutions per task. All 19 fixture qualification tests passed. The complete repository suite after implementation reported 440 TypeScript passes, zero failures, three platform skips, 17 documented TODOs, and 19 Python tests with three skips. `npm run check-budget` remained within the 815/1,000-token fixed budget.
+
+The tracked preregistration is `docs/experiments/offload-representative-v1-preregistration.json`. Before any model call, the live controller also wrote `preregistration.json` containing the actual commit, six task hashes, model, pricing hash, $1.50 milestone ceiling, $0.10 per-trial ceiling, five repeats, unchanged acceptance thresholds, all 63 possible trial slots in fixed order, and the confirmation-isolation rule.
+
+### Paid run
+
+Artifact root: `/home/exedev/workspace/piko/artifacts/improve/offload-representative-v1-2026-09-12`
+
+- Started: 2026-09-12 09:22:14 UTC
+- Finished: 2026-09-12 09:23:22 UTC
+- Wall time including static checks: about 69 seconds
+- Sum of model-trial elapsed time: 36.943 seconds
+- Final status: `insufficient_evidence`
+- Exit code: 2
+- Milestone calculated cost: $0.02672512 of the $1.50 ceiling
+- Cumulative calculated cost across every probe and pilot: $0.06731935
+- Remaining overall authorization: $4.93268065
+- Missing/unpriced/unknown requests: zero
+- Outstanding reservations: zero
+
+| Development scout | Category | Verified | Requests | Elapsed seconds | Calculated USD | Large outputs | Offloads | Recalls |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `coding-dev-integration` | failing integration test | yes | 8 | 9.836 | $0.00823017 | 0 | 0 | 0 |
+| `coding-dev-cross-file` | cross-file behavior change | no | 13 | 16.473 | $0.01528161 | 0 | 0 | 0 |
+| `coding-dev-regression` | regression investigation | yes | 5 | 10.634 | $0.00321334 | 0 | 0 | 0 |
+| **Total** | | **2/3** | **26** | **36.943** | **$0.02672512** | **0** | **0** | **0** |
+
+The failed cross-file scout was a valid model/task failure, not missing usage or controller infrastructure failure. Saved JSONL shows the model implemented the feature and obtained four passing `node --test` checks, but edited the protected public test file. The independent verifier correctly rejected that solution. The sandbox did not expose `npm` on `PATH`; the model recovered by running `node --test`, so this did not determine the outcome, but it is a realism gap for future repository fixtures.
+
+### Decision and interpretation
+
+The complete scout batch produced no tool result at least 4,000 characters and no offload or recall event. The controller therefore stopped at the predeclared scout gate. No candidate was proposed, no paired development measurements ran, and confirmation remained sealed. Baseline-versus-candidate success and cost are consequently unavailable.
+
+The decision is **insufficient evidence**, not rejection of the 2,000/four or 8,000/twelve policies. Offloading never activated, so neither candidate was tested. The milestone validates task materialization, hidden verification, preregistration, paid accounting, fixed-batch scouting, and confirmation isolation. It does not validate an offload benefit and cannot support changing defaults.
+
+### Next experiment justified by the observed bottleneck
+
+The observed bottleneck is mechanism opportunity, not the threshold value: realistic but compact repositories were solved or attempted with targeted reads and short test output, leaving no eligible old bulky result. The next experiment should therefore change the task population, not retry these trajectories or lower the threshold merely to create activity.
+
+Predeclare an **integration-diagnostics suite** with three development and three confirmation repositories whose ordinary failing commands naturally emit multi-module diagnostics: a dependency-free Node integration runner with several independently failing cases, a Python migration suite with realistic traceback/context output, and a multi-package build/test harness with deterministic compiler-style diagnostics. Prompts should continue to request only the engineering outcome and validation; they must not ask for whole logs, verbosity, or specific tools. Each fixture must retain hidden checks and protected test integrity, and must be offline-qualified against maintainer and wrong solutions.
+
+Before paid execution:
+
+1. Make `npm` or an explicit repository test command reliably discoverable inside the sandbox, then test that capability offline. This avoids measuring model recovery from an environment mismatch.
+2. Add passive evidence fields for the maximum and total retained tool-result characters, eligible-old characters, and suppression by the 8,000-character batch minimum. These diagnostics should explain non-activation without changing prompts or policy.
+3. Run only the three fixed baseline scouts first. Continue to proposal and paired measurements only if the unchanged evidence gate activates.
+4. Keep the current 0.05 quality-loss and 0.05 saving thresholds. Treat five repeats as pipeline evidence unless confirmation bounds pass.
+5. Do not reuse the failed cross-file trajectory as a favorable retry; include its cost and outcome only in this milestone.
+
+This next design directly tests whether offloading has a natural opportunity in diagnostic-heavy coding work. If its scouts also show no eligible retained output, offloading is not the next optimization target for this model/workload; effort should move to compaction timing or model routing rather than progressively manufacturing larger outputs.
