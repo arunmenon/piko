@@ -7,6 +7,11 @@ export interface TraceEvidence {
     observations: number;
     maxRetainedChars: number;
     maxResultChars: number;
+    maxSizeQualifiedChars: number;
+    maxSizeQualifiedResultCount: number;
+    maxAgeSuppressedChars: number;
+    maxAgeSuppressedResultCount: number;
+    ageBreakdownObservations: number;
     maxEligibleChars: number;
     maxEligibleResultCount: number;
     batchSuppressions: number;
@@ -43,13 +48,26 @@ export function diagnose(jsonl: string): TraceEvidence {
       for (const name of ['retainedChars', 'maxResultChars', 'eligibleChars', 'eligibleResultCount']) {
         if (!Number.isSafeInteger(event[name]) || event[name] < 0) throw new Error(`invalid offload observation ${name}`);
       }
+      const hasAgeBreakdown = ['sizeQualifiedChars', 'sizeQualifiedResultCount', 'ageSuppressedChars', 'ageSuppressedResultCount']
+        .every((name) => Number.isSafeInteger(event[name]) && event[name] >= 0);
+      const sizeQualifiedChars = hasAgeBreakdown ? event.sizeQualifiedChars : event.eligibleChars;
+      const sizeQualifiedResultCount = hasAgeBreakdown ? event.sizeQualifiedResultCount : event.eligibleResultCount;
+      const ageSuppressedChars = hasAgeBreakdown ? event.ageSuppressedChars : 0;
+      const ageSuppressedResultCount = hasAgeBreakdown ? event.ageSuppressedResultCount : 0;
       const diagnostics = evidence.diagnostics ??= {
         observations: 0, maxRetainedChars: 0, maxResultChars: 0,
+        maxSizeQualifiedChars: 0, maxSizeQualifiedResultCount: 0,
+        maxAgeSuppressedChars: 0, maxAgeSuppressedResultCount: 0, ageBreakdownObservations: 0,
         maxEligibleChars: 0, maxEligibleResultCount: 0, batchSuppressions: 0,
       };
       diagnostics.observations++;
       diagnostics.maxRetainedChars = Math.max(diagnostics.maxRetainedChars, event.retainedChars);
       diagnostics.maxResultChars = Math.max(diagnostics.maxResultChars, event.maxResultChars);
+      diagnostics.maxSizeQualifiedChars = Math.max(diagnostics.maxSizeQualifiedChars, sizeQualifiedChars);
+      diagnostics.maxSizeQualifiedResultCount = Math.max(diagnostics.maxSizeQualifiedResultCount, sizeQualifiedResultCount);
+      diagnostics.maxAgeSuppressedChars = Math.max(diagnostics.maxAgeSuppressedChars, ageSuppressedChars);
+      diagnostics.maxAgeSuppressedResultCount = Math.max(diagnostics.maxAgeSuppressedResultCount, ageSuppressedResultCount);
+      if (hasAgeBreakdown) diagnostics.ageBreakdownObservations++;
       diagnostics.maxEligibleChars = Math.max(diagnostics.maxEligibleChars, event.eligibleChars);
       diagnostics.maxEligibleResultCount = Math.max(diagnostics.maxEligibleResultCount, event.eligibleResultCount);
       if (event.suppressedByBatchMinimum === true) diagnostics.batchSuppressions++;

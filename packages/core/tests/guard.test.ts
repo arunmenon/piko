@@ -311,10 +311,16 @@ test('offload: old bulky tool results move to disk with a re-readable stub', asy
     retainedResultCount: observation.retainedResultCount,
     retainedChars: observation.retainedChars,
     maxResultChars: observation.maxResultChars,
+    sizeQualifiedResultCount: observation.sizeQualifiedResultCount,
+    sizeQualifiedChars: observation.sizeQualifiedChars,
+    ageSuppressedResultCount: observation.ageSuppressedResultCount,
+    ageSuppressedChars: observation.ageSuppressedChars,
     eligibleResultCount: observation.eligibleResultCount,
     eligibleChars: observation.eligibleChars,
     suppressedByBatchMinimum: observation.suppressedByBatchMinimum,
   }, { retainedResultCount: 1, retainedChars: 10_000, maxResultChars: 10_000,
+    sizeQualifiedResultCount: 1, sizeQualifiedChars: 10_000,
+    ageSuppressedResultCount: 0, ageSuppressedChars: 0,
     eligibleResultCount: 1, eligibleChars: 10_000, suppressedByBatchMinimum: false });
 
   const stubBlock = (agent.messages[2] as { content: { type: string; content?: { type: string; text?: string }[] }[] })
@@ -345,12 +351,35 @@ test('offload: passive observation records batch-minimum suppression without rew
   const observation = events.find((event): event is Extract<AgentEvent, { type: 'offload_observed' }> => event.type === 'offload_observed');
   assert.ok(observation);
   assert.equal(observation.maxResultChars, 5_000);
+  assert.equal(observation.sizeQualifiedChars, 5_000);
+  assert.equal(observation.ageSuppressedChars, 0);
   assert.equal(observation.eligibleChars, 5_000);
   assert.equal(observation.eligibleResultCount, 1);
   assert.equal(observation.batchMinimumChars, 8_000);
   assert.equal(observation.suppressedByBatchMinimum, true);
   assert.ok(!events.some((event) => event.type === 'offloaded'));
   assert.equal((agent.messages[1]!.content[0] as ToolResultBlock).content[0]!.type, 'text');
+});
+
+test('offload: passive observation distinguishes recent size-qualified output from age eligibility', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-offload-young-'));
+  const client = scriptedClient(() => ({ role: 'assistant', content: [{ type: 'text', text: 'done' }] }));
+  const agent = new Agent({ client, model: 'fake', systemPrompt: 't', tools: [], cwd: dir });
+  agent.messages.push(
+    { role: 'assistant', content: [{ type: 'toolCall', id: 'young', name: 'bash', arguments: { command: 'test' } }] },
+    { role: 'user', content: [{ type: 'toolResult', toolCallId: 'young', toolName: 'bash', content: [{ type: 'text', text: 'y'.repeat(5_000) }] }] },
+  );
+  const events: AgentEvent[] = [];
+  for await (const event of agent.run('next')) events.push(event);
+  const observation = events.find((event): event is Extract<AgentEvent, { type: 'offload_observed' }> => event.type === 'offload_observed');
+  assert.ok(observation);
+  assert.equal(observation.sizeQualifiedResultCount, 1);
+  assert.equal(observation.sizeQualifiedChars, 5_000);
+  assert.equal(observation.ageSuppressedResultCount, 1);
+  assert.equal(observation.ageSuppressedChars, 5_000);
+  assert.equal(observation.eligibleResultCount, 0);
+  assert.equal(observation.eligibleChars, 0);
+  assert.equal(observation.suppressedByBatchMinimum, false);
 });
 
 test('steering: mid-turn notes are injected before the next model call', async () => {

@@ -45,16 +45,22 @@ test('diagnosis accepts the CLI capabilities header and preserves JSONL line ref
 });
 test('diagnosis records passive output eligibility and batch suppression measurements', () => {
   const stream = [
-    { v: 1, event: { type: 'offload_observed', retainedResultCount: 3, retainedChars: 7200,
-      maxResultChars: 5000, eligibleResultCount: 1, eligibleChars: 5000,
+    { v: 1, event: { type: 'offload_observed', retainedResultCount: 3, retainedChars: 12000,
+      maxResultChars: 5000, sizeQualifiedResultCount: 2, sizeQualifiedChars: 10000,
+      ageSuppressedResultCount: 1, ageSuppressedChars: 5000,
+      eligibleResultCount: 1, eligibleChars: 5000,
       thresholdChars: 4000, batchMinimumChars: 8000, suppressedByBatchMinimum: true } },
     { v: 1, event: { type: 'offload_observed', retainedResultCount: 5, retainedChars: 12000,
-      maxResultChars: 7000, eligibleResultCount: 2, eligibleChars: 9000,
+      maxResultChars: 7000, sizeQualifiedResultCount: 2, sizeQualifiedChars: 9000,
+      ageSuppressedResultCount: 0, ageSuppressedChars: 0,
+      eligibleResultCount: 2, eligibleChars: 9000,
       thresholdChars: 4000, batchMinimumChars: 8000, suppressedByBatchMinimum: false } },
   ].map(row => JSON.stringify(row)).join('\n');
   const evidence = diagnose(stream);
   assert.deepEqual(evidence.diagnostics, {
     observations: 2, maxRetainedChars: 12000, maxResultChars: 7000,
+    maxSizeQualifiedChars: 10000, maxSizeQualifiedResultCount: 2,
+    maxAgeSuppressedChars: 5000, maxAgeSuppressedResultCount: 1, ageBreakdownObservations: 2,
     maxEligibleChars: 9000, maxEligibleResultCount: 2, batchSuppressions: 1,
   });
   assert.deepEqual(evidence.references, [1, 2]);

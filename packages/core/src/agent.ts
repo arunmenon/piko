@@ -396,6 +396,8 @@ export type AgentEvent =
   | { type: 'flail_nudge'; consecutiveFailures: number; kind: FlailKind }
   | { type: 'flail_stop'; consecutiveFailures: number; kind: FlailKind }
   | { type: 'offload_observed'; retainedResultCount: number; retainedChars: number; maxResultChars: number;
+      sizeQualifiedResultCount: number; sizeQualifiedChars: number;
+      ageSuppressedResultCount: number; ageSuppressedChars: number;
       eligibleResultCount: number; eligibleChars: number; thresholdChars: number; batchMinimumChars: number;
       suppressedByBatchMinimum: boolean }
   | { type: 'offloaded'; count: number; savedChars: number }
@@ -3050,6 +3052,10 @@ export class Agent {
       retainedResultCount: number;
       retainedChars: number;
       maxResultChars: number;
+      sizeQualifiedResultCount: number;
+      sizeQualifiedChars: number;
+      ageSuppressedResultCount: number;
+      ageSuppressedChars: number;
       eligibleResultCount: number;
       eligibleChars: number;
       thresholdChars: number;
@@ -3066,6 +3072,10 @@ export class Agent {
     let retainedResultCount = 0;
     let retainedChars = 0;
     let maxResultChars = 0;
+    let sizeQualifiedResultCount = 0;
+    let sizeQualifiedChars = 0;
+    let ageSuppressedResultCount = 0;
+    let ageSuppressedChars = 0;
     for (let index = 0; index < this.messages.length; index++) {
       const message = this.messages[index]!;
       if (message.role !== 'user') continue;
@@ -3081,7 +3091,15 @@ export class Agent {
         retainedResultCount++;
         retainedChars += chars;
         maxResultChars = Math.max(maxResultChars, chars);
-        if (index < cutoff && chars >= cfg.thresholdChars) eligible.push({ block, chars });
+        if (chars >= cfg.thresholdChars) {
+          sizeQualifiedResultCount++;
+          sizeQualifiedChars += chars;
+          if (index < cutoff) eligible.push({ block, chars });
+          else {
+            ageSuppressedResultCount++;
+            ageSuppressedChars += chars;
+          }
+        }
       }
     }
     if (retainedResultCount === 0) return undefined;
@@ -3090,6 +3108,10 @@ export class Agent {
       retainedResultCount,
       retainedChars,
       maxResultChars,
+      sizeQualifiedResultCount,
+      sizeQualifiedChars,
+      ageSuppressedResultCount,
+      ageSuppressedChars,
       eligibleResultCount: eligible.length,
       eligibleChars,
       thresholdChars: cfg.thresholdChars,

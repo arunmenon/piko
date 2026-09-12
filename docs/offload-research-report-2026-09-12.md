@@ -247,7 +247,7 @@ Long-task prompts explicitly state: “Do not modify or remove existing tests; f
 
 ### Passive measurements
 
-The agent now emits a non-rendered `offload_observed` event that does not enter model context or change tool behavior. It records retained tool-result count and characters, largest individual result, eligible old result count and characters, threshold, 8,000-character batch minimum, and whether an otherwise eligible batch was suppressed. The evidence parser stores maxima and suppression counts. Offline tests cover successful offload and a 5,000-character eligible result suppressed by the batch minimum.
+The agent now emits a non-rendered `offload_observed` event that does not enter model context or change tool behavior. It records three separate gates rather than conflating them: (1) retained output size and results meeting the per-result threshold regardless of age, (2) size-qualified results still suppressed because they are among the recent messages, and (3) old, size-qualified results whose combined characters are either below or above the 8,000-character batch minimum. The evidence parser stores maxima and suppression counts while remaining backward-compatible with previously saved observation rows. Offline tests independently cover successful offload, a 5,000-character old result suppressed by the batch minimum, and a 5,000-character recent result suppressed only by message age.
 
 ### Preregistered long development batch
 
