@@ -169,3 +169,13 @@ class CacheHitRateTests(unittest.TestCase):
             rows = collect(root, pi_tokens)
             self.assertEqual(summarize("pi", rows, emit=False)["cache_hit_rate"], 0.0)
             self.assertEqual(format_task_hit_rate(rows["task-a"]), "0%")
+
+class MissingCostGateTests(unittest.TestCase):
+    def test_unmeasured_failure_blocks_total_spend_per_solve(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            make_trial(root, "a", "one", resolved=True, input_tokens=100, output_tokens=10)
+            make_trial(root, "a", "two", resolved=False, input_tokens=100, output_tokens=10)
+            (root / "a/two/panes/agent.txt").unlink()
+            summary = summarize("pi", collect(root, pi_tokens), emit=False)
+            self.assertIsNone(summary["total_spend_per_solve_usd"])

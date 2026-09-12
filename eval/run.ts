@@ -26,6 +26,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { classifyEvalOutcome, parseUsageSummary, type EvalOutcome, type UsageSummary } from './result.js';
 import { tasks } from './tasks.js';
+import { suites } from './offload-tasks.js';
 
 interface Options {
   model?: string;
@@ -34,6 +35,14 @@ interface Options {
   maxTurns: number;
   timeoutMs: number;
   outputDir?: string;
+  harnessRoot?: string;
+  suite?: string;
+  pricing?: string;
+  maxSpendUSD?: number;
+  offloadThreshold?: number;
+  offloadKeepRecent?: number;
+  sandbox?: 'require';
+  jsonEvents?: boolean;
 }
 
 interface FileEvidence {
@@ -81,6 +90,23 @@ function parseOptions(argv: string[]): Options {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     switch (arg) {
+      case '--json-events': options.jsonEvents = true; break;
+      case '--harness-root': options.harnessRoot = resolve(take(i++, arg)); break;
+      case '--suite':
+        options.suite = take(i++, arg);
+        if (!suites[options.suite]) throw new Error('unknown evaluation suite');
+        break;
+      case '--pricing': options.pricing = resolve(take(i++, arg)); break;
+      case '--max-spend-usd':
+        options.maxSpendUSD = Number(take(i++, arg));
+        if (!Number.isFinite(options.maxSpendUSD) || options.maxSpendUSD <= 0) throw new Error('invalid spend ceiling');
+        break;
+      case '--offload-threshold': options.offloadThreshold = positiveInteger(arg, take(i++, arg)); break;
+      case '--offload-keep-recent': options.offloadKeepRecent = positiveInteger(arg, take(i++, arg)); break;
+      case '--sandbox':
+        if (take(i++, arg) !== 'require') throw new Error('eval supports only explicit sandbox require');
+        options.sandbox = 'require';
+        break;
       case '--model':
         options.model = take(i++, arg);
         break;
@@ -236,11 +262,12 @@ function tail(value: string, lines = 4): string {
 
 function main(): number {
   const options = parseOptions(process.argv.slice(2));
-  const selected = tasks.filter((task) => !options.only || task.name === options.only);
+  const selected = (options.suite ? suites[options.suite]! : tasks).filter((task) => !options.only || task.name === options.only);
   if (selected.length === 0) throw new Error(`no task named "${options.only}"`);
 
   const repository = resolve(import.meta.dirname, '..');
-  const cliEntry = resolve(repository, 'packages', 'cli', 'dist', 'main.js');
+  const harnessRoot = options.harnessRoot ?? repository;
+  const cliEntry = resolve(harnessRoot, 'packages', 'cli', 'dist', 'main.js');
   if (!existsSync(cliEntry)) throw new Error('CLI build is missing; run npm run build first');
 
   const runId = `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
@@ -253,7 +280,7 @@ function main(): number {
   const commit = gitValue(['rev-parse', 'HEAD']);
   const dirty = Boolean(gitValue(['status', '--porcelain']));
   const sourceTree = sourceTreeSha256(repository);
-  const harness = harnessEvidence(repository);
+  const harness = harnessEvidence(harnessRoot);
   const startedAt = new Date().toISOString();
   const manifest = {
     schemaVersion: 1,
@@ -262,11 +289,18 @@ function main(): number {
     startedAt,
     repository: { commit: commit ?? null, dirty, sourceTreeSha256: sourceTree ?? null },
     harness,
-    evaluation: { tasksSourceSha256: sha256(readFileSync(resolve(repository, 'eval', 'tasks.ts'))) },
+    evaluation: { suite: options.suite ?? 'smoke', tasksSourceSha256: sha256(readFileSync(resolve(repository, 'eval', options.suite ? 'offload-tasks.ts' : 'tasks.ts'))), evaluatorSha256: sha256(readFileSync(resolve(repository, 'eval', 'run.ts'))) },
     runtime: { node: process.version, platform: process.platform, arch: process.arch },
     configuration: {
       model: options.model ?? process.env['PI_MODEL'] ?? null,
       profile: options.profile ?? null,
+      harnessRoot,
+      offloadThreshold: options.offloadThreshold ?? 4000,
+      offloadKeepRecent: options.offloadKeepRecent ?? 6,
+      pricingSha256: options.pricing ? sha256(readFileSync(options.pricing)) : null,
+      maxSpendUSD: options.maxSpendUSD ?? null,
+      sandbox: options.sandbox ?? 'auto',
+      jsonEvents: options.jsonEvents ?? false,
       maxTurns: options.maxTurns,
       timeoutMs: options.timeoutMs,
     },
@@ -289,7 +323,12 @@ function main(): number {
       cliEntry,
       '-p',
       '--usage',
-      '--allow-host-bash',
+      ...(options.jsonEvents ? ['--json', '--supervise', '--max-time', String(Math.max(1, Math.floor(options.timeoutMs / 1000) - 5))] : []),
+      ...(options.sandbox ? ['--sandbox', options.sandbox] : ['--allow-host-bash']),
+      ...(options.pricing ? ['--pricing', options.pricing] : []),
+      ...(options.maxSpendUSD ? ['--max-spend-usd', String(options.maxSpendUSD)] : []),
+      ...(options.offloadThreshold ? ['--offload-threshold', String(options.offloadThreshold)] : []),
+      ...(options.offloadKeepRecent ? ['--offload-keep-recent', String(options.offloadKeepRecent)] : []),
       '--max-turns',
       String(options.maxTurns),
       ...(options.model ? ['--model', options.model] : []),
@@ -301,7 +340,8 @@ function main(): number {
     const result: SpawnSyncReturns<string> = spawnSync('node', args, {
       cwd: scratch,
       encoding: 'utf8',
-      timeout: options.timeoutMs,
+      timeout: options.timeoutMs + (options.jsonEvents ? 15_000 : 0),
+      maxBuffer: 32 * 1024 * 1024,
     });
     const durationSeconds = (performance.now() - start) / 1_000;
     const taskFinishedAt = new Date().toISOString();

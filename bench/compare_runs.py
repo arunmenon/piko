@@ -255,7 +255,7 @@ def summarize(name: str, rows: dict[str, list[Trial]], *, emit: bool = True) -> 
         # (fact-check 2026-08-31): the mean cost of the solved trials alone,
         # and total spend (failures included) amortized per solve. The former
         # is null unless every solved trial is priced; the latter is null
-        # unless every trial with data is priced, since missing failure costs
+        # unless every expected trial is priced, since missing failure costs
         # understate it.
         "mean_cost_of_solved_trials_usd": (
             sum(cost for cost in solved_costs if cost is not None) / solved
@@ -263,7 +263,7 @@ def summarize(name: str, rows: dict[str, list[Trial]], *, emit: bool = True) -> 
             else None
         ),
         "total_spend_per_solve_usd": (
-            sum(cost_rows) / solved if solved and tokens and len(cost_rows) == len(tokens) else None
+            sum(cost_rows) / solved if solved and tokens and len(cost_rows) == len(trials) else None
         ),
     }
     if emit:

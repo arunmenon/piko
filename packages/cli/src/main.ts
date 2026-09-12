@@ -120,6 +120,8 @@ interface Setup {
   autoCompact: boolean;
   flailGuard: boolean;
   offload: boolean;
+  offloadThreshold?: number;
+  offloadKeepRecent?: number;
   pricingTable: PricingTable;
 }
 
@@ -271,7 +273,10 @@ function buildAgent(setup: Omit<Setup, 'agent'>, cwd: string, model: string): Ag
     contextWindow: setup.contextWindow,
     autoCompact: setup.autoCompact,
     ...(setup.flailGuard === false ? { flailGuard: false as const } : {}),
-    ...(setup.offload === false ? { offload: false as const } : {}),
+    offload: setup.offload === false ? false : {
+      ...(setup.offloadThreshold !== undefined ? { thresholdChars: setup.offloadThreshold } : {}),
+      ...(setup.offloadKeepRecent !== undefined ? { keepRecentMessages: setup.offloadKeepRecent } : {}),
+    },
     ...(setup.maxIterations !== undefined ? { maxIterations: setup.maxIterations } : {}),
     ...(Object.keys(setup.budget).length > 0 ? { budget: setup.budget } : {}),
     ...(setup.thinkingBudget !== undefined ? { thinkingBudget: setup.thinkingBudget } : {}),
@@ -440,6 +445,8 @@ async function setup(args: CliArgs): Promise<Setup> {
     autoCompact: args.autoCompact,
     flailGuard: args.flailGuard,
     offload: args.offload,
+    offloadThreshold: args.offloadThreshold,
+    offloadKeepRecent: args.offloadKeepRecent,
     systemPrompt,
     allowHostBash: args.allowHostBash,
     allowProtectedPaths: args.allowProtectedPaths,

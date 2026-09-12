@@ -539,3 +539,11 @@ test('interpolate passes $-sequences in arguments through literally', () => {
   const template = { name: 'echo', body: 'Run: $ARGUMENTS', source: 'x' };
   assert.equal(interpolate(template, "sed 's/x/[$&]/' and $$PID"), "Run: sed 's/x/[$&]/' and $$PID");
 });
+
+test('bounded offload flags reject invalid values and preserve defaults', () => {
+  assert.equal(parseArgs([]).offloadThreshold, undefined);
+  assert.equal(parseArgs(['--offload-threshold', '2000', '--offload-keep-recent', '4']).offloadKeepRecent, 4);
+  for (const flag of ['--offload-threshold', '--offload-keep-recent']) {
+    for (const value of ['0', '-1', 'NaN', '1.2', 'Infinity']) assert.throws(() => parseArgs([flag, value]));
+  }
+});

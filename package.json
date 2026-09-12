@@ -30,7 +30,9 @@
     "eval": "node --import tsx eval/run.ts",
     "pack:dry-run": "npm pack --dry-run --workspaces --json",
     "verify": "npm test && npm run check-budget && npm run pack:dry-run",
-    "pi": "node packages/cli/dist/main.js"
+    "pi": "node packages/cli/dist/main.js",
+    "preimprove": "npm run build",
+    "improve": "node --import tsx eval/improve.ts"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
