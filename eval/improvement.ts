@@ -6,10 +6,29 @@ export interface TraceEvidence {
 }
 export function diagnose(jsonl: string): TraceEvidence {
   const evidence: TraceEvidence = { offloaded: 0, largeOutputs: 0, recalls: 0, references: [] };
+  let firstRow = true;
   for (const [index, line] of jsonl.split('\n').entries()) {
     if (!line.trim()) continue;
     const row = JSON.parse(line); // broken evidence never silently disappears
-    if (row.v !== 1 || !row.event || typeof row.event.type !== 'string') throw new Error('invalid event stream');
+    if (!row || row.v !== 1) throw new Error(`invalid event stream at line ${index + 1}`);
+    // The CLI emits a standalone capabilities contract before its agent events.
+    // Recognize that specific header; never silently discard arbitrary non-events.
+    if (firstRow && !('event' in row) && typeof row.sessionId === 'string'
+        && row.sessionId.length > 0 && row.capabilities
+        && Number.isSafeInteger(row.capabilities.journalSchemaVersion)
+        && row.capabilities.journalSchemaVersion > 0
+        && Array.isArray(row.capabilities.tools)
+        && row.capabilities.tools.every((tool: unknown) => typeof tool === 'string')
+        && Array.isArray(row.capabilities.exitCodes)
+        && row.capabilities.exitCodes.length > 0
+        && row.capabilities.exitCodes.every((code: unknown) => Number.isSafeInteger(code))
+        && row.capabilities.budgetScope === 'turn'
+        && row.capabilities.sessionBudgetScope === 'tree') {
+      firstRow = false;
+      continue;
+    }
+    firstRow = false;
+    if (!row.event || typeof row.event.type !== 'string') throw new Error(`invalid event stream at line ${index + 1}`);
     const event = row.event;
     let relevant = false;
     if (event.type === 'offloaded') {

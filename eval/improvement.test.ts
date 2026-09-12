@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { headlessCapabilities } from '../packages/cli/dist/capabilities.js';
 import { compare, diagnose, propose, runCycle, reserveTrial, settleTrial, type Measurement } from './improvement.js';
 
 const rule = { repeats: 5, maxQualityLoss: .05, minSavings: .05, perTrialUSD: 1 };
@@ -22,6 +23,25 @@ test('diagnosis uses actual events and exact source lines, not prose claims', ()
   assert.equal(propose(evidence)?.policy.keepRecentMessages, 12);
   assert.equal(propose(diagnose('')), undefined);
   assert.throws(() => diagnose(stream + '\nbroken'));
+});
+test('diagnosis accepts the CLI capabilities header and preserves JSONL line references', () => {
+  const header = { v: 1, sessionId: 'scout-session', capabilities: headlessCapabilities([{ name: 'read' }]) };
+  const events = [
+    { v: 1, event: { type: 'tool_end', result: { content: [{ type: 'text', text: 'x'.repeat(5000) }] } } },
+    { v: 1, event: { type: 'offloaded', count: 1 } },
+    { v: 1, event: { type: 'turn_done' } },
+  ];
+  const encode = (rows: unknown[]) => rows.map(row => JSON.stringify(row)).join('\n');
+  const evidence = diagnose('\n' + encode([header, ...events]) + '\n');
+  assert.deepEqual(evidence, { offloaded: 1, largeOutputs: 1, recalls: 0, references: [3, 4] });
+  assert.deepEqual(propose(evidence)?.policy, { thresholdChars: 2000, keepRecentMessages: 4 });
+  for (const bad of [null, {}, { v: 2, ...{ sessionId: header.sessionId, capabilities: header.capabilities } },
+    { ...header, capabilities: {} }, { ...header, event: null }]) {
+    assert.throws(() => diagnose(encode([bad, ...events])), /invalid event stream at line 1/);
+  }
+  assert.throws(() => diagnose(encode([header, header])), /invalid event stream at line 2/);
+  assert.throws(() => diagnose(encode([events[0], header])), /invalid event stream at line 2/);
+  assert.throws(() => diagnose(encode([header, { v: 1, unexpected: true }])), /invalid event stream at line 2/);
 });
 test('missing cost on a failed attempt blocks the entire comparison', () => {
   const rows = pairs(); rows[1]!.pass = false; rows[1]!.usd = null;
