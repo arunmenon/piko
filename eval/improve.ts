@@ -5,7 +5,8 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, re
 import { dirname, join, resolve } from 'node:path';
 import { configPath, loadConfig } from '@pi/ai';
 import { baselinePolicy, diagnose, runCycle, reserveTrial, settleTrial, type Acceptance, type Measurement, type OffloadPolicy } from './improvement.js';
-import { offloadDevelopment, offloadConfirmation } from './offload-tasks.js';
+import { representativeDevelopment, representativeConfirmation } from './representative-tasks.js';
+import { taskDefinitionSha256 } from './task-definition.js';
 import type { UsageSummary } from './result.js';
 
 const HELP = `Usage: npm run improve -- --target offload --model MODEL --profile PROFILE
@@ -19,6 +20,18 @@ Small pilot runs normally return insufficient_evidence. No automatic promotion.
 Exit 0: rejected; 2: insufficient evidence/budget; 4: supported, parked for review.
 `;
 const root = resolve(import.meta.dirname, '..');
+const suiteNames = { development: 'representative-development', confirmation: 'representative-confirmation' } as const;
+function plannedTrials(repeats: number) {
+  const rows: Array<{ phase: 'scout' | 'measurement'; suite: string; task: string; repeat: number; arm: 'baseline' | 'candidate' }> = [];
+  for (const task of representativeDevelopment) rows.push({ phase: 'scout', suite: suiteNames.development, task: task.name, repeat: 0, arm: 'baseline' });
+  for (const [suite, tasks] of [[suiteNames.development, representativeDevelopment], [suiteNames.confirmation, representativeConfirmation]] as const) {
+    for (let repeat = 0; repeat < repeats; repeat++) for (const [index, task] of tasks.entries()) {
+      const arms = (repeat + index) % 2 ? ['candidate', 'baseline'] as const : ['baseline', 'candidate'] as const;
+      for (const arm of arms) rows.push({ phase: 'measurement', suite, task: task.name, repeat, arm });
+    }
+  }
+  return rows;
+}
 function digest(content: string | Buffer): string { return createHash('sha256').update(content).digest('hex'); }
 function atomic(path: string, value: unknown) {
   const temp = `${path}.tmp-${randomUUID()}`;
@@ -66,7 +79,7 @@ function main(): number {
   const sourcePaths = spawnSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' });
   if (sourcePaths.status !== 0) throw new Error('cannot establish source provenance');
   const files = [...sourcePaths.stdout.split('\0').filter(Boolean),
-    'eval/improve.ts', 'eval/improvement.ts', 'eval/offload-tasks.ts'];
+    'eval/improve.ts', 'eval/improvement.ts', 'eval/representative-tasks.ts', 'eval/task-definition.ts'];
   const fingerprint = () => digest(JSON.stringify({
     files: [...new Set(files)].sort().map(path => [path, existsSync(join(root, path)) ? digest(readFileSync(join(root, path))) : null]),
     pricing: digest(readFileSync(opts.pricing)),
@@ -75,9 +88,35 @@ function main(): number {
   const frozen = fingerprint();
   mkdirSync(dirname(opts.output), { recursive: true });
   mkdirSync(opts.output, { mode: 0o700 }); // existing runs are never overwritten or silently resumed
+  const pricingSha256 = digest(readFileSync(opts.pricing));
+  const plan = {
+    schemaVersion: 1,
+    recordedAt: new Date().toISOString(),
+    commit: spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim(),
+    model: opts.model,
+    profile: opts.profile,
+    pricing: { path: opts.pricing, sha256: pricingSha256 },
+    contextWindow: Number(process.env['PI_CONTEXT_WINDOW']) || null,
+    budget: { runUSD: opts.budgetUSD, perTrialUSD: opts.rule.perTrialUSD },
+    acceptance: { maxQualityLoss: opts.rule.maxQualityLoss, minSavings: opts.rule.minSavings,
+      costPerSolveMustImprove: true, confidence: 'two one-sided Hoeffding bounds at alpha 0.025 each' },
+    repeats: opts.rule.repeats,
+    timeoutSeconds: opts.timeout,
+    maxTurns: 40,
+    sandbox: 'require',
+    baseline: baselinePolicy,
+    proposalRule: { noRecall: { thresholdChars: 2000, keepRecentMessages: 4 },
+      recallObserved: { thresholdChars: 8000, keepRecentMessages: 12 } },
+    development: representativeDevelopment.map(task => ({ name: task.name, definitionSha256: taskDefinitionSha256(task) })),
+    confirmation: representativeConfirmation.map(task => ({ name: task.name, definitionSha256: taskDefinitionSha256(task) })),
+    confirmationIsolation: 'proposal uses development scouts only; confirmation begins only after the frozen development screen passes',
+    trials: plannedTrials(opts.rule.repeats),
+    maximumTrialCount: 3 + 12 * opts.rule.repeats,
+  };
+  atomic(join(opts.output, 'preregistration.json'), plan);
   const state = {
-    schemaVersion: 1, status: 'running', scope: 'offload policy only; synthetic mechanism pilot',
-    options: opts, fingerprint: frozen, baseline: baselinePolicy,
+    schemaVersion: 1, status: 'running', scope: 'offload policy; representative coding-fixture milestone',
+    options: opts, fingerprint: frozen, preregistrationSha256: digest(readFileSync(join(opts.output, 'preregistration.json'))), baseline: baselinePolicy,
     spentUSD: 0, reservedUSD: 0, trials: [] as Measurement[],
   };
   const record = (event: unknown) => {
@@ -87,9 +126,12 @@ function main(): number {
     atomic(join(opts.output, 'experiment.json'), state);
   };
   const history: unknown[] = [];
-  record({ stage: 'created', scoutTasks: offloadDevelopment.map(task => task.name),
+  record({ stage: 'created', scoutTasks: representativeDevelopment.map(task => task.name),
     scoutPolicy: 'one baseline attempt per development task; aggregate all; no retries or early stop on evidence',
-    confirmationTasks: offloadConfirmation.map(task => task.name) });
+    confirmationTasks: representativeConfirmation.map(task => task.name),
+    preregistration: 'preregistration.json', taskHashes: {
+      development: plan.development, confirmation: plan.confirmation,
+    }, acceptance: plan.acceptance, maximumTrialCount: plan.maximumTrialCount });
   let candidateForReport: OffloadPolicy | undefined;
   const finish = (decision: { verdict: string; reason: string; metrics?: unknown }) => {
     state.status = decision.verdict === 'supported' ? 'parked' : decision.verdict;
@@ -106,7 +148,7 @@ function main(): number {
 Quality difference lower bound: ${metrics.qualityLower}. Cost-improvement lower bound per pair: $${metrics.savingLowerUSD}.
 ` : '';
     const policy = candidateForReport ? `Baseline: ${baselinePolicy.thresholdChars} characters / ${baselinePolicy.keepRecentMessages} recent messages. Candidate: ${candidateForReport.thresholdChars} characters / ${candidateForReport.keepRecentMessages} recent messages.` : 'No candidate was frozen.';
-    writeFileSync(join(opts.output, 'report.md'), `# Piko offload improvement\n\nDecision: **${state.status}**\n\n${decision.reason}\n\n${policy}\n${measurements}\nConfirmed research spend: $${state.spentUSD.toFixed(6)}; unreconciled reservation: $${state.reservedUSD.toFixed(6)}.\n\nSee proposal.json (when created) for the hypothesis and source event references, decision.json for measurements, and history.json for all stages. No settings were promoted. A supported result requires human review. These synthetic fixtures do not establish general coding capability.\n`, { mode: 0o600 });
+    writeFileSync(join(opts.output, 'report.md'), `# Piko offload improvement\n\nDecision: **${state.status}**\n\n${decision.reason}\n\n${policy}\n${measurements}\nConfirmed research spend: $${state.spentUSD.toFixed(6)}; unreconciled reservation: $${state.reservedUSD.toFixed(6)}.\n\nSee preregistration.json for the frozen execution plan, proposal.json (when created) for the hypothesis and source event references, decision.json for measurements, and history.json for all stages. No settings were promoted. A supported result requires human review. This bounded representative-fixture run remains a pipeline pilot unless its predeclared confidence bounds pass.\n`, { mode: 0o600 });
     console.log(`${state.status}: ${decision.reason}\nReport: ${join(opts.output, 'report.md')}`);
     return decision.verdict === 'supported' ? 4 : decision.verdict === 'rejected' ? 0 : 2;
   };
@@ -161,8 +203,8 @@ Quality difference lower bound: ${metrics.qualityLower}. Cost-improvement lower 
       return { row, evidence };
     };
     return finish(runCycle({
-      development: offloadDevelopment.map(task => task.name),
-      confirmation: offloadConfirmation.map(task => task.name), rule: opts.rule, trial,
+      development: representativeDevelopment.map(task => task.name),
+      confirmation: representativeConfirmation.map(task => task.name), rule: opts.rule, suiteNames, trial,
       onProposal(proposal, scouts) {
         candidateForReport = proposal.policy;
         atomic(join(opts.output, 'proposal.json'), { ...proposal, evidence: scouts.evidence,

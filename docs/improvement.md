@@ -1,18 +1,22 @@
 # Offload improvement pilot
 
-This implements the first external experiment cycle from proposed ADR 0017.
-It does not change that ADR's status or promote a policy automatically.
+This implements the next external experiment cycle from proposed ADR 0017.
+It uses deterministic representative coding fixtures while preserving the same
+scout/propose/compare policy gate. It does not change that ADR's status or promote
+a policy automatically.
 The command is `npm run improve`, not a new core `pi improve` command.
 
 ## What it does
 
 1. Freeze source/config/pricing provenance and acceptance settings; run `npm test`
    and `npm run check-budget`, then freeze the built runtime hash.
-2. Predeclare all three development tasks and scout each once using the default
-   offload policy (4,000 characters, six recent messages). Complete the fixed
-   batch before aggregating actual JSON events for large outputs, offloads, and
-   artifact reads. No retries or early stop when evidence appears. Store event
-   line references with their source artifacts; retain zero-evidence scouts too.
+2. Predeclare three development coding tasks and three disjoint confirmation
+   tasks, including their definition hashes and the fixed trial order. Scout each
+   development task once using the default offload policy (4,000 characters, six
+   recent messages). Complete the fixed batch before aggregating actual JSON events
+   for large outputs, offloads, and artifact reads. No retries or early stop when
+   evidence appears. Store event line references with their source artifacts;
+   retain zero-evidence scouts too.
 3. Propose exactly one alternative: earlier offload (2,000/four) when large-output
    evidence exists without observed recalls; longer retention (8,000/twelve) when
    artifact recalls occur. These are hypotheses, not estimates of savings.
@@ -66,11 +70,12 @@ untrusted harness executables. This pilot only runs its own fixed Piko build.
 
 ## Evidence and statistical limits
 
-The six synthetic log-investigation tasks are mechanism probes, split into three
-development and three confirmation fixtures. They are not a representative coding
-benchmark, and the confirmation split is not an independently authored benchmark.
-If the model solves them without large outputs or offloading, the experiment can
-correctly return no evidence or no mechanism activation.
+The six representative fixtures cover integration-test repair, cross-file behavior
+changes, and regression investigation in dependency-free Node and Python repositories.
+They remain a bounded research suite, not evidence of broad software-engineering
+capability. Each verifier runs outside the task workspace, protects public tests,
+and adds hidden behavioral checks; offline qualification proves seeded states and
+plausible incorrect solutions fail while maintainer repairs pass.
 
 Default acceptance: at most five percentage points of task-success loss and at
 least five percent lower total cost, plus improved observed cost per solve.
@@ -95,6 +100,8 @@ the acceptance rule after looking at a candidate's results.
 
 Each new output directory contains:
 
+- `preregistration.json`: model, pricing hash, task hashes, acceptance settings,
+  budgets, trial counts, confirmation-isolation rule, and complete fixed execution plan.
 - `experiment.json`: frozen configuration, committed spend and reservations.
 - `history.json`: fsynced, atomically replaced complete event ledger; single writer.
 - `proposal.json`, when evidence justifies a proposal: policy, hypothesis,

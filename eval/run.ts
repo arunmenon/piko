@@ -26,7 +26,17 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { classifyEvalOutcome, parseUsageSummary, type EvalOutcome, type UsageSummary } from './result.js';
 import { tasks } from './tasks.js';
-import { suites } from './offload-tasks.js';
+import { suites as mechanismSuites } from './offload-tasks.js';
+import { representativeSuites } from './representative-tasks.js';
+import { taskDefinitionSha256 } from './task-definition.js';
+
+const suites = { ...mechanismSuites, ...representativeSuites };
+const suiteSource: Record<string, string> = {
+  'offload-development': 'offload-tasks.ts',
+  'offload-confirmation': 'offload-tasks.ts',
+  'representative-development': 'representative-tasks.ts',
+  'representative-confirmation': 'representative-tasks.ts',
+};
 
 interface Options {
   model?: string;
@@ -225,17 +235,6 @@ function harnessEvidence(repository: string): {
   };
 }
 
-function taskDefinitionSha256(task: (typeof tasks)[number]): string {
-  return sha256(
-    JSON.stringify({
-      name: task.name,
-      files: task.files,
-      prompt: task.prompt,
-      verifySource: task.verify.toString(),
-    }),
-  );
-}
-
 function serializeError(error: Error | undefined): TrialRecord['process']['error'] {
   if (!error) return undefined;
   const code = (error as NodeJS.ErrnoException).code;
@@ -289,7 +288,7 @@ function main(): number {
     startedAt,
     repository: { commit: commit ?? null, dirty, sourceTreeSha256: sourceTree ?? null },
     harness,
-    evaluation: { suite: options.suite ?? 'smoke', tasksSourceSha256: sha256(readFileSync(resolve(repository, 'eval', options.suite ? 'offload-tasks.ts' : 'tasks.ts'))), evaluatorSha256: sha256(readFileSync(resolve(repository, 'eval', 'run.ts'))) },
+    evaluation: { suite: options.suite ?? 'smoke', tasksSourceSha256: sha256(readFileSync(resolve(repository, 'eval', options.suite ? suiteSource[options.suite]! : 'tasks.ts'))), evaluatorSha256: sha256(readFileSync(resolve(repository, 'eval', 'run.ts'))) },
     runtime: { node: process.version, platform: process.platform, arch: process.arch },
     configuration: {
       model: options.model ?? process.env['PI_MODEL'] ?? null,

@@ -188,6 +188,26 @@ test('duplicate scout tasks and scout rows in comparisons are rejected', () => {
   assert.equal(compare(pairs().map(row => ({ ...row, phase: 'scout' })), ['a'], rule).verdict, 'insufficient_evidence');
 });
 
+test('custom suite names preserve scout and confirmation isolation', () => {
+  const suites: string[] = [];
+  runCycle({
+    development: ['dev'], confirmation: ['confirm'], rule: { ...rule, repeats: 1 },
+    suiteNames: { development: 'representative-development', confirmation: 'representative-confirmation' },
+    trial(suite, task, repeat, arm, policy, phase) {
+      suites.push(`${phase}:${suite}:${task}:${arm}`);
+      return { row: { task, repeat, arm, phase, pass: true, usd: arm === 'candidate' ? .1 : .2, offloaded: 1, artifact: task },
+        evidence: { offloaded: 1, largeOutputs: 1, recalls: 0, references: [2] } };
+    },
+    onProposal() {}, onStage() {},
+  });
+  assert.deepEqual(suites, [
+    'scout:representative-development:dev:baseline',
+    'measurement:representative-development:dev:baseline',
+    'measurement:representative-development:dev:candidate',
+    'measurement:representative-confirmation:confirm:baseline',
+    'measurement:representative-confirmation:confirm:candidate',
+  ]);
+});
 test('research reservations bound dispatch and retain unknown exposure', () => {
   const account = { spentUSD: 0, reservedUSD: 0 };
   reserveTrial(account, 1, 2);

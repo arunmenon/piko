@@ -136,6 +136,7 @@ export function compare(rows: Measurement[], taskNames: string[], rule: Acceptan
  * Callers own execution and budget accounting; the proposer sees scout evidence only. */
 export function runCycle(input: {
   development: string[]; confirmation: string[]; rule: Acceptance;
+  suiteNames?: { development: string; confirmation: string };
   trial(suite: string, task: string, repeat: number, arm: Measurement['arm'], policy: OffloadPolicy, phase: 'scout' | 'measurement'): { row: Measurement; evidence: TraceEvidence };
   onProposal(proposal: NonNullable<ReturnType<typeof propose>>, scouts: ScoutBatch): void;
   onStage(suite: string, decision: ReturnType<typeof compare>): void;
@@ -146,9 +147,10 @@ export function runCycle(input: {
       || input.development.some(task => input.confirmation.includes(task))) {
     return { verdict: 'insufficient_evidence', reason: 'development and confirmation tasks must be nonempty, unique, and disjoint' };
   }
+  const suiteNames = input.suiteNames ?? { development: 'offload-development', confirmation: 'offload-confirmation' };
   const scouts: ScoutBatch = {
     evidence: { offloaded: 0, largeOutputs: 0, recalls: 0 },
-    sources: input.development.map(task => input.trial('offload-development', task, 0, 'baseline', baselinePolicy, 'scout')),
+    sources: input.development.map(task => input.trial(suiteNames.development, task, 0, 'baseline', baselinePolicy, 'scout')),
   };
   for (const { evidence } of scouts.sources) {
     scouts.evidence.offloaded += evidence.offloaded;
@@ -161,8 +163,8 @@ export function runCycle(input: {
   Object.freeze(proposal);
   input.onProposal(proposal, scouts);
   for (const [suite, tasks, confirmation] of [
-    ['offload-development', input.development, false],
-    ['offload-confirmation', input.confirmation, true],
+    [suiteNames.development, input.development, false],
+    [suiteNames.confirmation, input.confirmation, true],
   ] as const) {
     const rows: Measurement[] = [];
     for (let repeat = 0; repeat < input.rule.repeats; repeat++) for (const [index, task] of tasks.entries()) {
