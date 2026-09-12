@@ -335,3 +335,10 @@ npm test              # build + unit/fault tests (tools, journal, providers, bud
 npm run check-budget  # fails if fixed context exceeds 1000 tokens
 npm run eval -- --model gpt-4.1-mini   # 10 headless smoke tasks with versioned result/usage artifacts
 ```
+
+## Improvement pilot
+
+An external offload-policy experiment runner is available through `npm run improve`.
+It diagnoses development traces, tests one bounded alternative, and parks supported
+results for review. See [the pilot guide](docs/improvement.md) and
+[RSI-01 milestone](docs/milestones/rsi-01.md). No measured efficiency gain is claimed.

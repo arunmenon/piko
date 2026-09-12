@@ -3,10 +3,10 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { test } from 'node:test';
-import { Agent, type CompletionClient } from '../src/agent.js';
+import { Agent, type AgentEvent, type CompletionClient } from '../src/agent.js';
 import { Session } from '../src/session.js';
 import type { Tool } from '../src/tools/types.js';
-import type { AssistantMessage, CompletionRequest, Message, StreamEvent, Usage } from '@pi/ai';
+import type { AssistantMessage, CompletionRequest, Message, StreamEvent, ToolResultBlock, Usage } from '@pi/ai';
 
 const usage: Usage = { inputTokens: 100, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0 };
 
@@ -301,8 +301,27 @@ test('offload: old bulky tool results move to disk with a re-readable stub', asy
   agent.messages.push(...seed);
 
   const events: string[] = [];
-  for await (const event of agent.run('next')) events.push(event.type);
+  let observation: Extract<AgentEvent, { type: 'offload_observed' }> | undefined;
+  for await (const event of agent.run('next')) {
+    events.push(event.type);
+    if (event.type === 'offload_observed') observation = event;
+  }
   assert.ok(events.includes('offloaded'), `no offload in ${events.join(',')}`);
+  assert.deepEqual(observation && {
+    retainedResultCount: observation.retainedResultCount,
+    retainedChars: observation.retainedChars,
+    maxResultChars: observation.maxResultChars,
+    sizeQualifiedResultCount: observation.sizeQualifiedResultCount,
+    sizeQualifiedChars: observation.sizeQualifiedChars,
+    ageSuppressedResultCount: observation.ageSuppressedResultCount,
+    ageSuppressedChars: observation.ageSuppressedChars,
+    eligibleResultCount: observation.eligibleResultCount,
+    eligibleChars: observation.eligibleChars,
+    suppressedByBatchMinimum: observation.suppressedByBatchMinimum,
+  }, { retainedResultCount: 1, retainedChars: 10_000, maxResultChars: 10_000,
+    sizeQualifiedResultCount: 1, sizeQualifiedChars: 10_000,
+    ageSuppressedResultCount: 0, ageSuppressedChars: 0,
+    eligibleResultCount: 1, eligibleChars: 10_000, suppressedByBatchMinimum: false });
 
   const stubBlock = (agent.messages[2] as { content: { type: string; content?: { type: string; text?: string }[] }[] })
     .content[0] as { content: { type: string; text: string }[] };
@@ -313,6 +332,54 @@ test('offload: old bulky tool results move to disk with a re-readable stub', asy
   assert.ok(existsSync(join(dir, path!)), 'offload file should exist inside the workspace');
   assert.equal(readFileSync(join(dir, path!), 'utf8'), bigText);
   assert.equal(readFileSync(join(dir, path!, '..', '.gitignore'), 'utf8'), '*\n!.gitignore\n');
+});
+
+test('offload: passive observation records batch-minimum suppression without rewriting history', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-offload-suppressed-'));
+  const client = scriptedClient(() => ({ role: 'assistant', content: [{ type: 'text', text: 'done' }] }));
+  const agent = new Agent({ client, model: 'fake', systemPrompt: 't', tools: [], cwd: dir });
+  const text = 'x'.repeat(5_000);
+  agent.messages.push(
+    { role: 'assistant', content: [{ type: 'toolCall', id: 't1', name: 'bash', arguments: { command: 'test' } }] },
+    { role: 'user', content: [{ type: 'toolResult', toolCallId: 't1', toolName: 'bash', content: [{ type: 'text', text }] }] },
+    ...Array.from({ length: 7 }, (_, index): Message => index % 2
+      ? { role: 'assistant', content: [{ type: 'text', text: `a${index}` }] }
+      : { role: 'user', content: [{ type: 'text', text: `u${index}` }] }),
+  );
+  const events: AgentEvent[] = [];
+  for await (const event of agent.run('next')) events.push(event);
+  const observation = events.find((event): event is Extract<AgentEvent, { type: 'offload_observed' }> => event.type === 'offload_observed');
+  assert.ok(observation);
+  assert.equal(observation.maxResultChars, 5_000);
+  assert.equal(observation.sizeQualifiedChars, 5_000);
+  assert.equal(observation.ageSuppressedChars, 0);
+  assert.equal(observation.eligibleChars, 5_000);
+  assert.equal(observation.eligibleResultCount, 1);
+  assert.equal(observation.batchMinimumChars, 8_000);
+  assert.equal(observation.suppressedByBatchMinimum, true);
+  assert.ok(!events.some((event) => event.type === 'offloaded'));
+  assert.equal((agent.messages[1]!.content[0] as ToolResultBlock).content[0]!.type, 'text');
+});
+
+test('offload: passive observation distinguishes recent size-qualified output from age eligibility', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-offload-young-'));
+  const client = scriptedClient(() => ({ role: 'assistant', content: [{ type: 'text', text: 'done' }] }));
+  const agent = new Agent({ client, model: 'fake', systemPrompt: 't', tools: [], cwd: dir });
+  agent.messages.push(
+    { role: 'assistant', content: [{ type: 'toolCall', id: 'young', name: 'bash', arguments: { command: 'test' } }] },
+    { role: 'user', content: [{ type: 'toolResult', toolCallId: 'young', toolName: 'bash', content: [{ type: 'text', text: 'y'.repeat(5_000) }] }] },
+  );
+  const events: AgentEvent[] = [];
+  for await (const event of agent.run('next')) events.push(event);
+  const observation = events.find((event): event is Extract<AgentEvent, { type: 'offload_observed' }> => event.type === 'offload_observed');
+  assert.ok(observation);
+  assert.equal(observation.sizeQualifiedResultCount, 1);
+  assert.equal(observation.sizeQualifiedChars, 5_000);
+  assert.equal(observation.ageSuppressedResultCount, 1);
+  assert.equal(observation.ageSuppressedChars, 5_000);
+  assert.equal(observation.eligibleResultCount, 0);
+  assert.equal(observation.eligibleChars, 0);
+  assert.equal(observation.suppressedByBatchMinimum, false);
 });
 
 test('steering: mid-turn notes are injected before the next model call', async () => {

@@ -7,9 +7,9 @@
  * not installed. Nothing in this file simulates a sandbox.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { after, test, type TestContext } from 'node:test';
 import {
   acquireVerifiedExecutor,
@@ -214,6 +214,19 @@ test('the workspace is writable through the sandbox', async (t) => {
   assert.equal(readFileSync(join(sharedWorkspace!, 'shell-proof.txt'), 'utf8'), 'shell');
 });
 
+test('the sandbox PATH exposes package-manager siblings from the active Node installation', async (t) => {
+  if (await skipWithoutSandbox(t)) return;
+  const npmPath = join(dirname(process.execPath), 'npm');
+  if (!existsSync(npmPath)) {
+    t.skip(`the active Node installation has no npm sibling at ${npmPath}`);
+    return;
+  }
+  const output = await runInSandbox('bash', { command: 'command -v node; node --version; command -v npm; npm --version' });
+  assert.equal(output.isError, undefined, textOf(output));
+  assert.match(textOf(output), new RegExp(dirname(process.execPath).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(textOf(output), /\b10\.9\.2\b/u);
+});
+
 test('a canary outside the workspace is unreadable through read', async (t) => {
   if (await skipWithoutSandbox(t)) return;
   // The read tool refuses an out-of-workspace path in piko's own containment
@@ -376,6 +389,12 @@ test('the worker policy carries containment and never the control plane', () => 
 
   const hostOnly = sandboxToolPolicy({ workspaceRoot: '/workspace', bash: { allowHostExecution: true } }, '/fallback');
   assert.equal(hostOnly.bash?.allowHostExecution, false, '--allow-host-bash alone does not enable the sandboxed shell');
+});
+
+test('the sandbox spec prepends the active Node bin directory to PATH', { skip: binarySkip }, () => {
+  const workspace = makeWorkspace('pi-executor-path-');
+  const spec = buildSandboxSpec(workspace);
+  assert.equal(spec.environment['PATH']?.split(':')[0], dirname(realpathSync(process.execPath)));
 });
 
 test('the sandbox spec points at built code and a canonical workspace', { skip: binarySkip }, () => {

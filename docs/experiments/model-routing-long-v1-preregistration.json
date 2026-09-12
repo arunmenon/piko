@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "registeredAt": "2026-09-12T10:00:00Z",
+  "title": "Long coding model-routing comparison v1",
+  "models": {
+    "baseline": { "id": "fireworks/kimi-k2p7-code", "contextWindow": 262144 },
+    "candidate": { "id": "fireworks/glm-5p3-flash", "contextWindow": 1048576 },
+    "profile": "openai",
+    "endpoint": "https://llm.int.exe.xyz/v1"
+  },
+  "pricing": {
+    "path": "/home/exedev/.config/pi/exe-llm-routing-pricing.json",
+    "sha256": "8adb77aeeee9833fa99e63b80b0aeb06caa84dde530a8c87d5d29acd8c61c0ec"
+  },
+  "budget": {
+    "runUSD": 0.97,
+    "perTrialUSD": 0.05,
+    "spentInCurrentOneDollarMilestoneUSD": 0.02615075,
+    "maximumMilestoneTotalUSD": 0.99615075,
+    "priorOverallCumulativeUSD": 0.09347010,
+    "maximumOverallCumulativeUSD": 1.06347010
+  },
+  "acceptance": {
+    "repeats": 5,
+    "maxQualityLoss": 0.05,
+    "minRelativeCostSaving": 0.05,
+    "candidateCostPerVerifiedSolveMustBeLower": true,
+    "confirmationBounds": "two one-sided Hoeffding bounds at alpha 0.025 each"
+  },
+  "execution": {
+    "developmentTasks": ["long-dev-integration", "long-dev-cross-file", "long-dev-regression"],
+    "confirmationTasks": ["long-confirm-integration", "long-confirm-cross-file", "long-confirm-regression"],
+    "pairsPerStage": 15,
+    "trialsPerStage": 30,
+    "maximumTrials": 60,
+    "armOrder": "alternate baseline/candidate first by repeat plus task index",
+    "sandbox": "require",
+    "timeoutSeconds": 120,
+    "maxTurns": 40,
+    "confirmationIsolation": "candidate and thresholds are frozen before development; confirmation starts only if development passes and cannot tune either",
+    "retryPolicy": "none"
+  },
+  "interpretation": "A five-repeat result is pipeline evidence unless the predeclared confirmation bounds pass. Include every failed attempt and no automatic promotion."
+}

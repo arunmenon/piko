@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "registeredAt": "2026-09-12T09:40:00Z",
+  "title": "Long coding-task passive-offload observation milestone",
+  "model": {
+    "profile": "openai",
+    "id": "fireworks/kimi-k2p7-code",
+    "endpoint": "https://llm.int.exe.xyz/v1",
+    "contextWindow": 262144
+  },
+  "pricing": {
+    "path": "/home/exedev/.config/pi/exe-llm-kimi-k2p7-code-pricing.json",
+    "sha256": "1a2757c66aee03f905bb44a674be5a8b7617a0ce01e3060f5c44baba6963ce5c"
+  },
+  "budget": {
+    "milestoneUSD": 1,
+    "perTrialUSD": 0.1,
+    "priorCumulativeUSD": 0.06731935,
+    "overallAuthorizedUSD": 5,
+    "maximumCumulativeUSD": 1.06731935
+  },
+  "acceptance": {
+    "repeats": 5,
+    "maxQualityLoss": 0.05,
+    "minRelativeCostSaving": 0.05,
+    "candidateCostPerVerifiedSolveMustBeLower": true,
+    "confirmationBounds": "two one-sided Hoeffding bounds at alpha 0.025 each"
+  },
+  "execution": {
+    "sandbox": "require",
+    "timeoutSeconds": 120,
+    "maxTurns": 40,
+    "baseline": { "thresholdChars": 4000, "keepRecentMessages": 6 },
+    "developmentScoutOrder": ["long-dev-integration", "long-dev-cross-file", "long-dev-regression"],
+    "proposalRule": {
+      "largeOutputWithoutRecall": { "thresholdChars": 2000, "keepRecentMessages": 4 },
+      "recallObserved": { "thresholdChars": 8000, "keepRecentMessages": 12 }
+    },
+    "measurementPlan": "Five paired development repeats with alternating arm order; confirmation remains sealed until a candidate is frozen and passes development.",
+    "maximumTrials": 63,
+    "stopConditions": [
+      "zero aggregate scout evidence",
+      "missing, unknown, or unpriced usage",
+      "abnormal termination or timeout",
+      "budget exhaustion",
+      "development rejection or insufficient evidence"
+    ]
+  },
+  "passiveMeasurements": [
+    "maximum individual retained tool-result characters",
+    "maximum aggregate retained tool-result characters",
+    "maximum eligible old result characters and count",
+    "number of observations suppressed by the 8000-character batch minimum"
+  ],
+  "tasks": {
+    "development": [
+      { "name": "long-dev-integration", "definitionSha256": "97754728eaa9aea815f94cc3a1f8f224a761cefe99f6ab2cc66c718975e96d13" },
+      { "name": "long-dev-cross-file", "definitionSha256": "d044c66c49fb21c88eee528eac11bd748a3be747f84e17765190d570249b1dee" },
+      { "name": "long-dev-regression", "definitionSha256": "1e9b8ba5f6eb9c077f6676d9d3dad2aca93711c3147b1032940a105a8ff7d18e" }
+    ],
+    "confirmation": [
+      { "name": "long-confirm-integration", "definitionSha256": "cfe675c5a71ad718c9ec21b8eb81335a70973085f100dfee4dd15c13b6c4e69f" },
+      { "name": "long-confirm-cross-file", "definitionSha256": "bdaf45ac132d12bee2f82d819e674ea528e1ab3b200992f2426174cd1455d676" },
+      { "name": "long-confirm-regression", "definitionSha256": "00bc91385b16797e9f9ddb9c904fb6984e8b68cd73793e397669b83d3013635e" }
+    ]
+  },
+  "interpretation": "This run diagnoses the dominant observed problem. It does not retry the prior failure and does not promote policy automatically."
+}

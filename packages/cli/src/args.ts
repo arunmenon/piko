@@ -81,6 +81,8 @@ export interface CliArgs {
   autoCompact: boolean;
   flailGuard: boolean;
   offload: boolean;
+  offloadThreshold?: number;
+  offloadKeepRecent?: number;
   audit?: string;
   telemetry?: string;
   extensions: string[];
@@ -329,6 +331,12 @@ export function parseArgs(argv: string[]): CliArgs {
       case '--no-flail-guard':
         args.flailGuard = false;
         break;
+      case '--offload-threshold':
+        args.offloadThreshold = positiveInteger('--offload-threshold', next());
+        break;
+      case '--offload-keep-recent':
+        args.offloadKeepRecent = positiveInteger('--offload-keep-recent', next());
+        break;
       case '--no-offload':
         args.offload = false;
         break;
@@ -482,6 +490,8 @@ options:
   --no-auto-compact    never summarize automatically when the context window fills
   --no-flail-guard     disable the doom-loop guard (nudge/stop on failing, repeating, or
                        alternating tool calls)
+  --offload-threshold <chars>  minimum text output eligible for offload (default 4000)
+  --offload-keep-recent <n>    preserve the newest n messages (default 6)
   --no-offload         keep old bulky tool outputs inline instead of offloading to disk
   --trust-project      load repository AGENTS.md, skill index, and prompt templates
   --allow-host-bash    expose unsandboxed host bash (dangerous; environment is sanitized)

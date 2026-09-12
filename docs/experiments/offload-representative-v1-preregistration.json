@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "registeredAt": "2026-09-12T09:00:00Z",
+  "title": "Representative coding-fixture offload milestone",
+  "scope": "Pipeline and policy comparison on six deterministic, network-free coding repositories",
+  "model": {
+    "profile": "openai",
+    "id": "fireworks/kimi-k2p7-code",
+    "endpoint": "https://llm.int.exe.xyz/v1",
+    "contextWindow": 262144
+  },
+  "pricing": {
+    "path": "/home/exedev/.config/pi/exe-llm-kimi-k2p7-code-pricing.json",
+    "sha256": "1a2757c66aee03f905bb44a674be5a8b7617a0ce01e3060f5c44baba6963ce5c"
+  },
+  "budget": {
+    "milestoneUSD": 1.5,
+    "perTrialUSD": 0.1,
+    "priorCumulativeUSD": 0.04059423,
+    "overallAuthorizedUSD": 5,
+    "maximumCumulativeUSD": 1.54059423
+  },
+  "acceptance": {
+    "repeats": 5,
+    "maxQualityLoss": 0.05,
+    "minRelativeCostSaving": 0.05,
+    "candidateCostPerVerifiedSolveMustBeLower": true,
+    "confirmationBounds": "two one-sided Hoeffding bounds at alpha 0.025 each"
+  },
+  "execution": {
+    "sandbox": "require",
+    "timeoutSeconds": 120,
+    "maxTurns": 40,
+    "baseline": { "thresholdChars": 4000, "keepRecentMessages": 6 },
+    "scouts": "Run each development task once under baseline; aggregate the complete fixed batch; no retry or early evidence stop.",
+    "proposal": {
+      "largeOutputWithoutRecall": { "thresholdChars": 2000, "keepRecentMessages": 4 },
+      "recallObserved": { "thresholdChars": 8000, "keepRecentMessages": 12 }
+    },
+    "development": "If scouts justify a proposal, run five paired repeats for every development task, alternating arm order by repeat and task index.",
+    "confirmation": "Run five paired repeats for every confirmation task only if the frozen candidate passes development; confirmation outcomes cannot alter the proposal.",
+    "maximumTrials": 63,
+    "stopConditions": [
+      "zero aggregate scout evidence",
+      "missing or unknown usage",
+      "unpriced or out-of-bound cost",
+      "timeout or abnormal evaluator termination",
+      "milestone budget exhaustion",
+      "development rejection or insufficient evidence"
+    ]
+  },
+  "tasks": {
+    "development": [
+      { "name": "coding-dev-integration", "definitionSha256": "c1a800a964496a8f9d29f9abdd7883a696cb5c2603be9e76a57ffb510958d426" },
+      { "name": "coding-dev-cross-file", "definitionSha256": "420e47400c8bb6a8ef56749c642e901848ff74f63613a1523034299fef26d09f" },
+      { "name": "coding-dev-regression", "definitionSha256": "e1286983136c2af8d8abeb07f4586fa334a82684a63a54b354be9f465f6009c1" }
+    ],
+    "confirmation": [
+      { "name": "coding-confirm-integration", "definitionSha256": "1f429d1ddc457449f89f20ea6997b147f2419b6ef281d8a8e73a23068fdd6724" },
+      { "name": "coding-confirm-cross-file", "definitionSha256": "7bff1a12bed3cbd8a7aa97ee555f07fc70bb7c0c58b697e432a5ac719a3cfb95" },
+      { "name": "coding-confirm-regression", "definitionSha256": "2703a8e910fce9a4d3eba3598d5fd5a130b5ef4bf4c1ca0dd4f0a89dad3f4203" }
+    ]
+  },
+  "interpretation": "Five repeats validate the pipeline and provide point estimates; call an improvement statistically supported only if the frozen confirmation bounds pass. No automatic promotion."
+}

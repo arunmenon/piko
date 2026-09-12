@@ -162,6 +162,10 @@ export function buildSandboxSpec(workspaceRoot: string): SandboxSpec {
   for (const [name, value] of Object.entries(sanitizedBashEnvironment())) {
     if (value !== undefined) environment[name] = value;
   }
+  const nodeBinDirectory = dirname(nodeExecutablePath);
+  environment['PATH'] = [nodeBinDirectory, ...(environment['PATH'] ?? '').split(':')]
+    .filter((directory, index, all) => directory.length > 0 && all.indexOf(directory) === index)
+    .join(':');
   return {
     workspaceRoot: realpathSync(workspaceRoot),
     nodeExecutablePath,
