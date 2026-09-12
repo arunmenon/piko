@@ -50,8 +50,9 @@ The cumulative $5 authorization includes compatibility probes and failed/inconcl
 | Fresh one-scout pilot after parser fix | $0.00594214 | complete, priced; zero evidence |
 | Updated three-scout mechanism pilot | $0.01809180 | complete, priced; zero evidence |
 | Representative coding-fixture milestone | $0.02672512 | complete, priced; 2/3 scouts verified, zero offload evidence |
-| **Cumulative** | **$0.06731935** | **no unknown or outstanding usage** |
-| **Remaining authorized ceiling** | **$4.93268065** | calculated-cost basis |
+| Long coding-task passive-measurement milestone | $0.02615075 | complete, priced; 3/3 verified, zero eligible output |
+| **Cumulative** | **$0.09347010** | **no unknown or outstanding usage** |
+| **Remaining authorized ceiling** | **$4.90652990** | calculated-cost basis |
 
 The gateway does not expose an independently reconcilable billed-dollar field. Dollar totals are exact under the frozen explicit pricing table and provider-reported token counters, but are not an invoice reconciliation.
 
@@ -138,7 +139,7 @@ This is a design, not authorization to run immediately.
 - Development: five paired repeats per task, alternating arm order.
 - Confirmation: five paired repeats per held-out task only if the unchanged development screen passes.
 - Acceptance: unchanged maximum quality loss 0.05, minimum cost saving 0.05, and strictly lower observed cost per verified solve.
-- Cost: per-trial ceiling $1; any future cumulative run ceiling must be no more than **$4.93**, keeping the reconciled $0.06731935 below $5 even if that run reaches its ceiling.
+- Cost: per-trial ceiling $1; any future cumulative run ceiling must be no more than **$4.90**, keeping the currently reconciled $0.09347010 below $5 even if that run reaches its ceiling.
 - Interpretation: call the result a pipeline/representativeness pilot unless the predeclared confidence bounds pass. Do not adopt settings from point estimates alone.
 
 Before running, register the fixture source, verifier, split, pricing hash, model identifier, context window, timeout, and command in a tracked preregistration document. Any post-registration task or threshold change creates a new experiment.
@@ -233,3 +234,58 @@ Before paid execution:
 5. Do not reuse the failed cross-file trajectory as a favorable retry; include its cost and outcome only in this milestone.
 
 This next design directly tests whether offloading has a natural opportunity in diagnostic-heavy coding work. If its scouts also show no eligible retained output, offloading is not the next optimization target for this model/workload; effort should move to compaction timing or model routing rather than progressively manufacturing larger outputs.
+
+## Long coding-task passive-measurement milestone
+
+### Prior failure and environment diagnosis
+
+The failed `coding-dev-cross-file` prompt said to preserve existing behavior and validate the change, but it did **not** state that existing tests were immutable. The model changed production code correctly enough to pass its tests, then expanded `test/existing.test.js`; the independent verifier rejected the changed test hash. That result demonstrated verifier independence, but it was not clean evidence of instruction non-adherence because the restriction was hidden from the prompt.
+
+The saved trace also showed `npm test` failing with `npm: command not found` inside bubblewrap. This was a confirmed sandbox environment defect: the active Node installation prefix was already mounted read-only, but the worker inherited a `PATH` beginning with an inaccessible home-directory symlink and fell back to `/usr/bin/node`, while no system `npm` existed. Commit `e991c60` prepends the canonical active Node `bin` directory to the sandbox PATH. Real-provider tests now prove that both the active Node and its npm 10.9.2 sibling run inside bubblewrap. The subsequent paid batch used `npm test` successfully.
+
+Long-task prompts explicitly state: “Do not modify or remove existing tests; fix production code and use the tests only as evidence.” All three development scouts followed that restriction and passed their independent verifiers. The earlier failure should therefore be classified as an unclear task contract plus an environment defect, not demonstrated persistent instruction non-adherence.
+
+### Passive measurements
+
+The agent now emits a non-rendered `offload_observed` event that does not enter model context or change tool behavior. It records retained tool-result count and characters, largest individual result, eligible old result count and characters, threshold, 8,000-character batch minimum, and whether an otherwise eligible batch was suppressed. The evidence parser stores maxima and suppression counts. Offline tests cover successful offload and a 5,000-character eligible result suppressed by the batch minimum.
+
+### Preregistered long development batch
+
+Tracked plan: `docs/experiments/offload-long-coding-v1-preregistration.json`.
+
+The plan froze commit inputs, Kimi model and pricing, a $1 milestone ceiling, $0.10 per-trial ceiling, five repeats, unchanged 0.05 quality-loss and 0.05 savings thresholds, three long development tasks, three sealed confirmation tasks, task hashes, passive measurements, and fixed scout/proposal/measurement order. Each task has at least 12 meaningful repository files, independent hidden checks, protected public tests, seeded-failure qualification, a passing maintainer repair, and rejected wrong solutions.
+
+Artifact root: `/home/exedev/workspace/piko/artifacts/improve/offload-long-coding-v1-2026-09-12`
+
+- Started: 2026-09-12 09:40:34 UTC
+- Finished: 2026-09-12 09:41:46 UTC
+- Wall time including static checks: about 72 seconds
+- Sum of trial elapsed time: 39.414 seconds
+- Final status: `insufficient_evidence`
+- Exit code: 2
+- Milestone cost: $0.02615075 of the $1 ceiling
+- Cumulative calculated cost: $0.09347010
+- Remaining authorization: $4.90652990
+- Unknown, unpriced, or outstanding usage: none
+
+| Scout | Verified | Requests | Elapsed | Cost | Max retained chars | Max result chars | Max eligible chars | Batch suppressions | Offloads |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `long-dev-integration` | yes | 6 | 10.396s | $0.00538740 | 2,226 | 618 | 0 | 0 | 0 |
+| `long-dev-cross-file` | yes | 11 | 21.030s | $0.01405919 | 4,455 | 381 | 0 | 0 | 0 |
+| `long-dev-regression` | yes | 7 | 7.987s | $0.00670416 | 3,499 | 976 | 0 | 0 | 0 |
+| **Total/outcome** | **3/3** | **24** | **39.414s** | **$0.02615075** | **4,455 max** | **976 max** | **0** | **0** | **0** |
+
+No individual tool result reached the 4,000-character eligibility threshold. Consequently there was no batch-minimum suppression, no offload, no proposal, no paired candidate comparison, and no confirmation disclosure. The controller stopped after the fixed development scout batch as preregistered.
+
+### Decision and next experiment
+
+Decision: **insufficient evidence** for changing offload settings.
+
+Of the four candidate problems, **cost** deserves the next experiment:
+
+- Instruction adherence: the original restriction was unstated; once stated, all three long scouts preserved tests and passed.
+- Environment reliability: npm absence was reproduced, fixed, and verified in the real sandbox and paid trajectories.
+- Context handling: passive evidence shows no eligible result and retained output below 4,455 characters, so offloading/compaction was not under pressure.
+- Cost: all tasks succeeded, but the cross-file task used 11 requests and cost $0.01405919—about 2.6 times the integration repair. With correctness and environment gates green, model routing is now the testable efficiency lever.
+
+The next experiment should preregister a fixed-model versus lower-cost-model paired comparison on these same long development tasks, followed by still-sealed confirmation tasks only if the development quality/cost-per-solve screen passes. Include all failures and escalation costs, hold prompts/verifiers/sandbox constant, and compare cost per verified solve. It should not tune offload thresholds because context pressure was absent, and it should not rerun this offload batch hoping for a different tool strategy.
